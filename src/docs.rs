@@ -506,6 +506,12 @@ fn describe_model(
     let patch_name = format!("{name}Patch");
     schemas.insert(patch_name.clone(), write_schema(resource, false, |_| false));
 
+    let sort_values: Vec<String> = resource
+        .fields()
+        .iter()
+        .filter(|f| !hidden.contains(&f.name))
+        .flat_map(|f| [f.name.clone(), format!("-{}", f.name)])
+        .collect();
     let list = json!({
         "type": "object",
         "properties": {
@@ -525,6 +531,7 @@ fn describe_model(
                     { "name": "page", "in": "query", "description": "Page number, from 1", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
                     { "name": "per_page", "in": "query", "description": "Rows per page", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
                     { "name": "q", "in": "query", "description": "Search text; matches any searchable column, ignoring case", "schema": { "type": "string" } },
+                    { "name": "sort", "in": "query", "description": "Column to order by; prefix with `-` for highest first. By default rows come in primary-key order.", "schema": { "type": "string", "enum": sort_values } },
                 ],
                 "responses": {
                     "200": json_response("One page of rows", &list),

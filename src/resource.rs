@@ -180,6 +180,24 @@ pub struct ListQuery {
     pub per_page: u64,
     /// Free-text search, if any.
     pub search: Option<String>,
+    /// Column to order by; by primary key if `None`. Callers only pass visible columns.
+    pub sort: Option<String>,
+    /// Whether `sort` runs from highest to lowest.
+    pub descending: bool,
+}
+
+impl ListQuery {
+    /// The first `per_page` rows, in primary-key order.
+    #[must_use]
+    pub fn first(per_page: u64) -> Self {
+        Self {
+            page: 0,
+            per_page,
+            search: None,
+            sort: None,
+            descending: false,
+        }
+    }
 }
 
 /// One page of rows plus the total match count.

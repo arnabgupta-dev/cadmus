@@ -283,7 +283,21 @@ where
                 select = select.filter(any);
             }
         }
-        if let Some(i) = self.pk {
+        let sorted = query.sort.as_deref().and_then(|name| {
+            self.fields
+                .iter()
+                .position(|f| f.name == name && !self.options.hidden_fields.contains(&f.name))
+        });
+        if let Some(i) = sorted {
+            let order = if query.descending {
+                sea_orm::Order::Desc
+            } else {
+                sea_orm::Order::Asc
+            };
+            select = select.order_by(self.columns[i], order);
+        }
+        // The primary key breaks ties, so pages never overlap or skip rows.
+        if let Some(i) = self.pk.filter(|i| Some(*i) != sorted) {
             select = select.order_by_asc(self.columns[i]);
         }
         let paginator = select.into_json().paginate(&self.db, query.per_page.max(1));

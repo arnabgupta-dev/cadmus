@@ -1,34 +1,72 @@
 {% extends "base.html" %}
 {% block title %}{{ model.label }} · {{ site.site_title }}{% endblock %}
+{% macro query(page=none, sort_to=none) -%}
+{%- set s = sort if sort_to is none else sort_to -%}
+{%- set p = ("q=" ~ (q|urlencode) ~ "&" if q else "") ~ ("sort=" ~ (s|urlencode) ~ "&" if s else "") ~ ("page=" ~ page ~ "&" if page else "") -%}
+{%- if p %}?{{ p[:-1] }}{% endif -%}
+{%- endmacro %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">{{ model.label }}</span>{% endblock %}
 {% block content %}
-<h1>{{ model.label }}</h1>
-<div class="panel">
-  <div class="toolbar">
-    <form method="get" action="{{ base }}/{{ model.slug }}" style="display: flex; gap: 8px; flex: 1; max-width: 420px;">
-      <input name="q" value="{{ q }}" placeholder="Search" aria-label="Search">
-      <button class="plain" type="submit">Search</button>
-    </form>
-    {% if model.can_add %}<a class="button" href="{{ base }}/{{ model.slug }}/new">Add</a>{% endif %}
+<div class="page-head">
+  <div>
+    <h1>{{ model.label }}</h1>
+    <p class="sub"><span class="num">{{ total }}</span> {% if total == 1 %}row{% else %}rows{% endif %}{% if q %} matching “{{ q }}”{% endif %}{% if not model.can_add and not model.can_change and not model.can_delete %} <span class="badge"><svg class="i i-sm" aria-hidden="true"><use href="#i-eye"/></svg>View only</span>{% endif %}</p>
   </div>
+  {% if model.can_add %}<div class="head-actions"><a class="btn primary" href="{{ base }}/{{ model.slug }}/new"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add</a></div>{% endif %}
+</div>
+
+<div class="panel">
+  <form class="toolbar" method="get" action="{{ base }}/{{ model.slug }}" role="search">
+    <div class="search">
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <input name="q" value="{{ q }}" placeholder="Search {{ model.label|lower }}" aria-label="Search {{ model.label|lower }}" data-search enterkeyhint="search">
+      {% if q %}<a class="clear" href="{{ base }}/{{ model.slug }}{% if sort %}?sort={{ sort|urlencode }}{% endif %}" aria-label="Clear search"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></a>{% else %}<kbd aria-hidden="true">/</kbd>{% endif %}
+    </div>
+    {% if sort %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
+    <button class="btn" type="submit">Search</button>
+  </form>
+
+  {% if rows %}
   <div class="scroll">
-  <table>
-    <thead><tr>{% for c in columns %}<th>{{ c }}</th>{% endfor %}<th></th></tr></thead>
+  <table class="cards">
+    <caption class="sr-only">{{ model.label }}, page {{ page }} of {{ pages }}</caption>
+    <thead><tr>
+      {% for c in columns %}
+      <th scope="col"{% if c.active == "asc" %} aria-sort="ascending"{% elif c.active == "desc" %} aria-sort="descending"{% endif %}><a href="{{ base }}/{{ model.slug }}{{ query(sort_to=c.next) }}" title="Sort by {{ c.label|lower }}"><span>{{ c.label }}</span><svg class="i" aria-hidden="true"><use href="#i-{% if c.active == "asc" %}up{% elif c.active == "desc" %}down{% else %}sort{% endif %}"/></svg></a></th>
+      {% endfor %}
+      <th scope="col"><span class="sr-only">Actions</span></th>
+    </tr></thead>
     <tbody>
     {% for row in rows %}
       <tr>
-        {% for cell in row.cells %}<td>{% if cell.link %}<a href="{{ base }}/{{ cell.link[0] }}/{{ cell.link[1]|urlencode }}">{{ cell.text }}</a>{% else %}{{ cell.text }}{% endif %}</td>{% endfor %}
-        <td>{% if row.id is not none %}<a href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">{% if can_change %}Edit{% else %}View{% endif %}</a>{% endif %}</td>
+        {% for cell in row.cells %}<td data-label="{{ columns[loop.index0].label }}">{% if cell.link %}<a href="{{ base }}/{{ cell.link[0] }}/{{ cell.link[1]|urlencode }}">{{ cell.text }}</a>{% elif cell.flag is true %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>Yes</span>{% elif cell.flag is false %}<span class="badge off">No</span>{% else %}{{ cell.text }}{% endif %}</td>{% endfor %}
+        <td class="act">{% if row.id is not none %}<a class="row-link" href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">{% if can_change %}Edit{% else %}View{% endif %}</a>{% endif %}</td>
       </tr>
-    {% else %}
-      <tr><td class="muted" colspan="{{ columns|length + 1 }}">Nothing found.</td></tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
-  <div class="pager">
-    {% if page > 1 %}<a href="{{ base }}/{{ model.slug }}?page={{ page - 1 }}&q={{ q|urlencode }}">Previous</a>{% endif %}
-    <span class="muted">Page {{ page }} of {{ pages }} · {{ total }} total</span>
-    {% if page < pages %}<a href="{{ base }}/{{ model.slug }}?page={{ page + 1 }}&q={{ q|urlencode }}">Next</a>{% endif %}
+  {% else %}
+  <div class="empty">
+    <svg class="i" aria-hidden="true"><use href="#i-inbox"/></svg>
+    {% if q %}
+    <strong>Nothing found</strong>
+    <p>No {{ model.label|lower }} match “{{ q }}”. Try fewer letters, or <a href="{{ base }}/{{ model.slug }}">show all</a>.</p>
+    {% else %}
+    <strong>No {{ model.label|lower }} yet</strong>
+    {% if model.can_add %}<p>Add the first one to get started.</p><a class="btn primary" href="{{ base }}/{{ model.slug }}/new"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add</a>{% else %}<p>Rows appear here once someone with permission adds them.</p>{% endif %}
+    {% endif %}
   </div>
+  {% endif %}
+
+  {% if pages > 1 %}
+  <nav class="pager" aria-label="Pages">
+    <span>Page <span class="num">{{ page }}</span> of <span class="num">{{ pages }}</span></span>
+    <span class="btns">
+      {% if page > 1 %}<a class="btn" href="{{ base }}/{{ model.slug }}{{ query(page=page - 1) }}" rel="prev"><svg class="i" aria-hidden="true"><use href="#i-left"/></svg>Previous</a>{% endif %}
+      {% if page < pages %}<a class="btn" href="{{ base }}/{{ model.slug }}{{ query(page=page + 1) }}" rel="next">Next<svg class="i" aria-hidden="true"><use href="#i-right"/></svg></a>{% endif %}
+    </span>
+  </nav>
+  {% endif %}
 </div>
 {% endblock %}

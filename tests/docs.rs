@@ -266,7 +266,7 @@ async fn the_document_describes_every_model_as_the_api_behaves() {
         .iter()
         .map(|p| p["name"].as_str().unwrap())
         .collect();
-    assert_eq!(query, ["page", "per_page", "q"]);
+    assert_eq!(query, ["page", "per_page", "q", "sort"]);
 
     // What is returned: everything but the hidden column.
     let read = &schemas["BlogPost"]["properties"];

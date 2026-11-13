@@ -1,68 +1,95 @@
 {% extends "base.html" %}
-{% block title %}Users · {{ site.site_title }}{% endblock %}
+{% block title %}{% if id is not none %}Edit {{ username }}{% else %}Add user{% endif %} · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/auth/users">Users</a><span class="sep">/</span><span class="here">{% if id is not none %}{{ username }}{% else %}New{% endif %}</span>{% endblock %}
+{% block head %}
+<style>
+.stack { display: grid; gap: 16px; }
+.stack > .panel > h2, .stack .panel-pad > h2 { margin-bottom: 4px; }
+.perms th.c, .perms td.c { text-align: center; width: 96px; }
+.perm-model { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.btn.mini { min-height: 32px; padding: 0 10px; font-size: .82rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; font-weight: 500; margin: 0; color: var(--ink); }
+.chip:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); }
+@media (max-width: 719px) {
+  /* One card per model: its name and "All" on top, then a row per action. */
+  .perms tr { display: grid !important; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+  .perms td:first-child { grid-column: 1 / -1; display: block !important; padding-bottom: 6px !important; }
+  .perms td:first-child::before { content: none !important; }
+  .perms td.c { display: flex !important; width: auto !important; justify-content: space-between; align-items: center; min-height: 44px; padding: 0 12px !important; border: 1px solid var(--line) !important; border-radius: var(--r-md); }
+  .perms td.c::before { font-size: .95rem !important; color: var(--ink-2) !important; }
+}
+</style>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll("[data-row-all]").forEach(function (b) {
+  var boxes = b.closest("tr").querySelectorAll("input[type=checkbox]");
+  function paint() { var all = Array.prototype.every.call(boxes, function (x) { return x.checked; }); b.textContent = all ? "None" : "All"; b.setAttribute("aria-label", (all ? "Clear all permissions for " : "Allow everything on ") + b.previousElementSibling.textContent); }
+  boxes.forEach(function (x) { x.addEventListener("change", paint); }); paint();
+  b.addEventListener("click", function () { var all = b.textContent === "None"; boxes.forEach(function (x) { x.checked = !all; }); paint(); });
+});
+var e = document.querySelector("[data-focus]"); if (e) e.focus();
+</script>
+{% endblock %}
 {% block content %}
-<h1>{% if id is not none %}Edit{% else %}Add{% endif %} user</h1>
-<div class="panel">
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
-  <form method="post" action="{{ base }}/auth/users/{% if id is not none %}{{ id }}{% else %}new{% endif %}">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <label for="f-username">Username</label>
-    <input id="f-username" name="username" value="{{ username }}" autocomplete="off" required>
-    <label for="f-password">Password</label>
-    <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none %} required{% endif %}>
-    {% if id is not none %}<p class="muted">Leave empty to keep the current password.</p>{% endif %}
-    {% if has_totp %}
-    <fieldset>
-      <legend>Two-factor authentication</legend>
-      <p class="muted">On. The user manages it under their own name in the header.</p>
-      <label class="check"><input type="checkbox" name="reset_totp" value="true"> Turn it off <span class="muted">— for a lost device; the user can set it up again</span></label>
-    </fieldset>
-    {% endif %}
-    <fieldset>
-      <legend>Status</legend>
-      <label class="check"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}> Active <span class="muted">— can log in</span></label>
-      <label class="check"><input type="checkbox" name="is_staff" value="true"{% if is_staff %} checked{% endif %}> Staff <span class="muted">— can use the admin and the API</span></label>
-      <label class="check"><input type="checkbox" name="is_superuser" value="true"{% if is_superuser %} checked{% endif %}> Superuser <span class="muted">— can do everything, including managing accounts</span></label>
-    </fieldset>
-    <fieldset>
-      <legend>Groups</legend>
-      {% for g in groups %}
-      <label class="check"><input type="checkbox" name="group" value="{{ g.id }}"{% if g.checked %} checked{% endif %}> {{ g.name }}</label>
-      {% else %}
-      <p class="muted">There are no groups yet.</p>
-      {% endfor %}
-    </fieldset>
-    <fieldset>
-      <legend>Permissions</legend>
-      {% if permissions %}
-      <div class="scroll">
-      <table>
-        <thead><tr><th>Model</th>{% for a in actions %}<th class="center">{{ a|capitalize }}</th>{% endfor %}</tr></thead>
-        <tbody>
-        {% for row in permissions %}
-          <tr>
-            <td>{{ row.label }}</td>
-            {% for cell in row.cells %}<td class="center"><input type="checkbox" name="perm" value="{{ cell.value }}" aria-label="{{ row.label }}: {{ actions[loop.index0] }}"{% if cell.checked %} checked{% endif %}></td>{% endfor %}
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+<div class="page-head"><div><h1>{% if id is not none %}Edit user{% else %}Add user{% endif %}</h1>{% if id is not none %}<p class="sub">{{ username }}</p>{% endif %}</div></div>
+{% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+<form class="stack" method="post" action="{{ base }}/auth/users/{% if id is not none %}{{ id }}{% else %}new{% endif %}" data-busy>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <section class="panel" aria-labelledby="h-account">
+    <div class="panel-pad" style="padding-bottom:0"><h2 id="h-account">Account</h2></div>
+    <div class="fields">
+      <div class="field">
+        <label for="f-username" class="required">Username</label>
+        <input id="f-username" name="username" value="{{ username }}" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+        <p class="muted">Letters, digits and <code>_ - . @</code>.</p>
       </div>
-      <p class="muted">These are added to the permissions of the account's groups. Whoever may change a model may also view it. Superusers need none.</p>
-      {% else %}
-      <p class="muted">No models are registered.</p>
-      {% endif %}
-    </fieldset>
-    <div class="actions">
-      <button type="submit">Save</button>
-      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/auth/users">Cancel</a>
+      <div class="field">
+        <label for="f-password"{% if id is none %} class="required"{% endif %}>Password</label>
+        <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none %} required{% endif %}>
+        <p class="muted">{% if id is not none %}Leave empty to keep the current password.{% else %}At least 8 characters.{% endif %}</p>
+      </div>
     </div>
-  </form>
-  {% if id is not none %}
-  <form method="post" action="{{ base }}/auth/users/{{ id }}/delete" class="actions">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <button class="danger" type="submit">Delete</button>
-  </form>
+  </section>
+
+  <section class="panel panel-pad" aria-labelledby="h-status">
+    <h2 id="h-status">Status</h2>
+    <label class="option"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}><span><strong>Active</strong><span>Can log in. Untick to lock the account out without deleting it.</span></span></label>
+    <label class="option"><input type="checkbox" name="is_staff" value="true"{% if is_staff %} checked{% endif %}><span><strong>Staff</strong><span>Can use the admin and the API.</span></span></label>
+    <label class="option"><input type="checkbox" name="is_superuser" value="true"{% if is_superuser %} checked{% endif %}><span><strong>Superuser</strong><span>Can do everything, including managing accounts. The permissions below then do not matter.</span></span></label>
+  </section>
+
+  {% if has_totp %}
+  <section class="panel panel-pad" aria-labelledby="h-2fa">
+    <h2 id="h-2fa">Two-factor authentication</h2>
+    <p class="muted" style="margin:4px 0 8px">On. The user manages it from their own name in the menu.</p>
+    <label class="option"><input type="checkbox" name="reset_totp" value="true"><span><strong>Turn it off</strong><span>For a lost device. The user can set it up again.</span></span></label>
+  </section>
   {% endif %}
-</div>
+
+  <section class="panel panel-pad" aria-labelledby="h-groups">
+    <h2 id="h-groups">Groups</h2>
+    <p class="muted" style="margin:4px 0 12px">The account gets every permission of the groups it is in.</p>
+    {% if groups %}
+    <div class="chips">{% for g in groups %}<label class="chip"><input type="checkbox" name="group" value="{{ g.id }}"{% if g.checked %} checked{% endif %}>{{ g.name }}</label>{% endfor %}</div>
+    {% else %}<p class="muted">There are no groups yet. <a href="{{ base }}/auth/groups/new">Create one</a> to share permissions between accounts.</p>{% endif %}
+  </section>
+
+  {% with perm_intro = "Given to this account directly, on top of its groups." %}{% include "permissions.html" %}{% endwith %}
+
+  <div class="panel actions-bar" style="border-radius:var(--r-lg)">
+    <button class="btn primary" type="submit" data-busy-text="Saving…">Save</button>
+    <a class="btn ghost" href="{{ base }}/auth/users">Cancel</a>
+    <span class="spacer"></span>
+    {% if id is not none %}<button class="btn danger" type="submit" form="delete-form" data-confirm="confirm-delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>{% endif %}
+  </div>
+</form>
+{% if id is not none %}
+<form id="delete-form" method="post" action="{{ base }}/auth/users/{{ id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
+<dialog id="confirm-delete" aria-labelledby="confirm-title">
+  <div class="dialog-body"><h2 id="confirm-title">Delete {{ username }}?</h2><p class="muted">The account can no longer log in, and its tokens stop working at once. This cannot be undone; to lock it out for now, untick Active instead.</p></div>
+  <div class="dialog-actions"><button class="btn ghost" type="button" data-cancel autofocus>Keep it</button><button class="btn solid-danger" type="submit" form="delete-form">Delete</button></div>
+</dialog>
+{% endif %}
 {% endblock %}

@@ -289,11 +289,11 @@ async fn crud_round_trip() {
         html.contains("First post") && html.contains("Second"),
         "{html}"
     );
-    assert!(html.contains("2 total"));
+    assert!(html.contains("<span class=\"num\">2</span> rows"));
 
     let (_, html) = send(&app, get("/admin/post?q=Seco", Some(&cookie))).await;
     assert!(html.contains("Second") && !html.contains("First post"));
-    assert!(html.contains("1 total"));
+    assert!(html.contains("<span class=\"num\">1</span> row matching"));
 
     let (response, html) = send(&app, get("/admin/post/1", Some(&cookie))).await;
     assert_eq!(response.status(), StatusCode::OK);

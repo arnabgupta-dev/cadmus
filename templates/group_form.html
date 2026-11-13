@@ -1,44 +1,61 @@
 {% extends "base.html" %}
-{% block title %}Groups · {{ site.site_title }}{% endblock %}
+{% block title %}{% if id is not none %}Edit {{ name }}{% else %}Add group{% endif %} · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/auth/groups">Groups</a><span class="sep">/</span><span class="here">{% if id is not none %}{{ name }}{% else %}New{% endif %}</span>{% endblock %}
+{% block head %}
+<style>
+.stack { display: grid; gap: 16px; }
+.stack > .panel > h2, .stack .panel-pad > h2 { margin-bottom: 4px; }
+.perms th.c, .perms td.c { text-align: center; width: 96px; }
+.perm-model { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.btn.mini { min-height: 32px; padding: 0 10px; font-size: .82rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; font-weight: 500; margin: 0; color: var(--ink); }
+.chip:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); }
+@media (max-width: 719px) {
+  /* One card per model: its name and "All" on top, then a row per action. */
+  .perms tr { display: grid !important; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+  .perms td:first-child { grid-column: 1 / -1; display: block !important; padding-bottom: 6px !important; }
+  .perms td:first-child::before { content: none !important; }
+  .perms td.c { display: flex !important; width: auto !important; justify-content: space-between; align-items: center; min-height: 44px; padding: 0 12px !important; border: 1px solid var(--line) !important; border-radius: var(--r-md); }
+  .perms td.c::before { font-size: .95rem !important; color: var(--ink-2) !important; }
+}
+</style>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll("[data-row-all]").forEach(function (b) {
+  var boxes = b.closest("tr").querySelectorAll("input[type=checkbox]");
+  function paint() { var all = Array.prototype.every.call(boxes, function (x) { return x.checked; }); b.textContent = all ? "None" : "All"; b.setAttribute("aria-label", (all ? "Clear all permissions for " : "Allow everything on ") + b.previousElementSibling.textContent); }
+  boxes.forEach(function (x) { x.addEventListener("change", paint); }); paint();
+  b.addEventListener("click", function () { var all = b.textContent === "None"; boxes.forEach(function (x) { x.checked = !all; }); paint(); });
+});
+var e = document.querySelector("[data-focus]"); if (e) e.focus();
+</script>
+{% endblock %}
 {% block content %}
-<h1>{% if id is not none %}Edit{% else %}Add{% endif %} group</h1>
-<div class="panel">
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
-  <form method="post" action="{{ base }}/auth/groups/{% if id is not none %}{{ id }}{% else %}new{% endif %}">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <label for="f-name">Name</label>
-    <input id="f-name" name="name" value="{{ name }}" required>
-    <fieldset>
-      <legend>Permissions</legend>
-      {% if permissions %}
-      <div class="scroll">
-      <table>
-        <thead><tr><th>Model</th>{% for a in actions %}<th class="center">{{ a|capitalize }}</th>{% endfor %}</tr></thead>
-        <tbody>
-        {% for row in permissions %}
-          <tr>
-            <td>{{ row.label }}</td>
-            {% for cell in row.cells %}<td class="center"><input type="checkbox" name="perm" value="{{ cell.value }}" aria-label="{{ row.label }}: {{ actions[loop.index0] }}"{% if cell.checked %} checked{% endif %}></td>{% endfor %}
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      </div>
-      <p class="muted">Whoever may change a model may also view it.</p>
-      {% else %}
-      <p class="muted">No models are registered.</p>
-      {% endif %}
-    </fieldset>
-    <div class="actions">
-      <button type="submit">Save</button>
-      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/auth/groups">Cancel</a>
+<div class="page-head"><div><h1>{% if id is not none %}Edit group{% else %}Add group{% endif %}</h1>{% if id is not none %}<p class="sub">{{ name }}</p>{% endif %}</div></div>
+{% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+<form class="stack" method="post" action="{{ base }}/auth/groups/{% if id is not none %}{{ id }}{% else %}new{% endif %}" data-busy>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <section class="panel panel-pad">
+    <div class="field" style="max-width:420px">
+      <label for="f-name" class="required">Name</label>
+      <input id="f-name" name="name" value="{{ name }}" required placeholder="e.g. Editors">
     </div>
-  </form>
-  {% if id is not none %}
-  <form method="post" action="{{ base }}/auth/groups/{{ id }}/delete" class="actions">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <button class="danger" type="submit">Delete</button>
-  </form>
-  {% endif %}
-</div>
+  </section>
+  {% with perm_intro = "Everyone in the group gets these." %}{% include "permissions.html" %}{% endwith %}
+  <div class="panel actions-bar" style="border-radius:var(--r-lg)">
+    <button class="btn primary" type="submit" data-busy-text="Saving…">Save</button>
+    <a class="btn ghost" href="{{ base }}/auth/groups">Cancel</a>
+    <span class="spacer"></span>
+    {% if id is not none %}<button class="btn danger" type="submit" form="delete-form" data-confirm="confirm-delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>{% endif %}
+  </div>
+</form>
+{% if id is not none %}
+<form id="delete-form" method="post" action="{{ base }}/auth/groups/{{ id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
+<dialog id="confirm-delete" aria-labelledby="confirm-title">
+  <div class="dialog-body"><h2 id="confirm-title">Delete the group {{ name }}?</h2><p class="muted">Its members stay, but lose the permissions they had through it, at once.</p></div>
+  <div class="dialog-actions"><button class="btn ghost" type="button" data-cancel autofocus>Keep it</button><button class="btn solid-danger" type="submit" form="delete-form">Delete</button></div>
+</dialog>
+{% endif %}
 {% endblock %}

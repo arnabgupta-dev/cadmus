@@ -39,6 +39,8 @@ pub struct UiSettings {
     pub(crate) footer_text: Option<String>,
     pub(crate) page_size: u64,
     pub(crate) nav_links: Vec<NavLink>,
+    /// Whether pages load their typeface from Google Fonts; otherwise the system's is used.
+    pub(crate) web_fonts: bool,
     #[serde(skip)]
     pub(crate) template_dir: Option<PathBuf>,
 }
@@ -47,13 +49,14 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             site_title: "Administration".to_owned(),
-            accent_color: "#2f6feb".to_owned(),
+            accent_color: "#4f46e5".to_owned(),
             logo_url: None,
             theme: Theme::Auto,
             custom_css_url: None,
             footer_text: None,
             page_size: 25,
             nav_links: Vec::new(),
+            web_fonts: true,
             template_dir: None,
         }
     }
@@ -79,6 +82,7 @@ impl UiSettings {
     /// | `ADMIN_PAGE_SIZE` | Rows per list page |
     /// | `ADMIN_NAV_LINKS` | Extra links: `Label=/url,Other=https://…` |
     /// | `ADMIN_TEMPLATE_DIR` | Directory whose files override built-in templates |
+    /// | `ADMIN_WEB_FONTS` | `false` uses the system typeface instead of loading Fira Sans from Google Fonts |
     ///
     /// # Errors
     /// Returns [`AdminError::Config`] if a variable is set to an invalid value.
@@ -126,6 +130,17 @@ impl UiSettings {
                 settings = settings.nav_link(label.trim(), url.trim());
             }
         }
+        if let Some(v) = lookup("ADMIN_WEB_FONTS") {
+            settings.web_fonts = match v.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
+                    return Err(AdminError::Config(
+                        "ADMIN_WEB_FONTS must be true or false".into(),
+                    ));
+                }
+            };
+        }
         settings.template_dir = lookup("ADMIN_TEMPLATE_DIR").map(PathBuf::from);
         Ok(settings)
     }
@@ -151,6 +166,14 @@ impl UiSettings {
         }
         self.accent_color = color.to_owned();
         Ok(self)
+    }
+
+    /// Loads Fira Sans from Google Fonts (the default), or uses the system typeface, which
+    /// makes no request to another site.
+    #[must_use]
+    pub fn web_fonts(mut self, enabled: bool) -> Self {
+        self.web_fonts = enabled;
+        self
     }
 
     /// Sets the logo image URL.

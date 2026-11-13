@@ -1,26 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">{{ title }}</span>{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
-<div class="panel">
-  <div class="toolbar">
-    <span class="muted">{{ rows|length }} total</span>
-    <a class="button" href="{{ base }}/auth/{{ kind }}/new">Add</a>
+<div class="page-head">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="sub">{% if kind == "users" %}Who can log in, and what each account may do.{% else %}Sets of permissions you can give several accounts at once.{% endif %}</p>
   </div>
-  <div class="scroll">
-  <table>
-    <thead><tr>{% for c in columns %}<th>{{ c }}</th>{% endfor %}<th></th></tr></thead>
+  <div class="head-actions"><a class="btn primary" href="{{ base }}/auth/{{ kind }}/new"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>{% if kind == "users" %}Add user{% else %}Add group{% endif %}</a></div>
+</div>
+<div class="panel">
+  {% if rows %}
+  <table class="cards">
+    <thead><tr>{% for c in columns %}<th scope="col">{{ c }}</th>{% endfor %}<th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
     {% for row in rows %}
       <tr>
-        {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
-        <td><a href="{{ base }}/auth/{{ kind }}/{{ row.id }}">Edit</a></td>
+        {% for cell in row.cells %}
+        <td data-label="{{ columns[loop.index0] }}">{% if loop.first %}<strong>{{ cell }}</strong>{% elif cell == "Yes" %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>Yes</span>{% elif cell == "No" %}<span class="badge off">No</span>{% else %}{{ cell }}{% endif %}</td>
+        {% endfor %}
+        <td class="act"><a class="row-link" href="{{ base }}/auth/{{ kind }}/{{ row.id }}">Edit</a></td>
       </tr>
-    {% else %}
-      <tr><td class="muted" colspan="{{ columns|length + 1 }}">Nothing here yet.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  {% else %}
+  <div class="empty">
+    <svg class="i" aria-hidden="true"><use href="#i-{% if kind == "users" %}users{% else %}shield{% endif %}"/></svg>
+    <strong>{% if kind == "users" %}No accounts yet{% else %}No groups yet{% endif %}</strong>
+    <p>{% if kind == "groups" %}A group gives the same permissions to everyone in it, e.g. “Editors”.{% endif %}</p>
   </div>
+  {% endif %}
 </div>
 {% endblock %}

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -18,7 +18,7 @@ use crate::AdminState;
 use crate::access::{Access, Action};
 use crate::auth::{self, Session};
 use crate::error::AdminError;
-use crate::handlers::render;
+use crate::handlers::{notice_text, render};
 use crate::uploads::FILES;
 use crate::users::{self, AccountInput, group, user};
 
@@ -167,6 +167,12 @@ struct ListRow {
     cells: Vec<String>,
 }
 
+/// `?notice=…` after a change; only known codes produce text (see [`notice_text`]).
+#[derive(serde::Deserialize)]
+struct NoticeQuery {
+    notice: Option<String>,
+}
+
 fn render_list(
     state: &AdminState,
     session: &Session,
@@ -174,12 +180,20 @@ fn render_list(
     title: &str,
     columns: &[&str],
     rows: &[ListRow],
+    notice: Option<&str>,
 ) -> Result<Html<String>, AdminError> {
     render(
         state,
         "accounts_list.html",
         Some(session),
-        context! { kind, title, columns => Value::from(Serde(columns)), rows => Value::from(Serde(rows)) },
+        context! {
+            section => kind,
+            kind,
+            title,
+            columns => Value::from(Serde(columns)),
+            rows => Value::from(Serde(rows)),
+            notice => notice_text(notice),
+        },
     )
 }
 
@@ -193,7 +207,11 @@ fn fixable(error: AdminError) -> Result<String, AdminError> {
 
 // ---- users -------------------------------------------------------------------------------
 
-async fn user_list(State(state): Shared, session: Session) -> Result<Html<String>, AdminError> {
+async fn user_list(
+    State(state): Shared,
+    session: Session,
+    Query(query): Query<NoticeQuery>,
+) -> Result<Html<String>, AdminError> {
     session.require_superuser()?;
     let accounts = user::Entity::find()
         .order_by_asc(user::Column::Username)
@@ -219,6 +237,7 @@ async fn user_list(State(state): Shared, session: Session) -> Result<Html<String
         "Users",
         &["Username", "Active", "Staff", "Superuser", "Two-factor"],
         &rows,
+        query.notice.as_deref(),
     )
 }
 
@@ -287,6 +306,7 @@ async fn render_user(
         "user_form.html",
         Some(session),
         context! {
+            section => "users",
             id,
             username => &view.username,
             is_active => view.is_active,
@@ -403,7 +423,14 @@ async fn save_user(
         _ => users::save_user(database(state)?, id, input).await,
     };
     match outcome {
-        Ok(_) => Ok(Redirect::to(&format!("{}/auth/users", state.base)).into_response()),
+        Ok(_) => {
+            let notice = if id.is_some() {
+                "user_saved"
+            } else {
+                "user_created"
+            };
+            Ok(Redirect::to(&format!("{}/auth/users?notice={notice}", state.base)).into_response())
+        }
         Err(error) => {
             let message = fixable(error)?;
             let page = render_user(state, session, id, &view, Some(message)).await?;
@@ -427,12 +454,19 @@ async fn user_delete(
         ));
     }
     users::delete_user(database(&state)?, id).await?;
-    Ok(Redirect::to(&format!("{}/auth/users", state.base)))
+    Ok(Redirect::to(&format!(
+        "{}/auth/users?notice=user_deleted",
+        state.base
+    )))
 }
 
 // ---- groups ------------------------------------------------------------------------------
 
-async fn group_list(State(state): Shared, session: Session) -> Result<Html<String>, AdminError> {
+async fn group_list(
+    State(state): Shared,
+    session: Session,
+    Query(query): Query<NoticeQuery>,
+) -> Result<Html<String>, AdminError> {
     session.require_superuser()?;
     let rows: Vec<ListRow> = users::all_groups(database(&state)?)
         .await?
@@ -442,7 +476,15 @@ async fn group_list(State(state): Shared, session: Session) -> Result<Html<Strin
             cells: vec![g.name],
         })
         .collect();
-    render_list(&state, &session, "groups", "Groups", &["Name"], &rows)
+    render_list(
+        &state,
+        &session,
+        "groups",
+        "Groups",
+        &["Name"],
+        &rows,
+        query.notice.as_deref(),
+    )
 }
 
 fn render_group(
@@ -458,6 +500,7 @@ fn render_group(
         "group_form.html",
         Some(session),
         context! {
+            section => "groups",
             id,
             name,
             actions => action_names(),
@@ -522,7 +565,17 @@ async fn save_group(
     let grants = form.grants(state);
     let typed = as_access(&grants);
     match users::save_group(database(state)?, id, name, grants).await {
-        Ok(_) => Ok(Redirect::to(&format!("{}/auth/groups", state.base)).into_response()),
+        Ok(_) => {
+            let notice = if id.is_some() {
+                "group_saved"
+            } else {
+                "group_created"
+            };
+            Ok(
+                Redirect::to(&format!("{}/auth/groups?notice={notice}", state.base))
+                    .into_response(),
+            )
+        }
         Err(error) => {
             let message = fixable(error)?;
             let page = render_group(state, session, id, name, &typed, Some(message))?;
@@ -540,7 +593,10 @@ async fn group_delete(
     session.check_csrf(Submitted::parse(&body).get("_csrf"))?;
     session.require_superuser()?;
     users::delete_group(database(&state)?, parse_id("group", &id)?).await?;
-    Ok(Redirect::to(&format!("{}/auth/groups", state.base)))
+    Ok(Redirect::to(&format!(
+        "{}/auth/groups?notice=group_deleted",
+        state.base
+    )))
 }
 
 // ---- two-factor authentication -----------------------------------------------------------
@@ -559,6 +615,7 @@ fn render_two_factor(
     enabled: bool,
     secret: Option<&str>,
     error: Option<&str>,
+    notice: Option<&str>,
 ) -> Result<Html<String>, AdminError> {
     let fresh;
     let secret = match (enabled, secret) {
@@ -583,6 +640,8 @@ fn render_two_factor(
         "two_factor.html",
         Some(session),
         context! {
+            section => "two_factor",
+            notice => notice_text(notice),
             enabled,
             required => state.auth.totp_required,
             secret,
@@ -597,9 +656,18 @@ fn render_two_factor(
 async fn two_factor_page(
     State(state): Shared,
     session: Session,
+    Query(query): Query<NoticeQuery>,
 ) -> Result<Html<String>, AdminError> {
     let account = own_account(&state, &session).await?;
-    render_two_factor(&state, &session, account.totp_secret.is_some(), None, None)
+    let enabled = account.totp_secret.is_some();
+    render_two_factor(
+        &state,
+        &session,
+        enabled,
+        None,
+        None,
+        query.notice.as_deref(),
+    )
 }
 
 async fn two_factor_enable(
@@ -619,7 +687,7 @@ async fn two_factor_enable(
     let again = |message: &str| -> Result<Response, AdminError> {
         // Keep the same secret, so the code already scanned stays valid.
         let kept = auth::totp_secret_is_strong(secret).then_some(secret);
-        let page = render_two_factor(&state, &session, false, kept, Some(message))?;
+        let page = render_two_factor(&state, &session, false, kept, Some(message), None)?;
         Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
     };
     if !auth::totp_secret_is_strong(secret) {
@@ -641,7 +709,11 @@ async fn two_factor_enable(
     )
     .await?;
     tracing::info!(username = %session.username, "two-factor authentication enabled");
-    Ok(Redirect::to(&format!("{}/auth/two-factor", state.base)).into_response())
+    Ok(Redirect::to(&format!(
+        "{}/auth/two-factor?notice=two_factor_on",
+        state.base
+    ))
+    .into_response())
 }
 
 async fn two_factor_disable(
@@ -664,10 +736,15 @@ async fn two_factor_disable(
             true,
             None,
             Some("The password is not correct."),
+            None,
         )?;
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
     }
     users::store_totp(database(&state)?, &session.username, None, None).await?;
     tracing::info!(username = %session.username, "two-factor authentication disabled");
-    Ok(Redirect::to(&format!("{}/auth/two-factor", state.base)).into_response())
+    Ok(Redirect::to(&format!(
+        "{}/auth/two-factor?notice=two_factor_off",
+        state.base
+    ))
+    .into_response())
 }

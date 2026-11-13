@@ -244,6 +244,8 @@ ADMIN_JWT_SECRET=
 # Set to true (the default) once you serve over HTTPS.
 ADMIN_COOKIE_SECURE=false
 ADMIN_SITE_TITLE=Administration
+# The public status page at /.
+HOME_TITLE={title}
 # Enable file uploads: file:///absolute/path, s3://bucket/prefix, az://container/prefix
 # STORAGE_URL=
 # Let a browser app on another origin call the API (comma-separated, or *).
@@ -255,7 +257,8 @@ ADMIN_SITE_TITLE=Administration
 # Behind a reverse proxy, name the header it puts the client address in.
 # ADMIN_CLIENT_IP_HEADER=X-Forwarded-For
 ",
-        url = database.url(name)
+        url = database.url(name),
+        title = name
     );
     write_new(&root.join(".env.example"), env_example)?;
     write_new(
@@ -276,7 +279,9 @@ ADMIN_SITE_TITLE=Administration
     println!("  hera generate model Post title:string body:text published:bool");
     println!("  cargo run -- migrate");
     println!("  cargo run -- createsuperuser --username admin");
-    println!("  cargo run -- serve      # admin at /admin, API docs at /api/docs");
+    println!(
+        "  cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs"
+    );
     Ok(())
 }
 

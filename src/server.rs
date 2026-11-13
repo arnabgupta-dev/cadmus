@@ -2,16 +2,17 @@
 //! a line in the log per request, cross-origin access for browser clients, and the response
 //! headers that keep the admin out of frames and caches.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::header::{
-    AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION, REFERRER_POLICY,
-    RETRY_AFTER, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+    ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION,
+    REFERRER_POLICY, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AdminError;
@@ -55,6 +56,45 @@ pub(crate) async fn access_log(request: Request, next: Next) -> Response {
         "request"
     );
     response
+}
+
+/// Where browsers that open an API URL are sent instead, and which URLs under the API path
+/// are pages meant for browsers.
+pub(crate) struct BrowserRedirect {
+    pub(crate) api_base: String,
+    pub(crate) pages: Vec<String>,
+}
+
+/// Sends a person who opens an API URL in the browser to the home page. Programs calling the
+/// API are unaffected: anything that sends a token, or is not a top-level page visit (such
+/// as `fetch` from a page or `curl`), reaches the API as usual.
+pub(crate) async fn browser_redirect(
+    State(rules): State<Arc<BrowserRedirect>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let under_api = path
+        .strip_prefix(&rules.api_base)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    let headers = request.headers();
+    let visit = matches!(*request.method(), Method::GET | Method::HEAD)
+        && under_api
+        && !rules.pages.iter().any(|page| page == path)
+        && !headers.contains_key(AUTHORIZATION)
+        && match headers.get("sec-fetch-mode").and_then(|v| v.to_str().ok()) {
+            // Browsers say how a request was made; a typed URL or a link is `navigate`.
+            Some(mode) => mode == "navigate",
+            // Older browsers do not; they still ask for HTML, which API clients do not.
+            None => headers
+                .get(ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|accept| accept.contains("text/html")),
+        };
+    if visit {
+        return Redirect::to("/").into_response();
+    }
+    next.run(request).await
 }
 
 /// Headers for every response from the admin and the API.

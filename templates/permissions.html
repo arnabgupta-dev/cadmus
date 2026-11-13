@@ -1,0 +1,21 @@
+<section class="panel perm-panel" aria-labelledby="h-perms">
+  <div class="panel-pad">
+    <h2 id="h-perms">Permissions</h2>
+    <p class="muted" style="margin-top:4px">{{ perm_intro }} Whoever may change a model may also view it.</p>
+  </div>
+  {% if permissions %}
+  <table class="cards perms">
+    <thead><tr><th scope="col">Model</th>{% for a in actions %}<th scope="col" class="c">{{ a|capitalize }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for row in permissions %}
+      <tr>
+        <td data-label="Model"><span class="perm-model"><strong>{{ row.label }}</strong><button class="btn ghost mini" type="button" data-row-all>All</button></span></td>
+        {% for cell in row.cells %}<td class="c" data-label="{{ actions[loop.index0]|capitalize }}"><input type="checkbox" name="perm" value="{{ cell.value }}" aria-label="{{ row.label }}: {{ actions[loop.index0] }}"{% if cell.checked %} checked{% endif %}></td>{% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="panel-pad muted">No models are registered.</p>
+  {% endif %}
+</section>

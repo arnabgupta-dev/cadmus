@@ -16,6 +16,7 @@ use crate::auth::totp_uri;
 use crate::auth::{AuthConfig, UserStore};
 use crate::docs::DocsConfig;
 use crate::error::AdminError;
+use crate::home::{self, Home, HomeConfig};
 use crate::resource::{ModelOptions, Resource};
 use crate::seaorm::SeaOrmResource;
 use crate::settings::UiSettings;
@@ -61,6 +62,7 @@ pub struct App {
     request_timeout: Option<Duration>,
     cors_origins: Vec<String>,
     docs: DocsConfig,
+    home: HomeConfig,
 }
 
 impl App {
@@ -83,6 +85,7 @@ impl App {
             request_timeout: Some(Duration::from_secs(30)),
             cors_origins: Vec::new(),
             docs: DocsConfig::new(),
+            home: HomeConfig::new(),
         }
     }
 
@@ -132,6 +135,7 @@ impl App {
             app.cors_origins = server::parse_origins(&text)?;
         }
         app.docs = DocsConfig::from_env()?;
+        app.home = HomeConfig::from_env()?;
         Ok(app)
     }
 
@@ -175,6 +179,17 @@ impl App {
     pub fn users(mut self, users: impl UserStore + 'static) -> Self {
         self.users = Arc::new(users);
         self.builtin_users = false;
+        self
+    }
+
+    /// Settings for the public page at `/`, which shows whether the service is up. On by
+    /// default; it also sends people who open an API URL in a browser there.
+    ///
+    /// Your own `/` route takes precedence over it. If your routes set a fallback with
+    /// `Router::fallback`, turn the home page off, since both answer unmatched requests.
+    #[must_use]
+    pub fn home(mut self, home: HomeConfig) -> Self {
+        self.home = home;
         self
     }
 
@@ -310,7 +325,17 @@ impl App {
         let admin = self.admin()?;
 
         // From the inside out. The time limit covers everything except file transfers.
-        let mut router = admin.page_routes().merge(self.routes.clone());
+        let mut router = admin.page_routes();
+        if self.home.is_enabled() {
+            let home = Arc::new(Home::new(
+                self.home.clone(),
+                Arc::clone(&admin.state),
+                self.db.clone(),
+            ));
+            // A fallback rather than a route, so that a `/` route of the application wins.
+            router = router.fallback(move |request| home::fallback(Arc::clone(&home), request));
+        }
+        let mut router = router.merge(self.routes.clone());
         if let Some(limit) = self.request_timeout {
             router = router.layer(middleware::from_fn_with_state(limit, server::timeout));
         }
@@ -323,6 +348,25 @@ impl App {
         // preflight requests are answered before anything asks for a login.
         if !self.cors_origins.is_empty() {
             router = router.layer(server::cors(&self.cors_origins));
+        }
+        if self.home.is_enabled() {
+            let api = base_path(self.api_base.clone(), "/api")?;
+            let pages = if self.docs.is_enabled() {
+                ["docs", "redoc", "openapi.json"]
+                    .iter()
+                    .map(|page| format!("{api}/{page}"))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let rules = Arc::new(server::BrowserRedirect {
+                api_base: api,
+                pages,
+            });
+            router = router.layer(middleware::from_fn_with_state(
+                rules,
+                server::browser_redirect,
+            ));
         }
         // Outermost, to log the response that is actually sent.
         Ok(router.layer(middleware::from_fn(server::access_log)))
@@ -425,6 +469,9 @@ impl App {
                 drop(self.router()?);
                 let admin = base_path(self.admin_base.clone(), "/admin")?;
                 let api = base_path(self.api_base.clone(), "/api")?;
+                if self.home.is_enabled() {
+                    println!("GET    /");
+                }
                 println!("POST   {api}/auth/token");
                 if self.docs.is_enabled() {
                     println!("GET    {api}/docs");

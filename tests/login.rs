@@ -299,7 +299,10 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.body.contains("<svg") && page.body.contains("Turn on"));
     let secret = field(&page.body, "secret");
-    assert!(page.body.contains(&format!("<code>{secret}</code>")));
+    assert!(
+        page.body
+            .contains(&format!("<code class=\"key\">{secret}</code>"))
+    );
     assert_eq!(
         token(&app, "root", PASSWORD, None, None).await.status,
         StatusCode::OK
@@ -369,7 +372,7 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
         root.get(&app, "/admin/auth/users")
             .await
             .body
-            .contains("<td>Yes</td>")
+            .contains("data-label=\"Two-factor\"><span class=\"badge on\">")
     );
     // Turning it on twice is refused.
     let again = root
@@ -509,7 +512,7 @@ async fn two_factor_can_be_set_from_the_command_line_and_reset_by_a_superuser() 
     let row = users
         .body
         .split("<tr>")
-        .find(|r| r.contains("<td>other</td>"))
+        .find(|r| r.contains("<strong>other</strong>"))
         .unwrap();
     let marker = "admin/auth/users/";
     let id = row[row.find(marker).unwrap() + marker.len()..]
@@ -599,7 +602,7 @@ async fn guessing_the_password_on_the_two_factor_page_is_limited_too() {
     }
     let reply = root.post(&app, "/admin/auth/two-factor", &guess).await;
     assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
-    assert!(reply.retry_after.is_some() && reply.body.contains("<main>"));
+    assert!(reply.retry_after.is_some() && reply.body.contains("<main id=\"main\""));
 }
 
 fn unix_now() -> u64 {

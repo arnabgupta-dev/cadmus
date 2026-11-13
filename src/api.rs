@@ -18,7 +18,7 @@ use crate::AdminState;
 use crate::access::Action;
 use crate::auth::{self, Credentials, Session};
 use crate::error::{AdminError, ApiError, ApiResult};
-use crate::handlers::{ListParams, list_query};
+use crate::handlers::{ListParams, list_query, parse_sort, sortable};
 use crate::resource::{Input, Resource, Row, WriteMode};
 
 type Shared = State<Arc<AdminState>>;
@@ -139,6 +139,15 @@ async fn list(
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::View)?;
+    if let Some((name, _)) = params.sort.as_deref().map(parse_sort)
+        && !sortable(resource).any(|f| f.name == name)
+    {
+        return Err(AdminError::BadInput {
+            field: "sort".into(),
+            message: format!("`{name}` is not a column this list can be sorted by"),
+        }
+        .into());
+    }
     let mut query = list_query(&state, resource, &params);
     if let Some(per_page) = params.per_page {
         query.per_page = per_page.clamp(1, MAX_PER_PAGE);

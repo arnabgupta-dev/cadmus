@@ -89,7 +89,7 @@ impl Reply {
     }
 
     fn is_page(&self) -> bool {
-        self.content_type.starts_with("text/html") && self.body.contains("<main>")
+        self.content_type.starts_with("text/html") && self.body.contains("<main id=\"main\"")
     }
 }
 

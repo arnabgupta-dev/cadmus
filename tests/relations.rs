@@ -244,9 +244,9 @@ async fn lists_name_the_related_row_and_forms_offer_a_dropdown() {
         list.body
     );
     // The column is headed by what it points to; an empty foreign key is an empty cell.
-    assert!(list.body.contains("<th>Author</th>") && list.body.contains("<th>Editor</th>"));
+    assert!(list.body.contains("<span>Author</span>") && list.body.contains("<span>Editor</span>"));
     assert!(!list.body.contains("Author id"));
-    assert!(list.body.contains("<td></td>"));
+    assert!(list.body.contains("data-label=\"Editor\"></td>"));
 
     // The form offers every author by name, alphabetically whatever the case.
     let form = root.get(app, "/admin/post/new").await;
@@ -353,7 +353,7 @@ async fn migrate_creates_the_constraint_so_dangling_references_are_refused() {
     assert_eq!(status, StatusCode::CONFLICT);
     let reply = site.root.post(app, "/admin/author/2/delete", "").await;
     assert_eq!(reply.status, StatusCode::CONFLICT);
-    assert!(reply.body.contains("<main>"));
+    assert!(reply.body.contains("<main id=\"main\""));
     // One without posts can.
     let (status, _) = api(app, &site.token, "DELETE", "/api/author/3", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -445,7 +445,11 @@ async fn names_are_only_shown_to_accounts_that_may_view_the_related_model() {
     // No permission on authors: the plain number, no names, no link.
     let list = sam.get(app, "/admin/post").await;
     assert_eq!(list.status, StatusCode::OK);
-    assert!(list.body.contains("<td>2</td>"), "{}", list.body);
+    assert!(
+        list.body.contains("data-label=\"Author\">2</td>"),
+        "{}",
+        list.body
+    );
     assert!(!list.body.contains("ada") && !list.body.contains("admin/author/"));
     let form = sam.get(app, "/admin/post/1").await;
     assert!(!form.body.contains("<select") && !form.body.contains("ada"));
@@ -461,7 +465,7 @@ async fn names_are_only_shown_to_accounts_that_may_view_the_related_model() {
     let row = users
         .body
         .split("<tr>")
-        .find(|r| r.contains("<td>sam</td>"))
+        .find(|r| r.contains("<strong>sam</strong>"))
         .unwrap();
     let marker = "admin/auth/users/";
     let id = row[row.find(marker).unwrap() + marker.len()..]
@@ -528,7 +532,7 @@ async fn a_key_to_a_model_that_is_not_registered_stays_a_plain_field() {
         .unwrap();
     let list = site.root.get(&app, "/admin/post").await;
     assert_eq!(list.status, StatusCode::OK);
-    assert!(list.body.contains("<td>2</td>") && !list.body.contains("ada"));
+    assert!(list.body.contains("data-label=\"Author\">2</td>") && !list.body.contains("ada"));
     let form = site.root.get(&app, "/admin/post/1").await;
     assert!(!form.body.contains("<select") && form.body.contains("name=\"author_id\" value=\"2\""));
 }

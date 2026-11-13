@@ -22,6 +22,7 @@ mod auth;
 mod docs;
 mod error;
 mod handlers;
+mod home;
 mod limit;
 mod resource;
 mod seaorm;
@@ -41,6 +42,7 @@ pub use auth::{
 };
 pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
+pub use home::HomeConfig;
 pub use resource::{
     Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
 };
@@ -53,13 +55,18 @@ pub use users::{
 };
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 12] = [
+const TEMPLATES: [(&str, &str); 14] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
     ("list.html", include_str!("../templates/list.html")),
     ("form.html", include_str!("../templates/form.html")),
     ("error.html", include_str!("../templates/error.html")),
+    ("home.html", include_str!("../templates/home.html")),
+    (
+        "permissions.html",
+        include_str!("../templates/permissions.html"),
+    ),
     (
         "accounts_list.html",
         include_str!("../templates/accounts_list.html"),
@@ -127,7 +134,7 @@ impl AdminState {
 /// A configured admin panel. Create with [`Admin::builder`], mount with [`Admin::router`].
 #[derive(Clone)]
 pub struct Admin {
-    state: Arc<AdminState>,
+    pub(crate) state: Arc<AdminState>,
 }
 
 impl Admin {

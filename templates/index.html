@@ -1,18 +1,87 @@
 {% extends "base.html" %}
+{% block title %}Dashboard · {{ site.site_title }}{% endblock %}
+{% macro access(m) %}
+<div class="access" aria-label="What you can do">
+  {% for name, allowed in [("View", m.can_view), ("Add", m.can_add), ("Change", m.can_change), ("Delete", m.can_delete)] %}
+  <span class="pip{% if allowed %} yes{% endif %}"><svg class="i" aria-hidden="true"><use href="#i-{% if allowed %}check{% else %}lock{% endif %}"/></svg>{{ name }}<span class="sr-only">: {% if allowed %}allowed{% else %}not allowed{% endif %}</span></span>
+  {% endfor %}
+</div>
+{% endmacro %}
+{% block head %}
+<style>
+.hello { display: grid; gap: 6px; margin-bottom: 24px; }
+.hello p { color: var(--muted); }
+.tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.tile { position: relative; display: grid; gap: 14px; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
+.tile:hover { border-color: var(--line-strong); box-shadow: var(--shadow-lift); }
+.tile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.tile h2 a { color: var(--ink); text-decoration: none; }
+.tile h2 a::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.tile h2 a:focus-visible { outline: none; }
+.tile:has(h2 a:focus-visible) { outline: 3px solid color-mix(in oklab, var(--accent) 70%, transparent); outline-offset: 2px; }
+.count { font: 600 2rem/1 var(--font); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.count small { font: 400 .85rem var(--font); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.tile .add { position: relative; z-index: 1; }
+.tile-icon { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); flex: none; }
+.full { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--accent-ink); }
+.side-grid { display: grid; gap: 14px; margin-top: 28px; }
+@media (min-width: 900px) { .side-grid { grid-template-columns: 1fr 1fr; } }
+.stat-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.stat-row:first-of-type { border-top: 0; }
+.stat-row a { font-weight: 500; }
+.panel h2 { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.panel h2 .i { color: var(--muted); }
+</style>
+{% endblock %}
+{% block crumbs %}<span class="here">Dashboard</span>{% endblock %}
 {% block content %}
-<h1>{{ site.site_title }}</h1>
-<div class="panel">
-  {% if models %}
-  <table>
-    <thead><tr><th>Model</th><th></th></tr></thead>
-    <tbody>
-    {% for m in models %}
-      <tr><td><a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a></td><td>{% if m.can_add %}<a href="{{ base }}/{{ m.slug }}/new">Add</a>{% endif %}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">There is nothing here that your account can see.</p>
+<div class="hello">
+  <h1>{{ site.site_title }}</h1>
+  <p>{% if is_superuser %}You have full access, including accounts.{% elif tiles %}Showing the {{ tiles|length }} model{% if tiles|length != 1 %}s{% endif %} your account can open.{% else %}Your account has no permissions yet.{% endif %}</p>
+</div>
+
+{% if tiles %}
+<div class="tiles">
+  {% for t in tiles %}
+  <article class="tile">
+    <div class="tile-top">
+      <div>
+        <h2><a href="{{ base }}/{{ t.slug }}">{{ t.label }}</a></h2>
+        <div class="count" style="margin-top:10px">{% if t.count is not none %}{{ t.count }}<small>{% if t.count == 1 %}row{% else %}rows{% endif %}</small>{% else %}<small>Count unavailable</small>{% endif %}</div>
+      </div>
+      <span class="tile-icon" aria-hidden="true"><svg class="i"><use href="#i-layers"/></svg></span>
+    </div>
+    {% if is_superuser %}<span class="full"><svg class="i i-sm" aria-hidden="true"><use href="#i-shield"/></svg>Full access</span>{% else %}{{ access(t) }}{% endif %}
+    {% if t.can_add %}<a class="btn add" href="{{ base }}/{{ t.slug }}/new"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add<span class="sr-only"> to {{ t.label }}</span></a>{% endif %}
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<div class="panel empty">
+  <svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>
+  <strong>There is nothing here that your account can see.</strong>
+  <p>Ask a superuser to give your account permissions, or to add you to a group.</p>
+</div>
+{% endif %}
+
+{% if accounts or two_factor is not none %}
+<div class="side-grid">
+  {% if accounts %}
+  <section class="panel panel-pad" aria-labelledby="h-access">
+    <h2 id="h-access"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Access</h2>
+    <div class="stat-row"><a href="{{ base }}/auth/users">Users</a><span class="num">{{ accounts.users }}</span></div>
+    <div class="stat-row"><a href="{{ base }}/auth/groups">Groups</a><span class="num">{{ accounts.groups }}</span></div>
+  </section>
+  {% endif %}
+  {% if two_factor is not none %}
+  <section class="panel panel-pad" aria-labelledby="h-security">
+    <h2 id="h-security"><svg class="i" aria-hidden="true"><use href="#i-phone"/></svg>Your security</h2>
+    <div class="stat-row">
+      <span>Two-factor authentication</span>
+      {% if two_factor %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>On</span>{% else %}<a href="{{ base }}/auth/two-factor">Turn on</a>{% endif %}
+    </div>
+  </section>
   {% endif %}
 </div>
+{% endif %}
 {% endblock %}

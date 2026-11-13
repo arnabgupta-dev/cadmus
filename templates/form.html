@@ -1,40 +1,75 @@
 {% extends "base.html" %}
-{% block title %}{{ model.label }} · {{ site.site_title }}{% endblock %}
+{% block title %}{% if id is none %}Add{% elif not can_save %}View{% else %}Edit{% endif %} · {{ model.label }} · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/{{ model.slug }}">{{ model.label }}</a><span class="sep">/</span><span class="here">{% if id is none %}New{% else %}#{{ id }}{% endif %}</span>{% endblock %}
 {% block content %}
-<h1>{% if id is none %}Add{% elif can_save %}Edit{% else %}View{% endif %} {{ model.label }}</h1>
-<div class="panel">
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
-  <form method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    {% for f in fields %}
-      <label for="f-{{ f.name }}">{{ f.label }}</label>
+{% set locked = not can_save %}
+<div class="page-head">
+  <div>
+    <h1>{% if id is none %}Add to {{ model.label }}{% else %}{{ model.label }} <span class="num">#{{ id }}</span>{% endif %}</h1>
+    <p class="sub">{% if id is none %}A new record.{% elif locked %}Read only.{% else %}Edit the fields and save.{% endif %}</p>
+  </div>
+</div>
+
+{% if locked %}<div class="alert info" role="note"><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg><span>You can view this record, but your account cannot change it.</span></div>{% endif %}
+{% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+
+<form class="panel" method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}" data-busy>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <div class="fields">
+  {% for f in fields %}
+    {% set ro = f.readonly or locked %}
+    <div class="field{% if f.kind == "long_text" or f.kind == "json" %} wide{% endif %}">
+    {% if f.kind == "boolean" and f.choices is none %}
+      <div class="check-field">
+        <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if ro %} disabled{% endif %}>
+        <label for="f-{{ f.name }}">{{ f.label }}</label>
+      </div>
+    {% else %}
+      <label for="f-{{ f.name }}"{% if f.required and not ro %} class="required"{% endif %}>{{ f.label }}</label>
       {% if f.choices is not none %}
-        <select id="f-{{ f.name }}" name="{{ f.name }}"{% if f.required %} required{% endif %}{% if f.readonly %} disabled{% endif %}>
+        <select id="f-{{ f.name }}" name="{{ f.name }}"{% if f.required %} required{% endif %}{% if ro %} disabled{% endif %}>
           <option value="">{% if f.required %}Choose…{% else %}— none —{% endif %}</option>
           {% for c in f.choices %}<option value="{{ c.value }}"{% if c.selected %} selected{% endif %}>{{ c.label }}</option>{% endfor %}
         </select>
-      {% elif f.kind == "boolean" %}
-        <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if f.readonly %} disabled{% endif %}>
       {% elif f.kind == "long_text" or f.kind == "json" %}
-        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="6"{% if f.required %} required{% endif %}{% if f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
+        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="{% if f.kind == "json" %}8{% else %}6{% endif %}"{% if f.kind == "json" %} class="code" spellcheck="false"{% endif %}{% if f.required %} required{% endif %}{% if ro %} readonly{% endif %}>{{ f.value }}</textarea>
       {% else %}
         <input id="f-{{ f.name }}" name="{{ f.name }}" value="{{ f.value }}"
           type="{% if f.kind == "integer" or f.kind == "float" %}number{% elif f.kind == "date_time" %}datetime-local{% elif f.kind == "date" %}date{% elif f.kind == "time" %}time{% else %}text{% endif %}"
-          {% if f.kind == "float" %}step="any"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% endif %}
-          {% if f.required %}required{% endif %}{% if f.readonly %} readonly{% endif %}>
+          {% if f.kind == "float" %}step="any" inputmode="decimal"{% elif f.kind == "integer" %}inputmode="numeric"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% endif %}
+          {% if f.required %}required{% endif %}{% if ro %} readonly{% endif %}>
       {% endif %}
+      {% if f.kind == "json" and not ro %}<p class="muted">Any JSON value, e.g. <code>{"tags": ["a"]}</code>.</p>{% endif %}
+    {% endif %}
       {% if f.hint %}<p class="muted">{{ f.hint }}</p>{% endif %}
-    {% endfor %}
-    <div class="actions">
-      {% if can_save %}<button type="submit">Save</button>{% endif %}
-      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/{{ model.slug }}">{% if can_save %}Cancel{% else %}Back{% endif %}</a>
+      {% if f.readonly and not locked and id is not none %}<p class="muted">Set by the system; it cannot be changed here.</p>{% endif %}
     </div>
-  </form>
-  {% if id is not none and can_delete %}
-  <form method="post" action="{{ base }}/{{ model.slug }}/{{ id|urlencode }}/delete" class="actions">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <button class="danger" type="submit">Delete</button>
-  </form>
-  {% endif %}
-</div>
+  {% endfor %}
+  </div>
+  <div class="actions-bar">
+    {% if can_save %}<button class="btn primary" type="submit" data-busy-text="Saving…">Save</button>{% endif %}
+    <a class="btn ghost" href="{{ base }}/{{ model.slug }}">{% if can_save %}Cancel{% else %}Back{% endif %}</a>
+    <span class="spacer"></span>
+    {% if id is not none and can_delete %}<button class="btn danger" type="submit" form="delete-form" data-confirm="confirm-delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>{% endif %}
+  </div>
+</form>
+
+{% if id is not none and can_delete %}
+<form id="delete-form" method="post" action="{{ base }}/{{ model.slug }}/{{ id|urlencode }}/delete">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+</form>
+<dialog id="confirm-delete" aria-labelledby="confirm-title">
+  <div class="dialog-body">
+    <h2 id="confirm-title">Delete this record?</h2>
+    <p class="muted">{{ model.label }} #{{ id }} will be removed for everyone. This cannot be undone.</p>
+  </div>
+  <div class="dialog-actions">
+    <button class="btn ghost" type="button" data-cancel autofocus>Keep it</button>
+    <button class="btn solid-danger" type="submit" form="delete-form">Delete</button>
+  </div>
+</dialog>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>var e = document.querySelector("[data-focus]"); if (e) e.focus();</script>
 {% endblock %}

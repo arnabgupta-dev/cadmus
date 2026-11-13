@@ -1,36 +1,67 @@
 {% extends "base.html" %}
 {% block title %}Two-factor authentication · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">Two-factor authentication</span>{% endblock %}
+{% block head %}
+<style>
+.tf { max-width: 720px; display: grid; gap: 16px; }
+.state { display: flex; align-items: center; gap: 14px; }
+.state .dot { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; flex: none; }
+.state.on .dot { background: var(--ok-soft); color: var(--ok); }
+.state.off .dot { background: var(--warn-soft); color: var(--warn); }
+.setup { display: grid; gap: 22px; }
+@media (min-width: 720px) { .setup { grid-template-columns: auto 1fr; align-items: start; } }
+.qr { padding: 14px; background: #fff; border-radius: var(--r-md); border: 1px solid var(--line); justify-self: start; }
+.qr svg { display: block; width: 200px; height: 200px; }
+.key { display: block; margin-top: 6px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunken); overflow-wrap: anywhere; user-select: all; }
+.steps { display: grid; gap: 16px; }
+.step-title { font-weight: 600; margin-bottom: 4px; }
+.tf form .field + .field { margin-top: 14px; }
+.tf form .btn { margin-top: 18px; }
+</style>
+{% endblock %}
 {% block content %}
-<h1>Two-factor authentication</h1>
-<div class="panel" style="max-width: 560px;">
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="page-head"><div><h1>Two-factor authentication</h1><p class="sub">A code from your phone, as well as your password, every time you log in as {{ user }}.</p></div></div>
+<div class="tf">
+  {% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
   {% if enabled %}
-  <p><strong>On.</strong> Logging in as {{ user }} needs a code from your authenticator app as well as your password.</p>
+  <section class="panel panel-pad">
+    <div class="state on"><span class="dot" aria-hidden="true"><svg class="i"><use href="#i-check"/></svg></span><p><strong>On.</strong> Logging in needs a code from your authenticator app.</p></div>
+  </section>
   {% if required %}
-  <p class="muted">This site requires two-factor authentication, so it cannot be turned off here. If you lose your device, ask a superuser to reset it.</p>
+  <div class="alert info"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg><span>This site requires two-factor authentication, so it cannot be turned off here. If you lose your device, ask a superuser to reset it.</span></div>
   {% else %}
-  <form method="post" action="{{ base }}/auth/two-factor/disable">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <label for="f-password">Password</label>
-    <input id="f-password" name="password" type="password" autocomplete="current-password" required>
-    <div class="actions"><button class="danger" type="submit">Turn off</button></div>
-  </form>
+  <section class="panel panel-pad" aria-labelledby="h-off">
+    <h2 id="h-off">Turn it off</h2>
+    <p class="muted" style="margin-top:4px">Your password alone will then be enough to log in.</p>
+    <form method="post" action="{{ base }}/auth/two-factor/disable" data-busy style="max-width:360px;margin-top:14px">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="field"><label for="f-password" class="required">Password</label><input id="f-password" name="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn danger" type="submit" data-busy-text="Turning off…">Turn off</button>
+    </form>
+  </section>
   {% endif %}
   {% else %}
-  <p><strong>Off.</strong> Turn it on to require a code from an authenticator app (such as Google Authenticator, 1Password or Aegis) every time you log in.</p>
-  <p>1. Scan this code with the app:</p>
-  {% if qr %}<div class="qr">{{ qr }}</div>{% endif %}
-  <p class="muted">Or enter this key by hand: <code>{{ secret }}</code></p>
-  <p>2. Confirm with your password and the six-digit code the app shows:</p>
-  <form method="post" action="{{ base }}/auth/two-factor">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <input type="hidden" name="secret" value="{{ secret }}">
-    <label for="f-password">Password</label>
-    <input id="f-password" name="password" type="password" autocomplete="current-password" required>
-    <label for="f-code">Authenticator code</label>
-    <input id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required>
-    <div class="actions"><button type="submit">Turn on</button></div>
-  </form>
+  <section class="panel panel-pad">
+    <div class="state off"><span class="dot" aria-hidden="true"><svg class="i"><use href="#i-phone"/></svg></span><p><strong>Off.</strong> Anyone with your password can log in as you.</p></div>
+  </section>
+  <section class="panel panel-pad setup" aria-labelledby="h-setup">
+    {% if qr %}<div class="qr" aria-label="QR code to scan with an authenticator app" role="img">{{ qr }}</div>{% endif %}
+    <div class="steps">
+      <h2 id="h-setup">Set it up</h2>
+      <div><p class="step-title">1. Scan the code</p><p class="muted">With an authenticator app such as Google Authenticator, 1Password or Aegis. Or enter this key by hand:</p><code class="key">{{ secret }}</code></div>
+      <div>
+        <p class="step-title">2. Confirm</p>
+        <form method="post" action="{{ base }}/auth/two-factor" data-busy>
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <input type="hidden" name="secret" value="{{ secret }}">
+          <div class="field"><label for="f-password" class="required">Password</label><input id="f-password" name="password" type="password" autocomplete="current-password" required></div>
+          <div class="field"><label for="f-code" class="required">Six-digit code from the app</label><input id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div>
+          <button class="btn primary" type="submit" data-busy-text="Checking…">Turn on</button>
+        </form>
+      </div>
+    </div>
+  </section>
   {% endif %}
 </div>
 {% endblock %}
+{% block scripts %}<script>var e = document.querySelector("[data-focus]"); if (e) e.focus();</script>{% endblock %}

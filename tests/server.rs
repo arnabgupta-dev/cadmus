@@ -129,7 +129,7 @@ async fn slow_requests_are_cut_off_but_file_transfers_are_not() {
     assert_eq!(reply.json()["error"]["code"], "timeout");
     let reply = fetch(&app, Method::GET, "/admin/extra/slow", &[]).await;
     assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(reply.body.contains("<main>"));
+    assert!(reply.body.contains("<main id=\"main\""));
 
     // Ordinary requests are unaffected.
     assert_eq!(fetch(&app, Method::GET, "/hello", &[]).await.body, "hello");

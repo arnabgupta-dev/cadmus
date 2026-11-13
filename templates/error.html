@@ -1,10 +1,25 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · {{ site.site_title }}{% endblock %}
-{% block content %}
-<h1>{{ title }}</h1>
-<div class="panel">
-  <p>{{ message }}</p>
-  <p class="muted">Error {{ status }}</p>
-  <div class="actions"><a class="button" href="{{ base }}/">Back to {{ site.site_title }}</a></div>
+{% macro problem() %}
+<div class="problem">
+  <span class="code num" aria-hidden="true">{{ status }}</span>
+  <h1>{{ title }}</h1>
+  <p class="muted">{{ message }}</p>
+  <p class="muted small">Error {{ status }}</p>
+  <div class="head-actions">
+    {% if user %}<a class="btn primary" href="{{ base }}/">Go to the dashboard</a>{% else %}<a class="btn primary" href="{{ base }}/login">Log in</a>{% endif %}
+  </div>
 </div>
+{% endmacro %}
+{% block head %}
+<style>
+.problem { max-width: 520px; margin: 8vh auto 0; display: grid; justify-items: start; gap: 12px; }
+.problem .code { font: 700 clamp(3.5rem, 10vw, 5.5rem)/1 var(--font); letter-spacing: -.04em; color: transparent; -webkit-text-stroke: 1.5px var(--line-strong); }
+.problem .small { font-size: .85rem; }
+.problem .head-actions { margin-top: 8px; }
+.bare { min-height: 100dvh; padding: 24px 16px; display: grid; }
+</style>
 {% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">{{ title }}</span>{% endblock %}
+{% block content %}{{ problem() }}{% endblock %}
+{% block bare %}{{ problem() }}{% endblock %}

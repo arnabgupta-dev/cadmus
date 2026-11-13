@@ -17,7 +17,7 @@ hera new blog && cd blog
 hera generate model Post title:string body:text published:bool views:int rating:float?
 cargo run -- migrate                # creates/updates tables from the models
 cargo run -- createsuperuser --username admin
-cargo run -- serve                  # admin at /admin, API docs at /api/docs
+cargo run -- serve                  # status page at /, admin at /admin, API docs at /api/docs
 ```
 
 Generated projects depend on this repository through a Cargo `git` dependency. From a local
@@ -52,6 +52,47 @@ app.model::<post::Entity>(
         .hidden_fields(["internal_note"]),
 )
 ```
+
+## The admin
+
+`/admin` is a responsive, mobile-friendly panel with light and dark themes (following the
+system, with a toggle). It shows each account exactly what it may do:
+
+- **Dashboard:** every model the account can view, with its row count and the account's
+  permissions on it (view, add, change, delete), each spelled out rather than shown by colour
+  alone. Superusers also see account totals; everyone sees whether their two-factor
+  authentication is on.
+- **Navigation:** only the models the account can view; view-only models are marked. Users and
+  Groups appear for superusers only.
+- **Lists:** search, sorting by clicking a column heading, pagination. On phones each row
+  becomes a card.
+- **Forms:** buttons appear only for allowed actions, a record the account cannot change opens
+  read-only, deleting asks for confirmation, and saving confirms with a short notice.
+- **Keyboard:** <kbd>/</kbd> jumps to the search box, and every control is reachable by
+  keyboard with a visible focus ring.
+
+The pages load the Fira Sans typeface from Google Fonts; set `ADMIN_WEB_FONTS=false` to use the
+system typeface and make no request to another site. `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`,
+`ADMIN_THEME` and the other `ADMIN_*` settings still apply.
+
+## Home page
+
+`/` is a public status page: the service's name, whether it is operational, whether the
+database answers and how fast, and the uptime. It refreshes itself every 30 seconds, and it
+links nowhere, so it does not point visitors at the admin or the API documentation.
+
+- **For monitors:** the same URL with `Accept: application/json` returns
+  `{"status", "database": {"status", "latency_ms"}, "uptime_secs", "checked_at"}`. Both forms
+  answer `503` when the database is unreachable, so a load balancer can use it as a health
+  check.
+- **API URLs opened in a browser** (typed into the address bar, or followed as a link) are
+  sent to `/`. Programs are unaffected: requests with a token, from scripts (`fetch`) and from
+  tools like `curl` reach the API as usual. The documentation pages under `/api` are
+  exempt.
+- **Your own page:** a `/` route in `src/routes.rs` takes precedence automatically. To turn the
+  home page off entirely, set `HOME_PAGE_ENABLED=false`; do that too if your routes set their
+  own `Router::fallback`.
+- `HOME_TITLE` (default: the site title) and `HOME_TAGLINE` set what it says.
 
 ## Relations
 
@@ -104,7 +145,7 @@ For every model, under `/api`:
 
 | Request | Result |
 |---|---|
-| `GET /api/{model}?page=&per_page=&q=` | `{"data": [...], "meta": {"total", "page", "per_page"}}` (`per_page` ≤ 100) |
+| `GET /api/{model}?page=&per_page=&q=&sort=` | `{"data": [...], "meta": {"total", "page", "per_page"}}` (`per_page` ≤ 100; `sort=title` or `sort=-title` for highest first) |
 | `POST /api/{model}` | `201`, `Location`, the created row |
 | `GET /api/{model}/{id}` | the row |
 | `PUT /api/{model}/{id}` | replace: every required field must be present |
@@ -346,7 +387,9 @@ handlers.
 | `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` | What the documentation is headed with | site title + "API", `0.1.0` |
 | `DOCS_SWAGGER_JS_URL`, `DOCS_SWAGGER_CSS_URL`, `DOCS_REDOC_JS_URL` | Where the documentation pages load their viewer from | jsDelivr |
 | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits | 1 GiB, 8 MiB |
-| `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR` | Admin look and feel | see `UiSettings::from_env` |
+| `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR`, `ADMIN_WEB_FONTS` | Admin look and feel | see `UiSettings::from_env` |
+| `HOME_PAGE_ENABLED` | Serve the status page at `/` | `true` |
+| `HOME_TITLE`, `HOME_TAGLINE` | What the status page says | site title, none |
 
 Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`. `hera new
 --database` picks one for a new project; to switch an existing project, change the dependency

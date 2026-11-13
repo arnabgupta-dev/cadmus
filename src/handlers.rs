@@ -45,20 +45,27 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         .with_state(state)
 }
 
+/// A model as the logged-in account sees it: what it is called and what may be done to it.
 #[derive(Serialize)]
 struct NavModel<'a> {
     slug: &'a str,
     label: &'a str,
-    /// Whether the logged-in account may create records of this model.
+    can_view: bool,
     can_add: bool,
+    can_change: bool,
+    can_delete: bool,
 }
 
 impl<'a> NavModel<'a> {
     fn new(resource: &'a dyn Resource, session: &Session) -> Self {
+        let slug = resource.slug();
         Self {
-            slug: resource.slug(),
+            slug,
             label: resource.label(),
-            can_add: session.can(resource.slug(), Action::Add),
+            can_view: session.can(slug, Action::View),
+            can_add: session.can(slug, Action::Add),
+            can_change: session.can(slug, Action::Change),
+            can_delete: session.can(slug, Action::Delete),
         }
     }
 }
@@ -86,6 +93,7 @@ pub(crate) fn render(
         models => Value::from(Serde(&models)),
         user => session.map(|s| s.username.as_str()),
         csrf => session.map(Session::csrf),
+        is_superuser => session.is_some_and(|s| s.access.is_superuser()),
         // Whether accounts are the built-in ones, which have a page for the user's own settings.
         self_service => state.accounts.is_some() && session.is_some(),
         // Whether to link to the Users and Groups pages.
@@ -105,6 +113,15 @@ fn visible_fields(resource: &dyn Resource) -> impl Iterator<Item = &Field> {
         .fields()
         .iter()
         .filter(move |f| !hidden.contains(&f.name))
+}
+
+/// A stored boolean, which some databases return as `0`/`1`.
+fn boolean_value(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::Number(n) => n.as_i64().map(|n| n != 0),
+        _ => None,
+    }
 }
 
 fn display(value: Option<&serde_json::Value>) -> String {
@@ -211,8 +228,56 @@ async fn logout(
 
 // ---- pages -------------------------------------------------------------------------------
 
+/// One model on the dashboard.
+#[derive(Serialize)]
+struct Tile<'a> {
+    #[serde(flatten)]
+    model: NavModel<'a>,
+    /// `None` if the count could not be read.
+    count: Option<u64>,
+}
+
 async fn index(State(state): Shared, session: Session) -> Result<Html<String>, AdminError> {
-    render(&state, "index.html", Some(&session), context! {})
+    let mut tiles = Vec::new();
+    for resource in &state.resources {
+        if !session.can(resource.slug(), Action::View) {
+            continue;
+        }
+        // One broken model should not take the whole dashboard down with it.
+        let count = resource
+            .list(&ListQuery::first(1))
+            .await
+            .ok()
+            .map(|p| p.total);
+        tiles.push(Tile {
+            model: NavModel::new(resource.as_ref(), &session),
+            count,
+        });
+    }
+    let mut accounts = None;
+    let mut two_factor = None;
+    if let Some(db) = &state.accounts {
+        use sea_orm::{EntityTrait, PaginatorTrait};
+        if session.access.is_superuser() {
+            let users = crate::users::user::Entity::find().count(db).await?;
+            let groups = crate::users::group::Entity::find().count(db).await?;
+            accounts = Some(context! { users, groups });
+        }
+        two_factor = crate::users::find_account(db, &session.username)
+            .await?
+            .map(|a| a.totp_secret.is_some());
+    }
+    render(
+        &state,
+        "index.html",
+        Some(&session),
+        context! {
+            section => "home",
+            tiles => Value::from(Serde(&tiles)),
+            accounts,
+            two_factor,
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -223,6 +288,44 @@ pub(crate) struct ListParams {
     pub(crate) per_page: Option<u64>,
     #[serde(default)]
     pub(crate) q: Option<String>,
+    /// A column name to order by, prefixed with `-` for highest first.
+    #[serde(default)]
+    pub(crate) sort: Option<String>,
+    /// What just happened, from a redirect after a change; see [`notice_text`].
+    #[serde(default)]
+    pub(crate) notice: Option<String>,
+}
+
+/// The columns a list may be ordered by: the visible ones.
+pub(crate) fn sortable(resource: &dyn Resource) -> impl Iterator<Item = &Field> {
+    visible_fields(resource)
+}
+
+/// Splits `-title` into `("title", true)`.
+pub(crate) fn parse_sort(sort: &str) -> (&str, bool) {
+    match sort.strip_prefix('-') {
+        Some(name) => (name, true),
+        None => (sort, false),
+    }
+}
+
+/// The message for a notice code. Only these fixed texts are ever shown, so a crafted link
+/// cannot put words on the page.
+pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
+    Some(match code? {
+        "created" => "Created.",
+        "saved" => "Changes saved.",
+        "deleted" => "Deleted.",
+        "user_created" => "Account created.",
+        "user_saved" => "Account saved.",
+        "user_deleted" => "Account deleted.",
+        "group_created" => "Group created.",
+        "group_saved" => "Group saved.",
+        "group_deleted" => "Group deleted.",
+        "two_factor_on" => "Two-factor authentication is on.",
+        "two_factor_off" => "Two-factor authentication is off.",
+        _ => return None,
+    })
 }
 
 pub(crate) fn list_query(
@@ -238,6 +341,23 @@ pub(crate) fn list_query(
             .per_page
             .unwrap_or(state.settings.page_size),
         search: params.q.clone().filter(|q| !q.trim().is_empty()),
+        sort: None,
+        descending: false,
+    }
+    .sorted(resource, params.sort.as_deref())
+}
+
+impl ListQuery {
+    /// Orders by `sort` if it names a column that may be sorted on; otherwise leaves the
+    /// default order.
+    fn sorted(mut self, resource: &dyn Resource, sort: Option<&str>) -> Self {
+        if let Some((name, descending)) = sort.map(parse_sort)
+            && sortable(resource).any(|f| f.name == name)
+        {
+            self.sort = Some(name.to_owned());
+            self.descending = descending;
+        }
+        self
     }
 }
 
@@ -247,6 +367,18 @@ struct ListCell {
     text: String,
     /// Model and id of the related row to link to.
     link: Option<(String, String)>,
+    /// For a boolean column: the value, shown as Yes or No.
+    flag: Option<bool>,
+}
+
+/// A column heading of a list, with the sort order that clicking it asks for.
+#[derive(Serialize)]
+struct ColumnHead {
+    label: String,
+    /// `asc` or `desc` if the list is ordered by this column.
+    active: Option<&'static str>,
+    /// The `sort` parameter of the heading's link.
+    next: String,
 }
 
 #[derive(Serialize)]
@@ -367,9 +499,13 @@ async fn list(
                         Some((target, label)) => ListCell {
                             text: truncate(label.clone()),
                             link: Some((target.slug().to_owned(), value)),
+                            flag: None,
                         },
                         // Not a foreign key, or one that points at nothing.
                         None => ListCell {
+                            flag: (f.kind == FieldKind::Boolean)
+                                .then(|| row.get(&f.name).and_then(boolean_value))
+                                .flatten(),
                             text: truncate(value),
                             link: None,
                         },
@@ -379,15 +515,40 @@ async fn list(
         })
         .collect();
     let pages = page.total.div_ceil(query.per_page).max(1);
+    let heads: Vec<ColumnHead> = columns
+        .iter()
+        .map(|f| {
+            let active = (query.sort.as_deref() == Some(f.name.as_str()))
+                .then_some(if query.descending { "desc" } else { "asc" });
+            // Lowest first, then highest first, then back to the default order.
+            let next = match active {
+                None => f.name.clone(),
+                Some("asc") => format!("-{}", f.name),
+                Some(_) => String::new(),
+            };
+            ColumnHead {
+                label: f.label.clone(),
+                active,
+                next,
+            }
+        })
+        .collect();
+    let sort = query
+        .sort
+        .as_ref()
+        .map(|name| format!("{}{name}", if query.descending { "-" } else { "" }));
 
     render(
         &state,
         "list.html",
         Some(&session),
         context! {
+            section => &model,
             model => Value::from(Serde(NavModel::new(resource, &session))),
             can_change => session.can(&model, Action::Change),
-            columns => columns.iter().map(|f| f.label.clone()).collect::<Vec<_>>(),
+            columns => Value::from(Serde(&heads)),
+            sort,
+            notice => notice_text(params.notice.as_deref()),
             rows => Value::from(Serde(&rows)),
             total => page.total,
             page => query.page + 1,
@@ -427,12 +588,7 @@ async fn reference_input(
     let Some(pk) = pk_name(target) else {
         return Ok((None, None));
     };
-    let query = ListQuery {
-        page: 0,
-        per_page: MAX_CHOICES,
-        search: None,
-    };
-    let page = target.list(&query).await?;
+    let page = target.list(&ListQuery::first(MAX_CHOICES)).await?;
     if page.total > MAX_CHOICES {
         let labels = related_labels(target, vec![current.to_owned()]).await?;
         let pointing = labels
@@ -538,6 +694,7 @@ async fn render_form(
         "form.html",
         Some(session),
         context! {
+            section => resource.slug(),
             model => Value::from(Serde(NavModel::new(resource, session))),
             fields => Value::from(Serde(fields)),
             id => id,
@@ -622,7 +779,9 @@ async fn create(
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
     match resource.create(&form_input(resource, &form)).await {
-        Ok(_) => Ok(Redirect::to(&format!("{}/{model}", state.base)).into_response()),
+        Ok(_) => {
+            Ok(Redirect::to(&format!("{}/{model}?notice=created", state.base)).into_response())
+        }
         Err(error) => form_error(&state, &session, resource, None, &form, error).await,
     }
 }
@@ -654,7 +813,7 @@ async fn update(
         .update(&id, &form_input(resource, &form), WriteMode::Replace)
         .await
     {
-        Ok(()) => Ok(Redirect::to(&format!("{}/{model}", state.base)).into_response()),
+        Ok(()) => Ok(Redirect::to(&format!("{}/{model}?notice=saved", state.base)).into_response()),
         Err(error) => form_error(&state, &session, resource, Some(&id), &form, error).await,
     }
 }
@@ -669,5 +828,8 @@ async fn delete(
     let resource = state.resource(&model)?;
     session.require(&model, Action::Delete)?;
     resource.delete(&id).await?;
-    Ok(Redirect::to(&format!("{}/{model}", state.base)))
+    Ok(Redirect::to(&format!(
+        "{}/{model}?notice=deleted",
+        state.base
+    )))
 }

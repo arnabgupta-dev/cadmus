@@ -201,7 +201,7 @@ async fn status(app: &Router, token: &str, method: &str, path: &str, body: Optio
 fn id_of(page: &str, kind: &str, name: &str) -> String {
     let row = page
         .split("<tr>")
-        .find(|row| row.contains(&format!("<td>{name}</td>")))
+        .find(|row| row.contains(&format!("<strong>{name}</strong>")))
         .unwrap_or_else(|| panic!("no row for {name}"));
     // Templates HTML-escape the leading slash of the base path, so match what follows it.
     let marker = format!("admin/auth/{kind}/");
@@ -253,7 +253,10 @@ async fn staff_without_permissions_can_log_in_but_do_nothing() {
     ] {
         let page = sam.get(&app, path).await;
         assert_eq!(page.status, StatusCode::FORBIDDEN, "{path}");
-        assert!(page.body.contains("<main>"), "a page, not bare text");
+        assert!(
+            page.body.contains("<main id=\"main\""),
+            "a page, not bare text"
+        );
     }
 }
 
@@ -495,7 +498,7 @@ async fn group_permissions_add_to_the_accounts_own() {
         }
     }
     let groups = root.get(&app, "/admin/auth/groups").await;
-    assert_eq!(groups.body.matches("<td>Dup</td>").count(), 1);
+    assert_eq!(groups.body.matches("<strong>Dup</strong>").count(), 1);
 }
 
 #[tokio::test]
