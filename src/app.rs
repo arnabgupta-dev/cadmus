@@ -3,8 +3,9 @@
 
 use std::io::{BufRead, IsTerminal};
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::Router;
+use axum::{Router, middleware};
 use clap::{Parser, Subcommand};
 use sea_orm::schema::SchemaBuilder;
 use sea_orm::{
@@ -22,7 +23,7 @@ use crate::uploads::Uploads;
 use crate::users::{
     DbUserStore, change_password, create_superuser, disable_totp, enable_totp, promote,
 };
-use crate::{Admin, base_path};
+use crate::{Admin, base_path, server};
 
 type SchemaStep = Box<dyn Fn(SchemaBuilder) -> SchemaBuilder + Send + Sync>;
 
@@ -56,6 +57,8 @@ pub struct App {
     schema: Vec<SchemaStep>,
     uploads: Option<Uploads>,
     routes: Router,
+    request_timeout: Option<Duration>,
+    cors_origins: Vec<String>,
 }
 
 impl App {
@@ -75,6 +78,8 @@ impl App {
             schema: Vec::new(),
             uploads: None,
             routes: Router::new(),
+            request_timeout: Some(Duration::from_secs(30)),
+            cors_origins: Vec::new(),
         }
     }
 
@@ -91,6 +96,8 @@ impl App {
     /// | `DB_ACQUIRE_TIMEOUT_SECS` | How long a request waits for a pooled connection |
     /// | `STORAGE_URL` | Enables file uploads; see [`Storage::from_url`] |
     /// | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits |
+    /// | `REQUEST_TIMEOUT_SECS` | Longest a request may take; `0` for no limit (default 30) |
+    /// | `CORS_ALLOWED_ORIGINS` | Origins whose pages may call the app from a browser, comma-separated, or `*` (default: none) |
     ///
     /// plus everything read by [`AuthConfig::from_env`] and [`UiSettings::from_env`].
     ///
@@ -111,6 +118,15 @@ impl App {
         app.admin_base = std::env::var("ADMIN_BASE_PATH").ok();
         app.api_base = std::env::var("API_BASE_PATH").ok();
         app.uploads = uploads;
+        if let Ok(text) = std::env::var("REQUEST_TIMEOUT_SECS") {
+            let secs = text.parse::<u64>().map_err(|_| {
+                AdminError::Config("REQUEST_TIMEOUT_SECS must be a non-negative integer".into())
+            })?;
+            app = app.request_timeout((secs > 0).then(|| Duration::from_secs(secs)));
+        }
+        if let Ok(text) = std::env::var("CORS_ALLOWED_ORIGINS") {
+            app.cors_origins = server::parse_origins(&text)?;
+        }
         Ok(app)
     }
 
@@ -155,6 +171,38 @@ impl App {
         self.users = Arc::new(users);
         self.builtin_users = false;
         self
+    }
+
+    /// Sets how long a request may take before it is answered with `503` and abandoned;
+    /// `None` for no limit. The default is 30 seconds.
+    ///
+    /// It applies to the admin, the API and your own routes, but not to file uploads and
+    /// downloads, which take as long as the files are big. Only the time until the response
+    /// starts is counted, so streamed responses are not cut short.
+    #[must_use]
+    pub fn request_timeout(mut self, limit: Option<Duration>) -> Self {
+        self.request_timeout = limit;
+        self
+    }
+
+    /// Lets pages served from these origins (e.g. `https://app.example.com`) call the app
+    /// from a browser; `*` allows every origin. By default no cross-origin access is allowed.
+    ///
+    /// Browser clients send the bearer token; cookies are never accepted across origins.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] if an entry is not an origin.
+    pub fn cors_origins<I, S>(mut self, origins: I) -> Result<Self, AdminError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut all = Vec::new();
+        for origin in origins {
+            all.extend(server::parse_origins(origin.as_ref())?);
+        }
+        self.cors_origins = all;
+        Ok(self)
     }
 
     /// Registers a SeaORM entity: its table is managed by `migrate`, and it appears in the
@@ -228,7 +276,24 @@ impl App {
             builder = builder.register_shared(Arc::clone(resource));
         }
         let admin = builder.build()?;
-        Ok(admin.handle_errors(admin.routes().merge(self.routes.clone())))
+
+        // From the inside out. The time limit covers everything except file transfers.
+        let mut router = admin.page_routes().merge(self.routes.clone());
+        if let Some(limit) = self.request_timeout {
+            router = router.layer(middleware::from_fn_with_state(limit, server::timeout));
+        }
+        if let Some(uploads) = admin.upload_routes() {
+            router = router.merge(uploads);
+        }
+        // Errors, including the time limit's, are put into the format of their area.
+        router = admin.handle_errors(router);
+        // Outside that, so that error responses carry the cross-origin headers too and
+        // preflight requests are answered before anything asks for a login.
+        if !self.cors_origins.is_empty() {
+            router = router.layer(server::cors(&self.cors_origins));
+        }
+        // Outermost, to log the response that is actually sent.
+        Ok(router.layer(middleware::from_fn(server::access_log)))
     }
 
     /// Serves the app until Ctrl-C.

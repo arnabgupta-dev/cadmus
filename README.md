@@ -188,6 +188,35 @@ times as many attempts across all accounts. Change the numbers with
 - Someone who knows a username can keep that account locked by guessing. That is the usual
   trade-off of per-account limits; lower `ADMIN_LOGIN_LOCKOUT_SECS` if it becomes a problem.
 
+## Deploying
+
+A generated project is ready to run behind HTTPS as it is:
+
+- **Time limit:** a request that takes longer than 30 seconds gets `503` (code `timeout`) and
+  is abandoned. Change it with `REQUEST_TIMEOUT_SECS` (`0` for no limit). File uploads and
+  downloads are exempt, and streamed responses are not cut short.
+- **Request log:** one line per request with method, path, status and duration, at `info`
+  level. The query string is not logged.
+- **Protective headers** on every admin and API response: no framing by other sites
+  (clickjacking), no content-type guessing, no caching of pages that needed a login, and
+  admin URLs are not sent as referrer to other sites.
+- **Cross-origin access (CORS)** is off by default. To let a browser app on another origin
+  call the API, set `CORS_ALLOWED_ORIGINS=https://app.example.com` (comma-separated, or `*`).
+  Such clients use the bearer token; cookies are never accepted across origins.
+- **Graceful shutdown** on Ctrl-C.
+
+Before going live, check these:
+
+1. Serve over HTTPS and remove `ADMIN_COOKIE_SECURE=false` from `.env` (it is there for local
+   development only).
+2. Behind a reverse proxy, set `ADMIN_CLIENT_IP_HEADER` (see
+   [Login attempt limits](#login-attempt-limits)).
+3. Keep `.env` out of version control, and use a different `ADMIN_JWT_SECRET` per environment.
+
+Responses are not compressed, on purpose: admin pages contain a CSRF token next to text the
+visitor controls (the search box), which is the situation the BREACH attack on compressed
+HTTPS responses needs.
+
 ## Permissions
 
 Accounts work as in Django:
@@ -260,6 +289,8 @@ handlers.
 | `DATABASE_URL` | **Required** | — |
 | `ADMIN_JWT_SECRET` | **Required.** Signing secret, ≥ 32 bytes (`hera secret`) | — |
 | `APP_BIND` | Listen address | `127.0.0.1:3000` |
+| `REQUEST_TIMEOUT_SECS` | Longest a request may take; `0` for no limit | `30` |
+| `CORS_ALLOWED_ORIGINS` | Origins allowed to call the app from a browser | none |
 | `LOG_LEVEL` | `error`, `warn`, `info`, `debug` (adds SQL statements) or `trace` | `info` |
 | `ADMIN_BASE_PATH`, `API_BASE_PATH` | URL prefixes | `/admin`, `/api` |
 | `DB_MAX_CONNECTIONS`, `DB_MIN_CONNECTIONS`, `DB_ACQUIRE_TIMEOUT_SECS` | Connection pool | driver defaults |
@@ -306,8 +337,8 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
   read-only.
 - **Uploads:** completing a resumable upload copies the chunks once inside the storage backend
   (no direct-to-S3 multipart yet); abandoned sessions are not cleaned up automatically.
-- **Server:** no request timeout, compression, CORS or request-logging layers by default; add
-  them with your own `tower` layers. No OpenAPI document.
+- **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;
+  add them with your own `tower` layers. No OpenAPI document.
 - **Verification:** MySQL, S3, Azure and GCS compile but have not been run against real
   services.
 

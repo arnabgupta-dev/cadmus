@@ -358,14 +358,24 @@ fn panic_message(panic: &(dyn Any + Send)) -> &str {
         .unwrap_or("unknown panic")
 }
 
-/// Wraps the whole app: turns panics into `500`s and makes every error response match its
-/// area. Under the API path errors are always JSON, under the admin path they are pages, and
+/// Wraps the whole app: turns panics into `500`s, makes every error response match its area,
+/// and adds the protective headers to responses from the admin and the API. Under the API path errors are always JSON, under the admin path they are pages, and
 /// anywhere else they are left as the handler made them.
 pub(crate) async fn middleware(
     State(state): State<Arc<AdminState>>,
     request: Request,
     next: Next,
 ) -> Response {
+    let path = request.uri().path();
+    let ours = under(path, &state.api_base) || under(path, &state.base);
+    let mut response = respond(&state, request, next).await;
+    if ours {
+        crate::server::protect(&mut response);
+    }
+    response
+}
+
+async fn respond(state: &Arc<AdminState>, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
     let area = if under(&path, &state.api_base) {
         Area::Api
@@ -395,8 +405,8 @@ pub(crate) async fn middleware(
         (Area::Api, _) if !info.json => info.json(status),
         (Area::Admin, Some(headers)) => {
             // If the account cannot be read, the page is simply shown as to a visitor.
-            let session = Session::from_cookie(&headers, &state).await.ok().flatten();
-            info.page(status, &state, session.as_ref())
+            let session = Session::from_cookie(&headers, state).await.ok().flatten();
+            info.page(status, state, session.as_ref())
         }
         _ => return response,
     };

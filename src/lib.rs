@@ -24,6 +24,7 @@ mod handlers;
 mod limit;
 mod resource;
 mod seaorm;
+mod server;
 mod settings;
 mod storage;
 mod uploads;
@@ -134,15 +135,28 @@ impl Admin {
     }
 
     pub(crate) fn routes(&self) -> axum::Router {
-        let mut router =
-            handlers::router(Arc::clone(&self.state)).merge(api::router(Arc::clone(&self.state)));
-        if self.state.accounts.is_some() {
-            router = router.merge(accounts::router(Arc::clone(&self.state)));
-        }
-        match &self.state.uploads {
-            Some(service) => router.merge(uploads::router(Arc::clone(&self.state), service)),
+        let router = self.page_routes();
+        match self.upload_routes() {
+            Some(uploads) => router.merge(uploads),
             None => router,
         }
+    }
+
+    /// Everything except file transfers: requests that should be answered quickly.
+    pub(crate) fn page_routes(&self) -> axum::Router {
+        let router =
+            handlers::router(Arc::clone(&self.state)).merge(api::router(Arc::clone(&self.state)));
+        if self.state.accounts.is_some() {
+            router.merge(accounts::router(Arc::clone(&self.state)))
+        } else {
+            router
+        }
+    }
+
+    /// File uploads and downloads, which take as long as the files are big.
+    pub(crate) fn upload_routes(&self) -> Option<axum::Router> {
+        let service = self.state.uploads.as_ref()?;
+        Some(uploads::router(Arc::clone(&self.state), service))
     }
 }
 

@@ -246,6 +246,10 @@ ADMIN_COOKIE_SECURE=false
 ADMIN_SITE_TITLE=Administration
 # Enable file uploads: file:///absolute/path, s3://bucket/prefix, az://container/prefix
 # STORAGE_URL=
+# Let a browser app on another origin call the API (comma-separated, or *).
+# CORS_ALLOWED_ORIGINS=https://app.example.com
+# Behind a reverse proxy, name the header it puts the client address in.
+# ADMIN_CLIENT_IP_HEADER=X-Forwarded-For
 ",
         url = database.url(name)
     );
