@@ -81,6 +81,7 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 primary_key,
                 auto: primary_key && auto,
                 editable: kind != FieldKind::Other,
+                has_default: def.get_column_default().is_some(),
                 reference,
             });
             columns.push(column);

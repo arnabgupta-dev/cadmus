@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::header::LOCATION;
+use axum::http::header::{CONTENT_TYPE, LOCATION};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -89,16 +89,41 @@ fn json_input(resource: &dyn Resource, body: &Bytes, creating: bool) -> ApiResul
 
 #[derive(Serialize)]
 struct TokenResponse {
+    /// The name OAuth 2 clients, such as the documentation's login dialog, look for.
+    access_token: String,
     token: String,
     token_type: &'static str,
     expires_in: u64,
 }
 
 async fn token(State(state): Shared, parts: Parts, body: Bytes) -> ApiResult<Json<TokenResponse>> {
-    let credentials: Credentials = serde_json::from_slice(&body)
-        .map_err(|_| bad_request("expected JSON with `username` and `password`"))?;
+    // A form is what OAuth 2 password logins send; everything else is taken as JSON.
+    let is_form = parts
+        .headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/x-www-form-urlencoded"));
+    let credentials: Credentials = if is_form {
+        let field = |name: &str| {
+            url::form_urlencoded::parse(&body)
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.into_owned())
+        };
+        match (field("username"), field("password")) {
+            (Some(username), Some(password)) => Credentials {
+                username,
+                password,
+                totp: field("totp").filter(|code| !code.is_empty()),
+            },
+            _ => return Err(bad_request("expected `username` and `password`")),
+        }
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|_| bad_request("expected JSON with `username` and `password`"))?
+    };
     let token = auth::login(&state, &credentials, state.auth.client_ip(&parts)).await?;
     Ok(Json(TokenResponse {
+        access_token: token.clone(),
         token,
         token_type: "Bearer",
         expires_in: state.auth.token_ttl_secs,

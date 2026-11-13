@@ -17,7 +17,7 @@ hera new blog && cd blog
 hera generate model Post title:string body:text published:bool views:int rating:float?
 cargo run -- migrate                # creates/updates tables from the models
 cargo run -- createsuperuser --username admin
-cargo run -- serve                  # http://127.0.0.1:3000/admin
+cargo run -- serve                  # admin at /admin, API docs at /api/docs
 ```
 
 Generated projects depend on this repository through a Cargo `git` dependency. From a local
@@ -91,6 +91,7 @@ The REST API is unchanged: it reads and writes the id (`author_id`).
 | `promote --username U` | Make an existing account an active superuser |
 | `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
 | `changepassword --username U [--password-stdin]` | Change a password |
+| `openapi` | Print the OpenAPI document as JSON |
 | `routes` | List generated URLs |
 | `check` | Validate configuration without serving |
 
@@ -113,6 +114,44 @@ For every model, under `/api`:
 Errors are JSON: `{"error": {"code", "message", "field"}}` with `400`, `401`, `403`, `404`,
 `409` (unique/foreign-key conflict), `413`, `422` or `429` (too many login attempts). Unknown, hidden and read-only fields in a
 body are rejected rather than ignored.
+
+## API documentation
+
+Every project documents its own API, as FastAPI does:
+
+| URL | What it is |
+|---|---|
+| `/api/docs` | Swagger UI: browse the endpoints and try them out |
+| `/api/redoc` | ReDoc: the same as a reference page |
+| `/api/openapi.json` | The OpenAPI 3.0 document, for generating clients |
+
+The document is generated from the registered models: every endpoint, the fields that are
+returned, the fields that may be sent and which of them are required, the permission each
+operation needs, and file uploads if they are enabled. Hidden fields do not appear, and
+read-only fields appear only in what is returned.
+
+To call the API from Swagger UI, press **Authorize** and log in with an account's username
+and password. Accounts with two-factor authentication get a token from `POST /api/auth/token`
+and paste it under `bearer` instead.
+
+**Protecting it.** The documentation is public by default; it reveals model and field names,
+never data. To ask for a username and password first (the browser's own prompt), set both:
+
+```sh
+DOCS_USERNAME=docs
+DOCS_PASSWORD=choose-something-long
+```
+
+These only open the documentation; they are not an account and cannot call the API. Guesses
+are limited like logins. `DOCS_ENABLED=false` removes the documentation entirely.
+
+- **Without the server:** `cargo run -- openapi > openapi.json` prints the document.
+- **Your own routes** are not discovered. Add them with
+  `App::docs(DocsConfig::from_env()?.extend(|doc| { doc["paths"]["/health"] = json!({...}); }))`.
+- **Title and version:** `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` (Markdown).
+- **The viewers load from a CDN** (jsDelivr, pinned versions), so the two pages need internet
+  access in the browser. To host them yourself, set `DOCS_SWAGGER_JS_URL`,
+  `DOCS_SWAGGER_CSS_URL` and `DOCS_REDOC_JS_URL`. `openapi.json` needs nothing external.
 
 ## Errors
 
@@ -154,7 +193,8 @@ Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); 
   once logged in is described under [Permissions](#permissions).
 - Optional two-factor authentication with any authenticator app (TOTP);
   `ADMIN_TOTP_REQUIRED=true` makes it mandatory. See below.
-- `POST /api/auth/token` with `{"username", "password", "totp"}` returns a JWT.
+- `POST /api/auth/token` with `{"username", "password", "totp"}` (JSON or a form) returns a
+  JWT as `access_token`.
 - The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
   `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries a CSRF token.
 
@@ -301,6 +341,10 @@ handlers.
 | `ADMIN_CLIENT_IP_HEADER` | Header carrying the client address behind a proxy | connection address |
 | `ADMIN_COOKIE_SECURE` | `false` only for local plain HTTP | `true` |
 | `STORAGE_URL` | Enables uploads | off |
+| `DOCS_ENABLED` | Serve the API documentation | `true` |
+| `DOCS_USERNAME`, `DOCS_PASSWORD` | Ask for these before showing the documentation | open |
+| `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` | What the documentation is headed with | site title + "API", `0.1.0` |
+| `DOCS_SWAGGER_JS_URL`, `DOCS_SWAGGER_CSS_URL`, `DOCS_REDOC_JS_URL` | Where the documentation pages load their viewer from | jsDelivr |
 | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits | 1 GiB, 8 MiB |
 | `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR` | Admin look and feel | see `UiSettings::from_env` |
 
@@ -338,7 +382,9 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 - **Uploads:** completing a resumable upload copies the chunks once inside the storage backend
   (no direct-to-S3 multipart yet); abandoned sessions are not cleaned up automatically.
 - **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;
-  add them with your own `tower` layers. No OpenAPI document.
+  add them with your own `tower` layers.
+- **API documentation:** your own routes are not discovered automatically, and the viewers are
+  loaded from a CDN rather than bundled.
 - **Verification:** MySQL, S3, Azure and GCS compile but have not been run against real
   services.
 

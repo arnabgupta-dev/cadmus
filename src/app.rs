@@ -14,6 +14,7 @@ use sea_orm::{
 
 use crate::auth::totp_uri;
 use crate::auth::{AuthConfig, UserStore};
+use crate::docs::DocsConfig;
 use crate::error::AdminError;
 use crate::resource::{ModelOptions, Resource};
 use crate::seaorm::SeaOrmResource;
@@ -59,6 +60,7 @@ pub struct App {
     routes: Router,
     request_timeout: Option<Duration>,
     cors_origins: Vec<String>,
+    docs: DocsConfig,
 }
 
 impl App {
@@ -80,6 +82,7 @@ impl App {
             routes: Router::new(),
             request_timeout: Some(Duration::from_secs(30)),
             cors_origins: Vec::new(),
+            docs: DocsConfig::new(),
         }
     }
 
@@ -99,7 +102,8 @@ impl App {
     /// | `REQUEST_TIMEOUT_SECS` | Longest a request may take; `0` for no limit (default 30) |
     /// | `CORS_ALLOWED_ORIGINS` | Origins whose pages may call the app from a browser, comma-separated, or `*` (default: none) |
     ///
-    /// plus everything read by [`AuthConfig::from_env`] and [`UiSettings::from_env`].
+    /// plus everything read by [`AuthConfig::from_env`], [`UiSettings::from_env`] and
+    /// [`DocsConfig::from_env`].
     ///
     /// # Errors
     /// Returns [`AdminError::Config`] for missing or invalid variables and [`AdminError::Db`] if
@@ -127,6 +131,7 @@ impl App {
         if let Ok(text) = std::env::var("CORS_ALLOWED_ORIGINS") {
             app.cors_origins = server::parse_origins(&text)?;
         }
+        app.docs = DocsConfig::from_env()?;
         Ok(app)
     }
 
@@ -170,6 +175,14 @@ impl App {
     pub fn users(mut self, users: impl UserStore + 'static) -> Self {
         self.users = Arc::new(users);
         self.builtin_users = false;
+        self
+    }
+
+    /// Settings for the API documentation served under the API path at `docs`, `redoc` and
+    /// `openapi.json`. By default it is on and open to everyone.
+    #[must_use]
+    pub fn docs(mut self, docs: DocsConfig) -> Self {
+        self.docs = docs;
         self
     }
 
@@ -251,14 +264,24 @@ impl App {
         Ok(())
     }
 
-    /// The complete router: admin, REST API and your own routes.
+    /// The OpenAPI description of the REST API as JSON, as served at `openapi.json`. Use it
+    /// to generate clients without starting the server.
     ///
     /// # Errors
-    /// Returns [`AdminError::Config`] if the configuration is inconsistent (see
-    /// [`crate::AdminBuilder::build`]).
-    pub fn router(&self) -> Result<Router, AdminError> {
+    /// Returns [`AdminError::Config`] if the configuration is inconsistent, or if the
+    /// documentation is turned off.
+    pub fn openapi(&self) -> Result<serde_json::Value, AdminError> {
+        self.admin()?
+            .openapi()
+            .cloned()
+            .ok_or_else(|| AdminError::Config("the API documentation is turned off".into()))
+    }
+
+    /// The admin and API as configured so far.
+    fn admin(&self) -> Result<Admin, AdminError> {
         let mut builder = Admin::builder()
             .settings(self.settings.clone())
+            .docs(self.docs.clone())
             .auth_shared(self.auth.clone(), Arc::clone(&self.users));
         if let Some(base) = &self.admin_base {
             builder = builder.base_path(base.clone());
@@ -275,7 +298,16 @@ impl App {
         for resource in &self.resources {
             builder = builder.register_shared(Arc::clone(resource));
         }
-        let admin = builder.build()?;
+        builder.build()
+    }
+
+    /// The complete router: admin, REST API and your own routes.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] if the configuration is inconsistent (see
+    /// [`crate::AdminBuilder::build`]).
+    pub fn router(&self) -> Result<Router, AdminError> {
+        let admin = self.admin()?;
 
         // From the inside out. The time limit covers everything except file transfers.
         let mut router = admin.page_routes().merge(self.routes.clone());
@@ -318,8 +350,8 @@ impl App {
     }
 
     /// Runs the management command given on the command line
-    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `totp`, `routes`,
-    /// `check`).
+    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `totp`, `openapi`,
+    /// `routes`, `check`).
     ///
     /// # Errors
     /// Returns whatever the chosen command fails with.
@@ -382,11 +414,23 @@ impl App {
                 println!("`{username}` is now a superuser");
                 Ok(())
             }
+            Command::Openapi => {
+                let document = self.openapi()?;
+                let text = serde_json::to_string_pretty(&document)
+                    .map_err(|e| AdminError::Config(format!("cannot print the document: {e}")))?;
+                println!("{text}");
+                Ok(())
+            }
             Command::Routes => {
                 drop(self.router()?);
                 let admin = base_path(self.admin_base.clone(), "/admin")?;
                 let api = base_path(self.api_base.clone(), "/api")?;
                 println!("POST   {api}/auth/token");
+                if self.docs.is_enabled() {
+                    println!("GET    {api}/docs");
+                    println!("GET    {api}/redoc");
+                    println!("GET    {api}/openapi.json");
+                }
                 for resource in &self.resources {
                     let slug = resource.slug();
                     println!("GET    {admin}/{slug}");
@@ -519,6 +563,8 @@ enum Command {
         #[arg(long)]
         username: String,
     },
+    /// Print the OpenAPI description of the REST API as JSON.
+    Openapi,
     /// List the generated URLs.
     Routes,
     /// Validate the configuration without starting the server.

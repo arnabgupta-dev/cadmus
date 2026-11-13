@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<link rel="stylesheet" href="{{ swagger_css }}">
+<style>body { margin: 0; }</style>
+</head>
+<body>
+<div id="swagger-ui" data-url="{{ openapi_url }}"></div>
+<script src="{{ swagger_js }}"></script>
+<script>
+window.ui = SwaggerUIBundle({
+  url: document.getElementById("swagger-ui").dataset.url,
+  dom_id: "#swagger-ui",
+  deepLinking: true,
+  // Stay logged in across page reloads, as long as the tab is open.
+  persistAuthorization: true,
+});
+</script>
+</body>
+</html>

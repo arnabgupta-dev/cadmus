@@ -69,6 +69,8 @@ pub struct Field {
     pub auto: bool,
     /// Whether the admin can write this column.
     pub editable: bool,
+    /// Whether the database fills the column in when a new row leaves it out.
+    pub has_default: bool,
     /// The row of another model this column points to, if it is a foreign key.
     pub reference: Option<Reference>,
 }

@@ -248,6 +248,10 @@ ADMIN_SITE_TITLE=Administration
 # STORAGE_URL=
 # Let a browser app on another origin call the API (comma-separated, or *).
 # CORS_ALLOWED_ORIGINS=https://app.example.com
+# API documentation is at /api/docs. Ask for a password before showing it, or turn it off.
+# DOCS_USERNAME=docs
+# DOCS_PASSWORD=
+# DOCS_ENABLED=false
 # Behind a reverse proxy, name the header it puts the client address in.
 # ADMIN_CLIENT_IP_HEADER=X-Forwarded-For
 ",
@@ -272,7 +276,7 @@ ADMIN_SITE_TITLE=Administration
     println!("  hera generate model Post title:string body:text published:bool");
     println!("  cargo run -- migrate");
     println!("  cargo run -- createsuperuser --username admin");
-    println!("  cargo run -- serve");
+    println!("  cargo run -- serve      # admin at /admin, API docs at /api/docs");
     Ok(())
 }
 

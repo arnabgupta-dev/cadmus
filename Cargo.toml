@@ -24,6 +24,7 @@ async-trait = "0.1.92"
 axum = { version = "0.8", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base32 = "0.5.1"
+base64 = "0.22"
 bytes = "1.12.1"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
@@ -38,7 +39,8 @@ rand = "0.10.3"
 rpassword = "7.5.5"
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "schema-sync"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# `preserve_order` keeps columns and API operations in the order they are declared.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1 = "0.11.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["net", "signal", "rt", "time"] }

@@ -19,6 +19,7 @@ mod accounts;
 mod api;
 mod app;
 mod auth;
+mod docs;
 mod error;
 mod handlers;
 mod limit;
@@ -38,6 +39,7 @@ pub use auth::{
     AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, totp_uri,
     verify_totp,
 };
+pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
 pub use resource::{
     Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
@@ -51,7 +53,7 @@ pub use users::{
 };
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 10] = [
+const TEMPLATES: [(&str, &str); 12] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
@@ -74,10 +76,28 @@ const TEMPLATES: [(&str, &str); 10] = [
         "two_factor.html",
         include_str!("../templates/two_factor.html"),
     ),
+    (
+        "docs_swagger.html",
+        include_str!("../templates/docs_swagger.html"),
+    ),
+    (
+        "docs_redoc.html",
+        include_str!("../templates/docs_redoc.html"),
+    ),
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
-const RESERVED_SLUGS: [&str; 6] = ["api", "auth", "files", "login", "logout", "uploads"];
+const RESERVED_SLUGS: [&str; 9] = [
+    "api",
+    "auth",
+    "docs",
+    "files",
+    "login",
+    "logout",
+    "openapi.json",
+    "redoc",
+    "uploads",
+];
 
 pub(crate) struct AdminState {
     pub(crate) base: String,
@@ -90,6 +110,8 @@ pub(crate) struct AdminState {
     pub(crate) uploads: Option<Uploads>,
     /// Where the built-in account tables live; `None` when accounts come from elsewhere.
     pub(crate) accounts: Option<sea_orm::DatabaseConnection>,
+    /// The API documentation, unless it is turned off.
+    pub(crate) docs: Option<docs::Docs>,
     pub(crate) templates: minijinja::Environment<'static>,
 }
 
@@ -142,10 +164,20 @@ impl Admin {
         }
     }
 
+    /// The OpenAPI description of the REST API, as served at `openapi.json`; `None` if the
+    /// documentation is turned off.
+    #[must_use]
+    pub fn openapi(&self) -> Option<&serde_json::Value> {
+        self.state.docs.as_ref().map(docs::Docs::document)
+    }
+
     /// Everything except file transfers: requests that should be answered quickly.
     pub(crate) fn page_routes(&self) -> axum::Router {
-        let router =
+        let mut router =
             handlers::router(Arc::clone(&self.state)).merge(api::router(Arc::clone(&self.state)));
+        if self.state.docs.is_some() {
+            router = router.merge(docs::router(Arc::clone(&self.state)));
+        }
         if self.state.accounts.is_some() {
             router.merge(accounts::router(Arc::clone(&self.state)))
         } else {
@@ -167,6 +199,7 @@ pub struct AdminBuilder {
     api_base: Option<String>,
     uploads: Option<Uploads>,
     accounts: Option<sea_orm::DatabaseConnection>,
+    docs: DocsConfig,
     settings: UiSettings,
     auth: Option<(AuthConfig, Arc<dyn UserStore>)>,
     resources: Vec<Arc<dyn Resource>>,
@@ -192,6 +225,13 @@ impl AdminBuilder {
     #[must_use]
     pub fn accounts(mut self, db: sea_orm::DatabaseConnection) -> Self {
         self.accounts = Some(db);
+        self
+    }
+
+    /// Settings for the API documentation (on and open to everyone by default).
+    #[must_use]
+    pub fn docs(mut self, docs: DocsConfig) -> Self {
+        self.docs = docs;
         self
     }
 
@@ -280,6 +320,16 @@ impl AdminBuilder {
             templates.add_template_owned(name, source)?;
         }
 
+        let docs = self.docs.is_enabled().then(|| {
+            docs::Docs::new(
+                self.docs,
+                &api_base,
+                &self.settings,
+                &self.resources,
+                self.uploads.is_some(),
+            )
+        });
+
         Ok(Admin {
             state: Arc::new(AdminState {
                 base,
@@ -291,6 +341,7 @@ impl AdminBuilder {
                 resources: self.resources,
                 uploads: self.uploads,
                 accounts: self.accounts,
+                docs,
                 templates,
             }),
         })
