@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::AdminState;
 use crate::access::{Access, Action};
-use crate::auth::Session;
+use crate::auth::{self, Session};
 use crate::error::AdminError;
 use crate::handlers::render;
 use crate::uploads::FILES;
@@ -44,6 +44,11 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             get(group_edit).post(group_update),
         )
         .route(&format!("{b}/groups/{{id}}/delete"), post(group_delete))
+        .route(
+            &format!("{b}/two-factor"),
+            get(two_factor_page).post(two_factor_enable),
+        )
+        .route(&format!("{b}/two-factor/disable"), post(two_factor_disable))
         .with_state(state)
 }
 
@@ -203,6 +208,7 @@ async fn user_list(State(state): Shared, session: Session) -> Result<Html<String
                 yes_no(a.is_active),
                 yes_no(a.is_staff),
                 yes_no(a.is_superuser),
+                yes_no(a.totp_secret.is_some()),
             ],
         })
         .collect();
@@ -211,7 +217,7 @@ async fn user_list(State(state): Shared, session: Session) -> Result<Html<String
         &session,
         "users",
         "Users",
-        &["Username", "Active", "Staff", "Superuser"],
+        &["Username", "Active", "Staff", "Superuser", "Two-factor"],
         &rows,
     )
 }
@@ -229,6 +235,7 @@ struct UserView {
     is_active: bool,
     is_staff: bool,
     is_superuser: bool,
+    has_totp: bool,
     groups: Vec<i32>,
     grants: Access,
 }
@@ -240,17 +247,19 @@ impl UserView {
             is_active: true,
             is_staff: true,
             is_superuser: false,
+            has_totp: false,
             groups: Vec::new(),
             grants: Access::none(),
         }
     }
 
-    fn from_input(input: &AccountInput) -> Self {
+    fn from_input(input: &AccountInput, has_totp: bool) -> Self {
         Self {
             username: input.username.clone(),
             is_active: input.is_active,
             is_staff: input.is_staff,
             is_superuser: input.is_superuser,
+            has_totp,
             groups: input.groups.clone(),
             grants: as_access(&input.grants),
         }
@@ -283,6 +292,7 @@ async fn render_user(
             is_active => view.is_active,
             is_staff => view.is_staff,
             is_superuser => view.is_superuser,
+            has_totp => view.has_totp,
             groups => Value::from(Serde(&groups)),
             actions => action_names(),
             permissions => Value::from(Serde(permission_grid(state, &view.grants))),
@@ -304,6 +314,7 @@ fn user_input(state: &AdminState, form: &Submitted) -> AccountInput {
         is_superuser: form.checked("is_superuser"),
         groups: form.all("group").filter_map(|id| id.parse().ok()).collect(),
         grants: form.grants(state),
+        reset_totp: form.checked("reset_totp"),
     }
 }
 
@@ -340,6 +351,7 @@ async fn user_edit(
         is_active: account.is_active,
         is_staff: account.is_staff,
         is_superuser: account.is_superuser,
+        has_totp: account.totp_secret.is_some(),
         groups: users::user_groups(db, id).await?,
         grants: users::user_grants(db, id).await?,
     };
@@ -365,13 +377,20 @@ async fn is_self(state: &AdminState, session: &Session, id: i32) -> Result<bool,
     Ok(account.is_some_and(|a| a.username == session.username))
 }
 
+/// Whether the stored account `id` has two-factor authentication on.
+async fn has_totp(state: &AdminState, id: Option<i32>) -> Result<bool, AdminError> {
+    let Some(id) = id else { return Ok(false) };
+    let account = user::Entity::find_by_id(id).one(database(state)?).await?;
+    Ok(account.is_some_and(|a| a.totp_secret.is_some()))
+}
+
 async fn save_user(
     state: &AdminState,
     session: &Session,
     id: Option<i32>,
     input: AccountInput,
 ) -> Result<Response, AdminError> {
-    let view = UserView::from_input(&input);
+    let view = UserView::from_input(&input, has_totp(state, id).await?);
     // Nobody can lock themselves out, so there is always a superuser left to undo a mistake.
     let keeps_access = input.is_active && input.is_staff && input.is_superuser;
     let outcome = match id {
@@ -522,4 +541,133 @@ async fn group_delete(
     session.require_superuser()?;
     users::delete_group(database(&state)?, parse_id("group", &id)?).await?;
     Ok(Redirect::to(&format!("{}/auth/groups", state.base)))
+}
+
+// ---- two-factor authentication -----------------------------------------------------------
+
+/// The logged-in account's own row.
+async fn own_account(state: &AdminState, session: &Session) -> Result<user::Model, AdminError> {
+    users::find_account(database(state)?, &session.username)
+        .await?
+        .ok_or(AdminError::Unauthorized)
+}
+
+/// The setup page: a QR code for a secret that is only stored once a code proves it works.
+fn render_two_factor(
+    state: &AdminState,
+    session: &Session,
+    enabled: bool,
+    secret: Option<&str>,
+    error: Option<&str>,
+) -> Result<Html<String>, AdminError> {
+    let fresh;
+    let secret = match (enabled, secret) {
+        (true, _) => None,
+        (false, Some(submitted)) => Some(submitted),
+        (false, None) => {
+            fresh = auth::new_totp_secret();
+            Some(fresh.as_str())
+        }
+    };
+    let uri = secret.map(|s| auth::totp_uri(&state.settings.site_title, &session.username, s));
+    let qr = uri.as_deref().and_then(|uri| {
+        let code = qrcode::QrCode::new(uri).ok()?;
+        Some(
+            code.render::<qrcode::render::svg::Color<'_>>()
+                .min_dimensions(220, 220)
+                .build(),
+        )
+    });
+    render(
+        state,
+        "two_factor.html",
+        Some(session),
+        context! {
+            enabled,
+            required => state.auth.totp_required,
+            secret,
+            uri,
+            // Generated here from our own data, so it is safe to insert as markup.
+            qr => qr.map(Value::from_safe_string),
+            error,
+        },
+    )
+}
+
+async fn two_factor_page(
+    State(state): Shared,
+    session: Session,
+) -> Result<Html<String>, AdminError> {
+    let account = own_account(&state, &session).await?;
+    render_two_factor(&state, &session, account.totp_secret.is_some(), None, None)
+}
+
+async fn two_factor_enable(
+    State(state): Shared,
+    session: Session,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    let form = Submitted::parse(&body);
+    session.check_csrf(form.get("_csrf"))?;
+    let account = own_account(&state, &session).await?;
+    if account.totp_secret.is_some() {
+        return Err(AdminError::Conflict(
+            "two-factor authentication is already on".into(),
+        ));
+    }
+    let secret = form.get("secret").unwrap_or_default();
+    let again = |message: &str| -> Result<Response, AdminError> {
+        // Keep the same secret, so the code already scanned stays valid.
+        let kept = auth::totp_secret_is_strong(secret).then_some(secret);
+        let page = render_two_factor(&state, &session, false, kept, Some(message))?;
+        Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
+    };
+    if !auth::totp_secret_is_strong(secret) {
+        return again("That setup page was incomplete; scan the new code below.");
+    }
+    let password = form.get("password").unwrap_or_default();
+    if !auth::confirm_password(&state, &session.username, password).await? {
+        return again("The password is not correct.");
+    }
+    let code = form.get("code").unwrap_or_default();
+    let Some(step) = auth::totp_step_now(secret, code) else {
+        return again("That code is not correct. Check the time on your device and try again.");
+    };
+    users::store_totp(
+        database(&state)?,
+        &session.username,
+        Some(secret.to_owned()),
+        Some(step),
+    )
+    .await?;
+    tracing::info!(username = %session.username, "two-factor authentication enabled");
+    Ok(Redirect::to(&format!("{}/auth/two-factor", state.base)).into_response())
+}
+
+async fn two_factor_disable(
+    State(state): Shared,
+    session: Session,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    let form = Submitted::parse(&body);
+    session.check_csrf(form.get("_csrf"))?;
+    if state.auth.totp_required {
+        return Err(AdminError::Forbidden(
+            "this site requires two-factor authentication".into(),
+        ));
+    }
+    let password = form.get("password").unwrap_or_default();
+    if !auth::confirm_password(&state, &session.username, password).await? {
+        let page = render_two_factor(
+            &state,
+            &session,
+            true,
+            None,
+            Some("The password is not correct."),
+        )?;
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
+    }
+    users::store_totp(database(&state)?, &session.username, None, None).await?;
+    tracing::info!(username = %session.username, "two-factor authentication disabled");
+    Ok(Redirect::to(&format!("{}/auth/two-factor", state.base)).into_response())
 }

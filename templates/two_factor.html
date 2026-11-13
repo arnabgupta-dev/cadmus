@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Two-factor authentication · {{ site.site_title }}{% endblock %}
+{% block content %}
+<h1>Two-factor authentication</h1>
+<div class="panel" style="max-width: 560px;">
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if enabled %}
+  <p><strong>On.</strong> Logging in as {{ user }} needs a code from your authenticator app as well as your password.</p>
+  {% if required %}
+  <p class="muted">This site requires two-factor authentication, so it cannot be turned off here. If you lose your device, ask a superuser to reset it.</p>
+  {% else %}
+  <form method="post" action="{{ base }}/auth/two-factor/disable">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label for="f-password">Password</label>
+    <input id="f-password" name="password" type="password" autocomplete="current-password" required>
+    <div class="actions"><button class="danger" type="submit">Turn off</button></div>
+  </form>
+  {% endif %}
+  {% else %}
+  <p><strong>Off.</strong> Turn it on to require a code from an authenticator app (such as Google Authenticator, 1Password or Aegis) every time you log in.</p>
+  <p>1. Scan this code with the app:</p>
+  {% if qr %}<div class="qr">{{ qr }}</div>{% endif %}
+  <p class="muted">Or enter this key by hand: <code>{{ secret }}</code></p>
+  <p>2. Confirm with your password and the six-digit code the app shows:</p>
+  <form method="post" action="{{ base }}/auth/two-factor">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <input type="hidden" name="secret" value="{{ secret }}">
+    <label for="f-password">Password</label>
+    <input id="f-password" name="password" type="password" autocomplete="current-password" required>
+    <label for="f-code">Authenticator code</label>
+    <input id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required>
+    <div class="actions"><button type="submit">Turn on</button></div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

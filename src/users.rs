@@ -7,9 +7,10 @@
 
 use async_trait::async_trait;
 use sea_orm::schema::SchemaBuilder;
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    QueryOrder, Set, SqlErr, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait,
+    QueryFilter, QueryOrder, Set, SqlErr, TransactionTrait,
 };
 
 use crate::access::{Access, Action};
@@ -45,6 +46,9 @@ pub mod user {
         // The default lets `migrate` add the column to a table that already has accounts.
         #[sea_orm(default_value = false)]
         pub is_superuser: bool,
+        /// Time step of the last authenticator code this account logged in with; a code for
+        /// this step or an earlier one is refused, so each code works once.
+        pub totp_last_step: Option<i64>,
     }
 
     /// No relations.
@@ -195,6 +199,22 @@ impl UserStore for DbUserStore {
             }))
     }
 
+    /// One conditional update, so two logins racing with the same code cannot both win.
+    async fn accept_totp_step(&self, username: &str, step: u64) -> Result<bool, AdminError> {
+        let step = i64::try_from(step).unwrap_or(i64::MAX);
+        let updated = user::Entity::update_many()
+            .col_expr(user::Column::TotpLastStep, Expr::value(step))
+            .filter(user::Column::Username.eq(username))
+            .filter(
+                Condition::any()
+                    .add(user::Column::TotpLastStep.is_null())
+                    .add(user::Column::TotpLastStep.lt(step)),
+            )
+            .exec(&self.db)
+            .await?;
+        Ok(updated.rows_affected == 1)
+    }
+
     /// Read on every request, so a change to an account takes effect at once: a deactivated
     /// or deleted account is locked out even while its token is still valid.
     async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
@@ -222,6 +242,54 @@ impl UserStore for DbUserStore {
             shared.into_iter().map(|p| (p.model, p.action)),
         )))
     }
+}
+
+/// Turns two-factor authentication on for an account, replacing any earlier secret, and
+/// returns the new base32 secret to put into an authenticator app (see [`crate::totp_uri`]).
+///
+/// # Errors
+/// Returns [`AdminError::NotFound`] if there is no such account.
+pub async fn enable_totp(db: &DatabaseConnection, username: &str) -> Result<String, AdminError> {
+    let secret = crate::auth::new_totp_secret();
+    store_totp(db, username, Some(secret.clone()), None).await?;
+    Ok(secret)
+}
+
+/// Turns two-factor authentication off for an account, e.g. after its device was lost.
+///
+/// # Errors
+/// Returns [`AdminError::NotFound`] if there is no such account.
+pub async fn disable_totp(db: &DatabaseConnection, username: &str) -> Result<(), AdminError> {
+    store_totp(db, username, None, None).await
+}
+
+/// Sets or clears an account's TOTP secret. `used_step` is the step of the code that proved
+/// the secret works, which must not be accepted again at login.
+pub(crate) async fn store_totp(
+    db: &DatabaseConnection,
+    username: &str,
+    secret: Option<String>,
+    used_step: Option<u64>,
+) -> Result<(), AdminError> {
+    let account = find_account(db, username)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    let mut account: user::ActiveModel = account.into();
+    account.totp_secret = Set(secret);
+    account.totp_last_step = Set(used_step.and_then(|step| i64::try_from(step).ok()));
+    account.update(db).await?;
+    Ok(())
+}
+
+/// The account with this login name, whatever its status.
+pub(crate) async fn find_account(
+    db: &DatabaseConnection,
+    username: &str,
+) -> Result<Option<user::Model>, AdminError> {
+    Ok(user::Entity::find()
+        .filter(user::Column::Username.eq(username))
+        .one(db)
+        .await?)
 }
 
 /// Permissions given to an account directly (not through its groups).
@@ -284,6 +352,8 @@ pub(crate) struct AccountInput {
     pub(crate) is_superuser: bool,
     pub(crate) groups: Vec<i32>,
     pub(crate) grants: Vec<(String, Action)>,
+    /// Turns the account's two-factor authentication off.
+    pub(crate) reset_totp: bool,
 }
 
 /// Creates (`id == None`) or updates an account together with its groups and permissions.
@@ -315,6 +385,7 @@ pub(crate) async fn save_user(
             .into(),
         None => user::ActiveModel {
             totp_secret: Set(None),
+            totp_last_step: Set(None),
             ..Default::default()
         },
     };
@@ -324,6 +395,10 @@ pub(crate) async fn save_user(
     account.is_superuser = Set(input.is_superuser);
     if let Some(hash) = password_hash {
         account.password_hash = Set(hash);
+    }
+    if input.reset_totp {
+        account.totp_secret = Set(None);
+        account.totp_last_step = Set(None);
     }
     let saved = match id {
         Some(_) => account.update(&txn).await,
@@ -514,6 +589,7 @@ pub async fn create_superuser(
         is_superuser: true,
         groups: Vec::new(),
         grants: Vec::new(),
+        reset_totp: false,
     };
     save_user(db, None, input).await.map(|_| ())
 }

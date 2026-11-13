@@ -21,6 +21,7 @@ mod app;
 mod auth;
 mod error;
 mod handlers;
+mod limit;
 mod resource;
 mod seaorm;
 mod settings;
@@ -33,7 +34,8 @@ use std::sync::Arc;
 pub use access::{Access, Action};
 pub use app::App;
 pub use auth::{
-    AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, verify_totp,
+    AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, totp_uri,
+    verify_totp,
 };
 pub use error::{AdminError, ApiError, ApiResult};
 pub use resource::{
@@ -43,10 +45,12 @@ pub use seaorm::SeaOrmResource;
 pub use settings::{NavLink, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
-pub use users::{DbUserStore, change_password, create_superuser, group, promote, user};
+pub use users::{
+    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, promote, user,
+};
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 9] = [
+const TEMPLATES: [(&str, &str); 10] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
@@ -65,6 +69,10 @@ const TEMPLATES: [(&str, &str); 9] = [
         "group_form.html",
         include_str!("../templates/group_form.html"),
     ),
+    (
+        "two_factor.html",
+        include_str!("../templates/two_factor.html"),
+    ),
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
@@ -75,6 +83,7 @@ pub(crate) struct AdminState {
     pub(crate) api_base: String,
     pub(crate) settings: UiSettings,
     pub(crate) auth: AuthConfig,
+    pub(crate) limiter: limit::LoginLimiter,
     pub(crate) users: Arc<dyn UserStore>,
     pub(crate) resources: Vec<Arc<dyn Resource>>,
     pub(crate) uploads: Option<Uploads>,
@@ -262,6 +271,7 @@ impl AdminBuilder {
                 base,
                 api_base,
                 settings: self.settings,
+                limiter: limit::LoginLimiter::new(auth.login_max_attempts, auth.login_lockout_secs),
                 auth,
                 users,
                 resources: self.resources,

@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::request::Parts;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -83,6 +85,8 @@ pub(crate) fn render(
         models => Value::from(Serde(&models)),
         user => session.map(|s| s.username.as_str()),
         csrf => session.map(Session::csrf),
+        // Whether accounts are the built-in ones, which have a page for the user's own settings.
+        self_service => state.accounts.is_some() && session.is_some(),
         // Whether to link to the Users and Groups pages.
         manages_accounts => state.accounts.is_some()
             && session.is_some_and(|s| s.access.is_superuser()),
@@ -141,16 +145,10 @@ async fn login_page(State(state): Shared) -> Result<Html<String>, AdminError> {
 async fn login_submit(
     State(state): Shared,
     jar: CookieJar,
+    parts: Parts,
     Form(form): Form<auth::Credentials>,
 ) -> Result<Response, AdminError> {
-    let attempt = auth::login(
-        &state.auth,
-        &state.users,
-        &form.username,
-        &form.password,
-        form.totp.as_deref(),
-    )
-    .await;
+    let attempt = auth::login(&state, &form, state.auth.client_ip(&parts)).await;
     match attempt {
         Ok(token) => {
             let cookie = Cookie::build((COOKIE, token))
@@ -173,6 +171,23 @@ async fn login_submit(
                 },
             )?;
             Ok((StatusCode::UNAUTHORIZED, page).into_response())
+        }
+        Err(AdminError::RateLimited { retry_after_secs }) => {
+            let minutes = retry_after_secs.div_ceil(60);
+            let page = render(
+                &state,
+                "login.html",
+                None,
+                context! {
+                    totp_required => state.auth.totp_required,
+                    error => format!(
+                        "Too many attempts. Try again in {minutes} minute{}.",
+                        if minutes == 1 { "" } else { "s" }
+                    ),
+                },
+            )?;
+            let retry = [(RETRY_AFTER, retry_after_secs.to_string())];
+            Ok((StatusCode::TOO_MANY_REQUESTS, retry, page).into_response())
         }
         Err(other) => Err(other),
     }

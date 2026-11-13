@@ -11,6 +11,7 @@ use sea_orm::{
     ActiveModelBehavior, ConnectOptions, Database, DatabaseConnection, EntityTrait, IntoActiveModel,
 };
 
+use crate::auth::totp_uri;
 use crate::auth::{AuthConfig, UserStore};
 use crate::error::AdminError;
 use crate::resource::{ModelOptions, Resource};
@@ -18,7 +19,9 @@ use crate::seaorm::SeaOrmResource;
 use crate::settings::UiSettings;
 use crate::storage::Storage;
 use crate::uploads::Uploads;
-use crate::users::{DbUserStore, change_password, create_superuser, promote};
+use crate::users::{
+    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, promote,
+};
 use crate::{Admin, base_path};
 
 type SchemaStep = Box<dyn Fn(SchemaBuilder) -> SchemaBuilder + Send + Sync>;
@@ -236,7 +239,9 @@ impl App {
         let router = self.router()?;
         let listener = tokio::net::TcpListener::bind(&self.bind).await?;
         println!("listening on http://{}", listener.local_addr()?);
-        axum::serve(listener, router)
+        // Connection addresses are what the login limiter counts attempts by.
+        let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        axum::serve(listener, service)
             .with_graceful_shutdown(async {
                 // If the signal handler cannot be installed, keep serving rather than exit.
                 if tokio::signal::ctrl_c().await.is_err() {
@@ -248,7 +253,8 @@ impl App {
     }
 
     /// Runs the management command given on the command line
-    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `routes`, `check`).
+    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `totp`, `routes`,
+    /// `check`).
     ///
     /// # Errors
     /// Returns whatever the chosen command fails with.
@@ -281,6 +287,29 @@ impl App {
                 let password = read_password(password_stdin)?;
                 change_password(&self.db, &username, &password).await?;
                 println!("password changed for `{username}`");
+                Ok(())
+            }
+            Command::Totp { username, disable } => {
+                if disable {
+                    disable_totp(&self.db, &username).await?;
+                    println!("two-factor authentication is off for `{username}`");
+                    return Ok(());
+                }
+                let secret = enable_totp(&self.db, &username).await?;
+                let uri = totp_uri(&self.settings.site_title, &username, &secret);
+                if let Ok(code) = qrcode::QrCode::new(&uri) {
+                    let picture = code
+                        .render::<qrcode::render::unicode::Dense1x2>()
+                        .quiet_zone(true)
+                        .build();
+                    println!("{picture}");
+                }
+                println!("two-factor authentication is on for `{username}`");
+                println!(
+                    "scan the code above with an authenticator app, or enter the key by hand:"
+                );
+                println!("  key: {secret}");
+                println!("  uri: {uri}");
                 Ok(())
             }
             Command::Promote { username } => {
@@ -409,6 +438,15 @@ enum Command {
         /// Read the password from standard input instead of prompting.
         #[arg(long)]
         password_stdin: bool,
+    },
+    /// Turn two-factor authentication on for an account and print the code to scan.
+    Totp {
+        /// Login name.
+        #[arg(long)]
+        username: String,
+        /// Turn it off instead, e.g. after a device was lost.
+        #[arg(long)]
+        disable: bool,
     },
     /// Make an existing account an active superuser.
     Promote {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::header::LOCATION;
+use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -93,17 +94,10 @@ struct TokenResponse {
     expires_in: u64,
 }
 
-async fn token(State(state): Shared, body: Bytes) -> ApiResult<Json<TokenResponse>> {
+async fn token(State(state): Shared, parts: Parts, body: Bytes) -> ApiResult<Json<TokenResponse>> {
     let credentials: Credentials = serde_json::from_slice(&body)
         .map_err(|_| bad_request("expected JSON with `username` and `password`"))?;
-    let token = auth::login(
-        &state.auth,
-        &state.users,
-        &credentials.username,
-        &credentials.password,
-        credentials.totp.as_deref(),
-    )
-    .await?;
+    let token = auth::login(&state, &credentials, state.auth.client_ip(&parts)).await?;
     Ok(Json(TokenResponse {
         token,
         token_type: "Bearer",

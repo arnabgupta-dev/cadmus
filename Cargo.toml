@@ -33,6 +33,7 @@ hmac = "0.13.0"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
 minijinja = { version = "3", features = ["serde", "urlencode"] }
 object_store = "0.14.2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.10.3"
 rpassword = "7.5.5"
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "schema-sync"] }

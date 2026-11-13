@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::header::{ALLOW, CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::header::{ALLOW, CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -68,6 +68,12 @@ pub enum AdminError {
     /// Template rendering error.
     #[error(transparent)]
     Template(#[from] minijinja::Error),
+    /// Too many login attempts; try again after the given time.
+    #[error("too many attempts; try again in {retry_after_secs} seconds")]
+    RateLimited {
+        /// Seconds until another attempt is allowed.
+        retry_after_secs: u64,
+    },
     /// An error defined by your application; create it with [`AdminError::custom`].
     #[error("{message}")]
     Custom {
@@ -120,6 +126,15 @@ impl AdminError {
             Self::TooLarge(message) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, "too_large", message.clone())
             }
+            Self::RateLimited { retry_after_secs } => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorInfo {
+                        retry_after: Some(*retry_after_secs),
+                        ..ErrorInfo::new("rate_limited", &self.to_string())
+                    },
+                );
+            }
             Self::Custom {
                 status,
                 code,
@@ -131,6 +146,7 @@ impl AdminError {
                         code: code.clone(),
                         message: message.clone(),
                         field: None,
+                        retry_after: None,
                         json: false,
                     },
                 );
@@ -167,6 +183,7 @@ impl AdminError {
                 code: code.to_owned(),
                 message,
                 field,
+                retry_after: None,
                 json: false,
             },
         )
@@ -231,6 +248,8 @@ struct ErrorInfo {
     code: String,
     message: String,
     field: Option<String>,
+    /// Seconds for the `Retry-After` header.
+    retry_after: Option<u64>,
     /// Whether the response body is already JSON.
     json: bool,
 }
@@ -241,8 +260,20 @@ impl ErrorInfo {
             code: code.to_owned(),
             message: message.to_owned(),
             field: None,
+            retry_after: None,
             json: false,
         }
+    }
+
+    /// Adds the headers that go with this error whatever its format.
+    fn finish(self, mut response: Response) -> Response {
+        if let Some(secs) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(secs));
+        }
+        response.extensions_mut().insert(self);
+        response
     }
 
     fn internal() -> Self {
@@ -264,9 +295,8 @@ impl ErrorInfo {
     }
 
     fn text(self, status: StatusCode) -> Response {
-        let mut response = (status, self.message.clone()).into_response();
-        response.extensions_mut().insert(self);
-        response
+        let response = (status, self.message.clone()).into_response();
+        self.finish(response)
     }
 
     fn json(mut self, status: StatusCode) -> Response {
@@ -280,8 +310,7 @@ impl ErrorInfo {
                 .headers_mut()
                 .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         }
-        response.extensions_mut().insert(self);
-        response
+        self.finish(response)
     }
 
     /// The error as an admin page; plain text if the page itself cannot be rendered.
@@ -292,7 +321,15 @@ impl ErrorInfo {
             message => &self.message,
         };
         match crate::handlers::render(state, "error.html", session, page) {
-            Ok(html) => (status, html).into_response(),
+            Ok(html) => {
+                let mut response = (status, html).into_response();
+                if let Some(secs) = self.retry_after {
+                    response
+                        .headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from(secs));
+                }
+                response
+            }
             Err(error) => {
                 tracing::error!(%error, "could not render the error page");
                 self.text(status)

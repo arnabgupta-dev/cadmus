@@ -61,6 +61,7 @@ app.model::<post::Entity>(
 | `migrate` | Create missing tables, columns and unique keys for all models |
 | `createsuperuser --username U [--password-stdin]` | Create a superuser |
 | `promote --username U` | Make an existing account an active superuser |
+| `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
 | `changepassword --username U [--password-stdin]` | Change a password |
 | `routes` | List generated URLs |
 | `check` | Validate configuration without serving |
@@ -82,7 +83,7 @@ For every model, under `/api`:
 | `DELETE /api/{model}/{id}` | `204` |
 
 Errors are JSON: `{"error": {"code", "message", "field"}}` with `400`, `401`, `403`, `404`,
-`409` (unique/foreign-key conflict), `413` or `422`. Unknown, hidden and read-only fields in a
+`409` (unique/foreign-key conflict), `413`, `422` or `429` (too many login attempts). Unknown, hidden and read-only fields in a
 body are rejected rather than ignored.
 
 ## Errors
@@ -123,10 +124,41 @@ Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); 
 
 - Username + password (Argon2id, verified off the async executor). What an account may do
   once logged in is described under [Permissions](#permissions).
-- TOTP second factor for accounts with a secret; `ADMIN_TOTP_REQUIRED=true` makes it mandatory.
+- Optional two-factor authentication with any authenticator app (TOTP);
+  `ADMIN_TOTP_REQUIRED=true` makes it mandatory. See below.
 - `POST /api/auth/token` with `{"username", "password", "totp"}` returns a JWT.
 - The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
   `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries a CSRF token.
+
+### Two-factor authentication
+
+Each user turns it on for themselves: click your name in the admin header, scan the QR code
+with an authenticator app, and confirm with your password and a code. From then on, logging
+in (the form's code field, or `"totp"` in the token request) needs the current code.
+
+- Each code works once, so a code that was seen or intercepted cannot be reused.
+- Turning it on or off asks for the password again.
+- Lost device: a superuser ticks "Turn it off" on the user's page, or run
+  `cargo run -- totp --username U --disable`.
+- With `ADMIN_TOTP_REQUIRED=true` nobody can log in without it, so set up the first account
+  from the terminal: `cargo run -- totp --username U` prints the QR code. Users then cannot
+  turn it off themselves.
+
+### Login attempt limits
+
+After 5 login attempts on one account within 5 minutes, further attempts on that account get
+`429 Too Many Requests` with a `Retry-After` header until the 5 minutes are over, whether or
+not the password is right. A successful login clears the count. One client address gets four
+times as many attempts across all accounts. Change the numbers with
+`ADMIN_LOGIN_MAX_ATTEMPTS` (`0` turns the limit off) and `ADMIN_LOGIN_LOCKOUT_SECS`.
+
+- **Behind a reverse proxy**, every request appears to come from the proxy. Set
+  `ADMIN_CLIENT_IP_HEADER` to the header your proxy sets (e.g. `X-Forwarded-For`), but only
+  if the proxy always sets it; otherwise clients could choose their own address.
+- The counts are kept in memory, per process: several instances each count separately, and a
+  restart clears them.
+- Someone who knows a username can keep that account locked by guessing. That is the usual
+  trade-off of per-account limits; lower `ADMIN_LOGIN_LOCKOUT_SECS` if it becomes a problem.
 
 ## Permissions
 
@@ -205,6 +237,9 @@ handlers.
 | `DB_MAX_CONNECTIONS`, `DB_MIN_CONNECTIONS`, `DB_ACQUIRE_TIMEOUT_SECS` | Connection pool | driver defaults |
 | `ADMIN_JWT_TTL_SECS` | Token lifetime | `3600` |
 | `ADMIN_TOTP_REQUIRED` | Refuse accounts without TOTP | `false` |
+| `ADMIN_LOGIN_MAX_ATTEMPTS` | Login attempts per account per lockout period; `0` disables | `5` |
+| `ADMIN_LOGIN_LOCKOUT_SECS` | Length of the lockout period | `300` |
+| `ADMIN_CLIENT_IP_HEADER` | Header carrying the client address behind a proxy | connection address |
 | `ADMIN_COOKIE_SECURE` | `false` only for local plain HTTP | `true` |
 | `STORAGE_URL` | Enables uploads | off |
 | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits | 1 GiB, 8 MiB |
@@ -232,9 +267,10 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** no OIDC/OAuth login, API keys, per-record (row-level) permissions, login rate
-  limiting or TOTP replay protection. No command or page to enrol a TOTP secret. Accounts and
-  groups are managed in the admin only; there is no REST API for them.
+- **Auth:** no OIDC/OAuth login, API keys, per-record (row-level) permissions, recovery codes
+  for two-factor authentication, or a page for users to change their own password. Login
+  limits are per process, not shared between instances. Accounts and groups are managed in
+  the admin only; there is no REST API for them.
 - **Admin:** uploaded files are not editable in the admin; no relation widgets, filters or
   bulk actions; no file-upload field on model forms.
 - **Models:** single-column primary keys only; UUID, decimal, enum and array columns are

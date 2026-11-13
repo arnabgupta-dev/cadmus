@@ -1,17 +1,19 @@
 //! Authentication: password + optional TOTP second factor, issuing a signed JWT that is
 //! accepted either as an `HttpOnly` cookie (browser) or a `Bearer` token (API clients).
 
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
-use axum::extract::FromRequestParts;
-use axum::http::HeaderMap;
+use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
+use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use hmac::{Hmac, KeyInit, Mac};
@@ -34,6 +36,9 @@ pub struct AuthConfig {
     pub(crate) token_ttl_secs: u64,
     pub(crate) totp_required: bool,
     pub(crate) cookie_secure: bool,
+    pub(crate) login_max_attempts: u32,
+    pub(crate) login_lockout_secs: u64,
+    pub(crate) client_ip_header: Option<HeaderName>,
 }
 
 // Hand-written so the signing secret can never reach a log line.
@@ -44,6 +49,9 @@ impl std::fmt::Debug for AuthConfig {
             .field("token_ttl_secs", &self.token_ttl_secs)
             .field("totp_required", &self.totp_required)
             .field("cookie_secure", &self.cookie_secure)
+            .field("login_max_attempts", &self.login_max_attempts)
+            .field("login_lockout_secs", &self.login_lockout_secs)
+            .field("client_ip_header", &self.client_ip_header)
             .finish()
     }
 }
@@ -51,7 +59,8 @@ impl std::fmt::Debug for AuthConfig {
 impl AuthConfig {
     /// Creates a config that signs tokens with `jwt_secret` (HS256).
     ///
-    /// Defaults: 1-hour tokens, TOTP optional per user, `Secure` cookies.
+    /// Defaults: 1-hour tokens, TOTP optional per user, `Secure` cookies, and at most 5 login
+    /// attempts per account in 5 minutes.
     ///
     /// # Errors
     /// Returns [`AdminError::Config`] if the secret is shorter than 32 bytes.
@@ -67,6 +76,9 @@ impl AuthConfig {
             token_ttl_secs: 3600,
             totp_required: false,
             cookie_secure: true,
+            login_max_attempts: 5,
+            login_lockout_secs: 300,
+            client_ip_header: None,
         })
     }
 
@@ -78,6 +90,9 @@ impl AuthConfig {
     /// | `ADMIN_JWT_TTL_SECS` | Token lifetime in seconds (default 3600) |
     /// | `ADMIN_TOTP_REQUIRED` | `true` refuses users without a TOTP secret (default `false`) |
     /// | `ADMIN_COOKIE_SECURE` | `false` allows the cookie over plain HTTP, for local development only (default `true`) |
+    /// | `ADMIN_LOGIN_MAX_ATTEMPTS` | Login attempts allowed per account in one lockout period; `0` disables the limit (default 5) |
+    /// | `ADMIN_LOGIN_LOCKOUT_SECS` | Length of the lockout period in seconds (default 300) |
+    /// | `ADMIN_CLIENT_IP_HEADER` | Header your reverse proxy sets to the client's address, e.g. `X-Forwarded-For` (default: use the connection's address) |
     ///
     /// # Errors
     /// Returns [`AdminError::Config`] if a variable is missing or invalid.
@@ -104,6 +119,20 @@ impl AuthConfig {
         if let Some(v) = lookup("ADMIN_COOKIE_SECURE") {
             config.cookie_secure = parse_bool("ADMIN_COOKIE_SECURE", &v)?;
         }
+        if let Some(v) = lookup("ADMIN_LOGIN_MAX_ATTEMPTS") {
+            config.login_max_attempts = v.parse().map_err(|_| {
+                AdminError::Config("ADMIN_LOGIN_MAX_ATTEMPTS must be a non-negative integer".into())
+            })?;
+        }
+        if let Some(v) = lookup("ADMIN_LOGIN_LOCKOUT_SECS") {
+            config.login_lockout_secs =
+                v.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    AdminError::Config("ADMIN_LOGIN_LOCKOUT_SECS must be a positive integer".into())
+                })?;
+        }
+        if let Some(v) = lookup("ADMIN_CLIENT_IP_HEADER").filter(|v| !v.is_empty()) {
+            config = config.client_ip_header(&v)?;
+        }
         Ok(config)
     }
 
@@ -119,6 +148,46 @@ impl AuthConfig {
     pub fn totp_required(mut self, required: bool) -> Self {
         self.totp_required = required;
         self
+    }
+
+    /// Limits login attempts: at most `max_attempts` per account, and four times that per
+    /// client address, in any `lockout_secs` seconds. `max_attempts == 0` removes the limit.
+    #[must_use]
+    pub fn login_limit(mut self, max_attempts: u32, lockout_secs: u64) -> Self {
+        self.login_max_attempts = max_attempts;
+        self.login_lockout_secs = lockout_secs.max(1);
+        self
+    }
+
+    /// Names the header that carries the client's address when the app runs behind a reverse
+    /// proxy, e.g. `X-Forwarded-For`. Its last entry is used, which is the one your own proxy
+    /// added. Without this, the address of the connection is used, and behind a proxy that
+    /// is the proxy's.
+    ///
+    /// Only set this if the proxy always sets the header: otherwise clients can send it
+    /// themselves and pick the address they are counted under.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] if `name` is not a valid header name.
+    pub fn client_ip_header(mut self, name: &str) -> Result<Self, AdminError> {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| AdminError::Config(format!("`{name}` is not a valid header name")))?;
+        self.client_ip_header = Some(name);
+        Ok(self)
+    }
+
+    /// The address a request came from, for rate limiting.
+    pub(crate) fn client_ip(&self, parts: &Parts) -> Option<IpAddr> {
+        let forwarded = self.client_ip_header.as_ref().and_then(|name| {
+            let value = parts.headers.get(name)?.to_str().ok()?;
+            value.rsplit(',').next()?.trim().parse().ok()
+        });
+        forwarded.or_else(|| {
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|peer| peer.0.ip())
+        })
     }
 
     /// Controls the cookie's `Secure` flag; turn off only for local HTTP development.
@@ -214,12 +283,27 @@ pub trait UserStore: Send + Sync {
     async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
         Ok(self.find(username).await?.map(|_| Access::superuser()))
     }
+
+    /// Records that the account logged in with the authenticator code of time step `step`,
+    /// and says whether that is allowed: `false` if this step or a later one was already
+    /// used, which means the code is being replayed.
+    ///
+    /// The default allows everything, so a code stays usable until it expires (up to 90
+    /// seconds). Override it, storing the last step per account, to make codes single-use.
+    ///
+    /// # Errors
+    /// Whatever the store fails with; the login is then refused with a `500`.
+    async fn accept_totp_step(&self, _username: &str, _step: u64) -> Result<bool, AdminError> {
+        Ok(true)
+    }
 }
 
 /// A single admin account defined by environment variables.
 #[derive(Clone)]
 pub struct EnvUserStore {
     user: AdminUser,
+    /// The time step of the last authenticator code that was accepted.
+    last_totp_step: Arc<AtomicU64>,
 }
 
 impl EnvUserStore {
@@ -258,7 +342,10 @@ impl EnvUserStore {
             decode_secret(secret)
                 .ok_or_else(|| AdminError::Config("the TOTP secret is not valid base32".into()))?;
         }
-        Ok(Self { user })
+        Ok(Self {
+            user,
+            last_totp_step: Arc::new(AtomicU64::new(0)),
+        })
     }
 }
 
@@ -266,6 +353,10 @@ impl EnvUserStore {
 impl UserStore for EnvUserStore {
     async fn find(&self, username: &str) -> Result<Option<AdminUser>, AdminError> {
         Ok((username == self.user.username).then(|| self.user.clone()))
+    }
+
+    async fn accept_totp_step(&self, _username: &str, step: u64) -> Result<bool, AdminError> {
+        Ok(self.last_totp_step.fetch_max(step, Ordering::SeqCst) < step)
     }
 }
 
@@ -299,40 +390,59 @@ fn password_matches(password: &str, phc: &str) -> bool {
     })
 }
 
+/// A valid hash of nothing in particular, to spend the same time on a login for an unknown
+/// account as for a real one. Otherwise the response time would reveal which names exist.
+fn decoy_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| hash_password("no account has this password").unwrap_or_default())
+}
+
 /// Checks credentials and returns a signed token.
 ///
-/// Every failure maps to the same [`AdminError::Unauthorized`] so the response does not reveal
-/// which part was wrong.
+/// Every credential failure maps to the same [`AdminError::Unauthorized`] so the response
+/// does not reveal which part was wrong. Too many attempts for one account or from one
+/// address get [`AdminError::RateLimited`] instead, whether or not the password was right.
 pub(crate) async fn login(
-    config: &AuthConfig,
-    users: &Arc<dyn UserStore>,
-    username: &str,
-    password: &str,
-    totp: Option<&str>,
+    state: &AdminState,
+    credentials: &Credentials,
+    address: Option<IpAddr>,
 ) -> Result<String, AdminError> {
-    let user = users
-        .find(username)
-        .await?
-        .ok_or(AdminError::Unauthorized)?;
+    let username = credentials.username.as_str();
+    state
+        .limiter
+        .attempt(username, address)
+        .map_err(|retry_after_secs| {
+            tracing::warn!(%username, ?address, "login attempts exhausted");
+            AdminError::RateLimited { retry_after_secs }
+        })?;
+
+    let user = state.users.find(username).await?;
     // Argon2 is deliberately slow; run it on the blocking pool so it cannot stall other requests.
-    let (candidate, hash) = (password.to_owned(), user.password_hash.clone());
+    let candidate = credentials.password.clone();
+    let hash = user
+        .as_ref()
+        .map_or_else(|| decoy_hash().to_owned(), |u| u.password_hash.clone());
     let matches = tokio::task::spawn_blocking(move || password_matches(&candidate, &hash))
         .await
         .map_err(|e| AdminError::Config(format!("password check task failed: {e}")))?;
-    if !matches {
+    let Some(user) = user.filter(|_| matches) else {
         return Err(AdminError::Unauthorized);
-    }
+    };
     match &user.totp_secret {
         Some(secret) => {
-            let code = totp.unwrap_or_default();
-            if !verify_totp(secret, code, unix_now()) {
+            let code = credentials.totp.as_deref().unwrap_or_default();
+            let step = totp_step(secret, code, unix_now()).ok_or(AdminError::Unauthorized)?;
+            // Each code works once, so one read over a shoulder or off the wire is useless.
+            if !state.users.accept_totp_step(username, step).await? {
+                tracing::warn!(%username, "authenticator code reused");
                 return Err(AdminError::Unauthorized);
             }
         }
-        None if config.totp_required => return Err(AdminError::Unauthorized),
+        None if state.auth.totp_required => return Err(AdminError::Unauthorized),
         None => {}
     }
-    config.issue(&user.username)
+    state.limiter.succeeded(username, address);
+    state.auth.issue(&user.username)
 }
 
 fn unix_now() -> u64 {
@@ -369,22 +479,84 @@ fn hotp(secret: &[u8], counter: u64) -> Option<u32> {
 /// `now_unix` is a parameter so the check is deterministic under test.
 #[must_use]
 pub fn verify_totp(base32_secret: &str, code: &str, now_unix: u64) -> bool {
-    let Some(secret) = decode_secret(base32_secret) else {
-        return false;
+    totp_step(base32_secret, code, now_unix).is_some()
+}
+
+/// Whether `password` is the account's current password. Counts as a login attempt, so a
+/// stolen session cannot be used to guess the password without limit.
+///
+/// # Errors
+/// [`AdminError::RateLimited`] after too many wrong guesses.
+pub(crate) async fn confirm_password(
+    state: &AdminState,
+    username: &str,
+    password: &str,
+) -> Result<bool, AdminError> {
+    state
+        .limiter
+        .attempt(username, None)
+        .map_err(|retry_after_secs| AdminError::RateLimited { retry_after_secs })?;
+    let Some(user) = state.users.find(username).await? else {
+        return Ok(false);
     };
+    let (candidate, hash) = (password.to_owned(), user.password_hash);
+    let matches = tokio::task::spawn_blocking(move || password_matches(&candidate, &hash))
+        .await
+        .map_err(|e| AdminError::Config(format!("password check task failed: {e}")))?;
+    if matches {
+        state.limiter.succeeded(username, None);
+    }
+    Ok(matches)
+}
+
+/// The current time step, for code that needs to compare against [`totp_step`].
+pub(crate) fn totp_step_now(base32_secret: &str, code: &str) -> Option<u64> {
+    totp_step(base32_secret, code, unix_now())
+}
+
+/// The time step `code` is valid for, if it is valid now.
+fn totp_step(base32_secret: &str, code: &str, now_unix: u64) -> Option<u64> {
+    let secret = decode_secret(base32_secret)?;
     let code = code.trim();
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        return false;
+        return None;
     }
     let step = now_unix / TOTP_STEP_SECS;
-    let mut matched = false;
+    let mut matched = None;
     for counter in [step.saturating_sub(1), step, step.saturating_add(1)] {
         if let Some(expected) = hotp(&secret, counter) {
             // No early exit: every candidate is compared so timing does not depend on which matched.
-            matched |= constant_time_eq(format!("{expected:06}").as_bytes(), code.as_bytes());
+            if constant_time_eq(format!("{expected:06}").as_bytes(), code.as_bytes()) {
+                matched = Some(counter);
+            }
         }
     }
     matched
+}
+
+/// A new random TOTP secret, base32-encoded as authenticator apps expect.
+pub(crate) fn new_totp_secret() -> String {
+    base32::encode(
+        base32::Alphabet::Rfc4648 { padding: false },
+        &rand::random::<[u8; 20]>(),
+    )
+}
+
+/// Whether `base32_secret` is long enough to be used as a TOTP secret (at least 80 bits).
+pub(crate) fn totp_secret_is_strong(base32_secret: &str) -> bool {
+    decode_secret(base32_secret).is_some_and(|bytes| bytes.len() >= 10)
+}
+
+/// The `otpauth://` address an authenticator app reads from a QR code. `issuer` is the name
+/// the app shows next to the account, usually the site's title.
+#[must_use]
+pub fn totp_uri(issuer: &str, username: &str, base32_secret: &str) -> String {
+    let mut uri = url::Url::parse("otpauth://totp/").expect("a constant, valid URL");
+    uri.set_path(&format!("{issuer}:{username}"));
+    uri.query_pairs_mut()
+        .append_pair("secret", base32_secret)
+        .append_pair("issuer", issuer);
+    uri.into()
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
