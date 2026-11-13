@@ -8,7 +8,7 @@
       <input name="q" value="{{ q }}" placeholder="Search" aria-label="Search">
       <button class="plain" type="submit">Search</button>
     </form>
-    <a class="button" href="{{ base }}/{{ model.slug }}/new">Add</a>
+    {% if model.can_add %}<a class="button" href="{{ base }}/{{ model.slug }}/new">Add</a>{% endif %}
   </div>
   <div class="scroll">
   <table>
@@ -17,7 +17,7 @@
     {% for row in rows %}
       <tr>
         {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
-        <td>{% if row.id is not none %}<a href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">Edit</a>{% endif %}</td>
+        <td>{% if row.id is not none %}<a href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">{% if can_change %}Edit{% else %}View{% endif %}</a>{% endif %}</td>
       </tr>
     {% else %}
       <tr><td class="muted" colspan="{{ columns|length + 1 }}">Nothing found.</td></tr>

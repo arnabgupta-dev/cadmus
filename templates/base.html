@@ -33,6 +33,10 @@ button.plain { background: transparent; color: var(--accent); }
 button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
 .error { border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 9px 12px; margin-bottom: 14px; }
 .muted { color: var(--muted); }
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 6px 0; }
+fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 18px 0 0; padding: 4px 14px 12px; }
+legend { font-weight: 600; padding: 0 6px; }
+td.center, th.center { text-align: center; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
 .pager { display: flex; gap: 14px; align-items: center; margin-top: 14px; }
 footer { text-align: center; color: var(--muted); padding: 24px 16px; font-size: 13px; }
@@ -44,6 +48,7 @@ footer { text-align: center; color: var(--muted); padding: 24px 16px; font-size:
   <a class="brand" href="{{ base }}/">{% if site.logo_url %}<img src="{{ site.logo_url }}" alt="">{% endif %}{{ site.site_title }}</a>
   <nav>
     {% if user %}{% for m in models %}<a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a>{% endfor %}{% endif %}
+    {% if manages_accounts %}<a href="{{ base }}/auth/users">Users</a><a href="{{ base }}/auth/groups">Groups</a>{% endif %}
     {% for link in site.nav_links %}<a href="{{ link.url }}">{{ link.label }}</a>{% endfor %}
   </nav>
   {% if user %}

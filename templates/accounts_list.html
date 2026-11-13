@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · {{ site.site_title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<div class="panel">
+  <div class="toolbar">
+    <span class="muted">{{ rows|length }} total</span>
+    <a class="button" href="{{ base }}/auth/{{ kind }}/new">Add</a>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr>{% for c in columns %}<th>{{ c }}</th>{% endfor %}<th></th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+        <td><a href="{{ base }}/auth/{{ kind }}/{{ row.id }}">Edit</a></td>
+      </tr>
+    {% else %}
+      <tr><td class="muted" colspan="{{ columns|length + 1 }}">Nothing here yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

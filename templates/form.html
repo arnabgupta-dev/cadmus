@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ model.label }} · {{ site.site_title }}{% endblock %}
 {% block content %}
-<h1>{% if id is not none %}Edit{% else %}Add{% endif %} {{ model.label }}</h1>
+<h1>{% if id is none %}Add{% elif can_save %}Edit{% else %}View{% endif %} {{ model.label }}</h1>
 <div class="panel">
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}">
@@ -20,11 +20,11 @@
       {% endif %}
     {% endfor %}
     <div class="actions">
-      <button type="submit">Save</button>
-      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/{{ model.slug }}">Cancel</a>
+      {% if can_save %}<button type="submit">Save</button>{% endif %}
+      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/{{ model.slug }}">{% if can_save %}Cancel{% else %}Back{% endif %}</a>
     </div>
   </form>
-  {% if id is not none %}
+  {% if id is not none and can_delete %}
   <form method="post" action="{{ base }}/{{ model.slug }}/{{ id|urlencode }}/delete" class="actions">
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     <button class="danger" type="submit">Delete</button>

@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::AdminState;
+use crate::access::Action;
 use crate::auth::{self, Credentials, Session};
 use crate::error::{AdminError, ApiError, ApiResult};
 use crate::handlers::{ListParams, list_query};
@@ -118,6 +119,7 @@ async fn list(
 ) -> ApiResult<Json<serde_json::Value>> {
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::View)?;
     let mut query = list_query(&state, resource, &params);
     if let Some(per_page) = params.per_page {
         query.per_page = per_page.clamp(1, MAX_PER_PAGE);
@@ -150,6 +152,7 @@ async fn create(
 ) -> ApiResult<Response> {
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::Add)?;
     let input = json_input(resource, &body, true)?;
     let Some(row) = resource.create(&input).await? else {
         return Ok(StatusCode::CREATED.into_response());
@@ -178,7 +181,9 @@ async fn read(
     Path((model, id)): Path<(String, String)>,
 ) -> ApiResult<Json<Row>> {
     session.require_bearer()?;
-    fetch(state.resource(&model)?.as_ref(), &model, &id).await
+    let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::View)?;
+    fetch(resource, &model, &id).await
 }
 
 async fn write(
@@ -191,6 +196,7 @@ async fn write(
 ) -> ApiResult<Json<Row>> {
     session.require_bearer()?;
     let resource = state.resource(model)?.as_ref();
+    session.require(model, Action::Change)?;
     let input = json_input(resource, body, false)?;
     resource.update(id, &input, mode).await?;
     fetch(resource, model, id).await
@@ -220,6 +226,8 @@ async fn delete(
     Path((model, id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
-    state.resource(&model)?.delete(&id).await?;
+    let resource = state.resource(&model)?;
+    session.require(&model, Action::Delete)?;
+    resource.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

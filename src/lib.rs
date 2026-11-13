@@ -14,6 +14,8 @@
 //! let app = axum::Router::new().merge(admin.router());
 //! ```
 
+mod access;
+mod accounts;
 mod api;
 mod app;
 mod auth;
@@ -28,6 +30,7 @@ mod users;
 
 use std::sync::Arc;
 
+pub use access::{Access, Action};
 pub use app::App;
 pub use auth::{
     AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, verify_totp,
@@ -40,16 +43,28 @@ pub use seaorm::SeaOrmResource;
 pub use settings::{NavLink, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
-pub use users::{DbUserStore, change_password, create_superuser, user};
+pub use users::{DbUserStore, change_password, create_superuser, group, promote, user};
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 6] = [
+const TEMPLATES: [(&str, &str); 9] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
     ("list.html", include_str!("../templates/list.html")),
     ("form.html", include_str!("../templates/form.html")),
     ("error.html", include_str!("../templates/error.html")),
+    (
+        "accounts_list.html",
+        include_str!("../templates/accounts_list.html"),
+    ),
+    (
+        "user_form.html",
+        include_str!("../templates/user_form.html"),
+    ),
+    (
+        "group_form.html",
+        include_str!("../templates/group_form.html"),
+    ),
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
@@ -63,6 +78,8 @@ pub(crate) struct AdminState {
     pub(crate) users: Arc<dyn UserStore>,
     pub(crate) resources: Vec<Arc<dyn Resource>>,
     pub(crate) uploads: Option<Uploads>,
+    /// Where the built-in account tables live; `None` when accounts come from elsewhere.
+    pub(crate) accounts: Option<sea_orm::DatabaseConnection>,
     pub(crate) templates: minijinja::Environment<'static>,
 }
 
@@ -108,8 +125,11 @@ impl Admin {
     }
 
     pub(crate) fn routes(&self) -> axum::Router {
-        let router =
+        let mut router =
             handlers::router(Arc::clone(&self.state)).merge(api::router(Arc::clone(&self.state)));
+        if self.state.accounts.is_some() {
+            router = router.merge(accounts::router(Arc::clone(&self.state)));
+        }
         match &self.state.uploads {
             Some(service) => router.merge(uploads::router(Arc::clone(&self.state), service)),
             None => router,
@@ -123,6 +143,7 @@ pub struct AdminBuilder {
     base: Option<String>,
     api_base: Option<String>,
     uploads: Option<Uploads>,
+    accounts: Option<sea_orm::DatabaseConnection>,
     settings: UiSettings,
     auth: Option<(AuthConfig, Arc<dyn UserStore>)>,
     resources: Vec<Arc<dyn Resource>>,
@@ -140,6 +161,14 @@ impl AdminBuilder {
     #[must_use]
     pub fn uploads(mut self, uploads: Uploads) -> Self {
         self.uploads = Some(uploads);
+        self
+    }
+
+    /// Adds the Users and Groups pages, for superusers to manage the built-in accounts in
+    /// `db`. Use it together with [`DbUserStore`] over the same database.
+    #[must_use]
+    pub fn accounts(mut self, db: sea_orm::DatabaseConnection) -> Self {
+        self.accounts = Some(db);
         self
     }
 
@@ -237,6 +266,7 @@ impl AdminBuilder {
                 users,
                 resources: self.resources,
                 uploads: self.uploads,
+                accounts: self.accounts,
                 templates,
             }),
         })

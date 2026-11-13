@@ -59,7 +59,8 @@ app.model::<post::Entity>(
 |---|---|
 | `serve [--bind addr]` | Start the server (graceful shutdown on Ctrl-C) |
 | `migrate` | Create missing tables, columns and unique keys for all models |
-| `createsuperuser --username U [--password-stdin]` | Create an account |
+| `createsuperuser --username U [--password-stdin]` | Create a superuser |
+| `promote --username U` | Make an existing account an active superuser |
 | `changepassword --username U [--password-stdin]` | Change a password |
 | `routes` | List generated URLs |
 | `check` | Validate configuration without serving |
@@ -120,11 +121,40 @@ Log messages go to standard error; `LOG_LEVEL` sets the detail. If your `main` i
 Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); implement
 `UserStore` to use your own.
 
-- Username + password (Argon2id, verified off the async executor).
+- Username + password (Argon2id, verified off the async executor). What an account may do
+  once logged in is described under [Permissions](#permissions).
 - TOTP second factor for accounts with a secret; `ADMIN_TOTP_REQUIRED=true` makes it mandatory.
 - `POST /api/auth/token` with `{"username", "password", "totp"}` returns a JWT.
 - The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
   `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries a CSRF token.
+
+## Permissions
+
+Accounts work as in Django:
+
+| Flag | Meaning |
+|---|---|
+| Active | Can log in. Untick to lock an account out without deleting it. |
+| Staff | Can use the admin and the API. |
+| Superuser | Can do everything, including managing accounts. |
+
+Staff who are not superusers can do only what they were given: for each model, any of
+**view**, **add**, **change** and **delete**. Permissions are given to an account directly, or
+to a **group** that accounts are put in; an account has the sum of both. Whoever may change a
+model may also view it. File uploads count as a model named `files`.
+
+Superusers manage all of this in the admin under **Users** and **Groups**. The same rules
+apply to the admin and the REST API (`403` with code `forbidden`), and the admin hides the
+links and buttons an account cannot use.
+
+- Permissions are read on every request, so a change applies at once, even to tokens already
+  issued. Deactivating or deleting an account locks it out immediately.
+- Nobody can remove their own access or delete their own account, so there is always a
+  superuser left. If you do get locked out, `cargo run -- promote --username U` is the way
+  back in.
+- Upgrading from a version without superusers: run `migrate`, then `promote` your account.
+- With your own `UserStore`, every account is a superuser unless you implement
+  `UserStore::access`, and the Users and Groups pages are not shown.
 
 ## File uploads
 
@@ -202,11 +232,11 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** no OIDC/OAuth login, API keys, per-user or per-model permissions (any staff account
-  can do everything), login rate limiting, token revocation or TOTP replay protection. No
-  command or page to enrol a TOTP secret.
-- **Admin:** accounts and uploaded files are not editable in the admin; no relation widgets,
-  filters or bulk actions; no file-upload field on model forms.
+- **Auth:** no OIDC/OAuth login, API keys, per-record (row-level) permissions, login rate
+  limiting or TOTP replay protection. No command or page to enrol a TOTP secret. Accounts and
+  groups are managed in the admin only; there is no REST API for them.
+- **Admin:** uploaded files are not editable in the admin; no relation widgets, filters or
+  bulk actions; no file-upload field on model forms.
 - **Models:** single-column primary keys only; UUID, decimal, enum and array columns are
   read-only.
 - **Uploads:** completing a resumable upload copies the chunks once inside the storage backend

@@ -7,12 +7,12 @@
     <thead><tr><th>Model</th><th></th></tr></thead>
     <tbody>
     {% for m in models %}
-      <tr><td><a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a></td><td><a href="{{ base }}/{{ m.slug }}/new">Add</a></td></tr>
+      <tr><td><a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a></td><td>{% if m.can_add %}<a href="{{ base }}/{{ m.slug }}/new">Add</a>{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No models are registered.</p>
+  <p class="muted">There is nothing here that your account can see.</p>
   {% endif %}
 </div>
 {% endblock %}

@@ -337,11 +337,8 @@ pub(crate) async fn middleware(
     } else {
         Area::Other
     };
-    let session = if area == Area::Admin {
-        Session::from_cookie(request.headers(), &state)
-    } else {
-        None
-    };
+    // Kept so that an error page can show who is logged in.
+    let headers = (area == Area::Admin).then(|| request.headers().clone());
 
     let mut response = match AssertUnwindSafe(next.run(request)).catch_unwind().await {
         Ok(response) => response,
@@ -357,10 +354,14 @@ pub(crate) async fn middleware(
         return response;
     };
     let allow = response.headers().get(ALLOW).cloned();
-    let mut rendered = match area {
-        Area::Api if !info.json => info.json(status),
-        Area::Admin => info.page(status, &state, session.as_ref()),
-        Area::Api | Area::Other => return response,
+    let mut rendered = match (area, headers) {
+        (Area::Api, _) if !info.json => info.json(status),
+        (Area::Admin, Some(headers)) => {
+            // If the account cannot be read, the page is simply shown as to a visitor.
+            let session = Session::from_cookie(&headers, &state).await.ok().flatten();
+            info.page(status, &state, session.as_ref())
+        }
+        _ => return response,
     };
     if let Some(allow) = allow {
         rendered.headers_mut().insert(ALLOW, allow);

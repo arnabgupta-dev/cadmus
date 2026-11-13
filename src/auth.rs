@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
 use crate::AdminState;
+use crate::access::{Access, Action};
 use crate::error::{AdminError, ApiError};
 
 pub(crate) const COOKIE: &str = "admin_token";
@@ -201,6 +202,18 @@ pub struct AdminUser {
 pub trait UserStore: Send + Sync {
     /// Looks up an account by login name.
     async fn find(&self, username: &str) -> Result<Option<AdminUser>, AdminError>;
+
+    /// What the account may do, or `None` if it may no longer use the site at all.
+    ///
+    /// Called on every authenticated request, so the answer is always current. The default
+    /// treats every account [`UserStore::find`] returns as a superuser; override it to give
+    /// accounts in your own store narrower permissions.
+    ///
+    /// # Errors
+    /// Whatever the lookup fails with; the request is then answered with a `500`.
+    async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
+        Ok(self.find(username).await?.map(|_| Access::superuser()))
+    }
 }
 
 /// A single admin account defined by environment variables.
@@ -381,6 +394,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// An authenticated request. Extracting it is what protects a handler.
 pub(crate) struct Session {
     pub(crate) username: String,
+    pub(crate) access: Access,
     csrf: String,
     via_cookie: bool,
 }
@@ -397,15 +411,60 @@ impl Session {
         Ok(())
     }
 
-    /// The session carried by the admin cookie, if there is a valid one.
-    pub(crate) fn from_cookie(headers: &HeaderMap, state: &AdminState) -> Option<Self> {
-        let jar = CookieJar::from_headers(headers);
-        let claims = state.auth.verify(jar.get(COOKIE)?.value())?;
-        Some(Self {
+    /// Builds the session for verified claims, reading the account's current permissions.
+    /// `None` means the account no longer exists or may no longer log in.
+    async fn load(
+        state: &AdminState,
+        claims: Claims,
+        via_cookie: bool,
+    ) -> Result<Option<Self>, AdminError> {
+        Ok(state.users.access(&claims.sub).await?.map(|access| Self {
             username: claims.sub,
+            access,
             csrf: claims.csrf,
-            via_cookie: true,
-        })
+            via_cookie,
+        }))
+    }
+
+    /// The session carried by the admin cookie, if there is a valid one.
+    pub(crate) async fn from_cookie(
+        headers: &HeaderMap,
+        state: &AdminState,
+    ) -> Result<Option<Self>, AdminError> {
+        let jar = CookieJar::from_headers(headers);
+        let claims = jar
+            .get(COOKIE)
+            .and_then(|cookie| state.auth.verify(cookie.value()));
+        match claims {
+            Some(claims) => Self::load(state, claims, true).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Whether this account may do `action` on `model`.
+    pub(crate) fn can(&self, model: &str, action: Action) -> bool {
+        self.access.allows(model, action)
+    }
+
+    /// Refuses the request unless this account may do `action` on `model`.
+    pub(crate) fn require(&self, model: &str, action: Action) -> Result<(), AdminError> {
+        if self.can(model, action) {
+            return Ok(());
+        }
+        Err(AdminError::Forbidden(format!(
+            "you do not have permission to {} `{model}`",
+            action.as_str()
+        )))
+    }
+
+    /// Refuses the request unless this account is a superuser.
+    pub(crate) fn require_superuser(&self) -> Result<(), AdminError> {
+        if self.access.is_superuser() {
+            return Ok(());
+        }
+        Err(AdminError::Forbidden(
+            "only superusers can manage accounts".into(),
+        ))
     }
 
     /// Token to embed in forms.
@@ -442,28 +501,26 @@ impl FromRequestParts<Arc<AdminState>> for Session {
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
-        if let Some(token) = bearer {
+        let api = parts
+            .uri
+            .path()
+            .starts_with(&format!("{}/", state.api_base));
+        let session = match bearer {
+            Some(token) => match state.auth.verify(token) {
+                Some(claims) => Self::load(state, claims, false).await,
+                None => Ok(None),
+            },
+            None => Self::from_cookie(&parts.headers, state).await,
+        };
+        match session {
+            Ok(Some(session)) => Ok(session),
             // API clients get a status code, not a login page.
-            let claims = state
-                .auth
-                .verify(token)
-                .ok_or_else(|| ApiError::from(AdminError::Unauthorized).into_response())?;
-            return Ok(Self {
-                username: claims.sub,
-                csrf: claims.csrf,
-                via_cookie: false,
-            });
-        }
-        match Self::from_cookie(&parts.headers, state) {
-            Some(session) => Ok(session),
-            None if parts
-                .uri
-                .path()
-                .starts_with(&format!("{}/", state.api_base)) =>
-            {
+            Ok(None) if bearer.is_some() || api => {
                 Err(ApiError::from(AdminError::Unauthorized).into_response())
             }
-            None => Err(Redirect::to(&format!("{}/login", state.base)).into_response()),
+            Ok(None) => Err(Redirect::to(&format!("{}/login", state.base)).into_response()),
+            Err(error) if bearer.is_some() || api => Err(ApiError::from(error).into_response()),
+            Err(error) => Err(error.into_response()),
         }
     }
 }

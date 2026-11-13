@@ -18,7 +18,7 @@ use crate::seaorm::SeaOrmResource;
 use crate::settings::UiSettings;
 use crate::storage::Storage;
 use crate::uploads::Uploads;
-use crate::users::{DbUserStore, change_password, create_superuser, user};
+use crate::users::{DbUserStore, change_password, create_superuser, promote};
 use crate::{Admin, base_path};
 
 type SchemaStep = Box<dyn Fn(SchemaBuilder) -> SchemaBuilder + Send + Sync>;
@@ -47,6 +47,8 @@ pub struct App {
     admin_base: Option<String>,
     api_base: Option<String>,
     users: Arc<dyn UserStore>,
+    /// Whether `users` is still the built-in store, which the Users and Groups pages edit.
+    builtin_users: bool,
     resources: Vec<Arc<dyn Resource>>,
     schema: Vec<SchemaStep>,
     uploads: Option<Uploads>,
@@ -59,6 +61,7 @@ impl App {
     pub fn new(db: DatabaseConnection, auth: AuthConfig) -> Self {
         Self {
             users: Arc::new(DbUserStore::new(db.clone())),
+            builtin_users: true,
             db,
             auth,
             settings: UiSettings::default(),
@@ -142,10 +145,12 @@ impl App {
         self
     }
 
-    /// Replaces the built-in account store.
+    /// Replaces the built-in account store. The Users and Groups pages are then left out,
+    /// because they edit the built-in tables.
     #[must_use]
     pub fn users(mut self, users: impl UserStore + 'static) -> Self {
         self.users = Arc::new(users);
+        self.builtin_users = false;
         self
     }
 
@@ -184,7 +189,7 @@ impl App {
     /// # Errors
     /// Returns [`AdminError::Db`] if the schema cannot be read or changed.
     pub async fn migrate(&self) -> Result<(), AdminError> {
-        let mut builder = self.db.get_schema_builder().register(user::Entity);
+        let mut builder = crate::users::register_schema(self.db.get_schema_builder());
         if self.uploads.is_some() {
             builder = Uploads::register_schema(builder);
         }
@@ -213,6 +218,9 @@ impl App {
         if let Some(uploads) = &self.uploads {
             builder = builder.uploads(uploads.clone());
         }
+        if self.builtin_users {
+            builder = builder.accounts(self.db.clone());
+        }
         for resource in &self.resources {
             builder = builder.register_shared(Arc::clone(resource));
         }
@@ -240,7 +248,7 @@ impl App {
     }
 
     /// Runs the management command given on the command line
-    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `routes`, `check`).
+    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `routes`, `check`).
     ///
     /// # Errors
     /// Returns whatever the chosen command fails with.
@@ -273,6 +281,11 @@ impl App {
                 let password = read_password(password_stdin)?;
                 change_password(&self.db, &username, &password).await?;
                 println!("password changed for `{username}`");
+                Ok(())
+            }
+            Command::Promote { username } => {
+                promote(&self.db, &username).await?;
+                println!("`{username}` is now a superuser");
                 Ok(())
             }
             Command::Routes => {
@@ -379,7 +392,7 @@ enum Command {
     },
     /// Create or update tables for the built-in accounts and all registered models.
     Migrate,
-    /// Create an account that can use the admin and the API.
+    /// Create a superuser: an account that can do everything, including managing accounts.
     Createsuperuser {
         /// Login name.
         #[arg(long)]
@@ -396,6 +409,12 @@ enum Command {
         /// Read the password from standard input instead of prompting.
         #[arg(long)]
         password_stdin: bool,
+    },
+    /// Make an existing account an active superuser.
+    Promote {
+        /// Login name.
+        #[arg(long)]
+        username: String,
     },
     /// List the generated URLs.
     Routes,

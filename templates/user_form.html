@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Users · {{ site.site_title }}{% endblock %}
+{% block content %}
+<h1>{% if id is not none %}Edit{% else %}Add{% endif %} user</h1>
+<div class="panel">
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ base }}/auth/users/{% if id is not none %}{{ id }}{% else %}new{% endif %}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label for="f-username">Username</label>
+    <input id="f-username" name="username" value="{{ username }}" autocomplete="off" required>
+    <label for="f-password">Password</label>
+    <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none %} required{% endif %}>
+    {% if id is not none %}<p class="muted">Leave empty to keep the current password.</p>{% endif %}
+    <fieldset>
+      <legend>Status</legend>
+      <label class="check"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}> Active <span class="muted">— can log in</span></label>
+      <label class="check"><input type="checkbox" name="is_staff" value="true"{% if is_staff %} checked{% endif %}> Staff <span class="muted">— can use the admin and the API</span></label>
+      <label class="check"><input type="checkbox" name="is_superuser" value="true"{% if is_superuser %} checked{% endif %}> Superuser <span class="muted">— can do everything, including managing accounts</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Groups</legend>
+      {% for g in groups %}
+      <label class="check"><input type="checkbox" name="group" value="{{ g.id }}"{% if g.checked %} checked{% endif %}> {{ g.name }}</label>
+      {% else %}
+      <p class="muted">There are no groups yet.</p>
+      {% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Permissions</legend>
+      {% if permissions %}
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Model</th>{% for a in actions %}<th class="center">{{ a|capitalize }}</th>{% endfor %}</tr></thead>
+        <tbody>
+        {% for row in permissions %}
+          <tr>
+            <td>{{ row.label }}</td>
+            {% for cell in row.cells %}<td class="center"><input type="checkbox" name="perm" value="{{ cell.value }}" aria-label="{{ row.label }}: {{ actions[loop.index0] }}"{% if cell.checked %} checked{% endif %}></td>{% endfor %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="muted">These are added to the permissions of the account's groups. Whoever may change a model may also view it. Superusers need none.</p>
+      {% else %}
+      <p class="muted">No models are registered.</p>
+      {% endif %}
+    </fieldset>
+    <div class="actions">
+      <button type="submit">Save</button>
+      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/auth/users">Cancel</a>
+    </div>
+  </form>
+  {% if id is not none %}
+  <form method="post" action="{{ base }}/auth/users/{{ id }}/delete" class="actions">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button class="danger" type="submit">Delete</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

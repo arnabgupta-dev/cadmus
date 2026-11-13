@@ -14,6 +14,7 @@ use minijinja::{Value, context};
 use serde::{Deserialize, Serialize};
 
 use crate::AdminState;
+use crate::access::Action;
 use crate::auth::{self, COOKIE, Session};
 use crate::error::AdminError;
 use crate::resource::{Field, FieldKind, FormData, Input, ListQuery, Resource, Row, WriteMode};
@@ -45,6 +46,18 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
 struct NavModel<'a> {
     slug: &'a str,
     label: &'a str,
+    /// Whether the logged-in account may create records of this model.
+    can_add: bool,
+}
+
+impl<'a> NavModel<'a> {
+    fn new(resource: &'a dyn Resource, session: &Session) -> Self {
+        Self {
+            slug: resource.slug(),
+            label: resource.label(),
+            can_add: session.can(resource.slug(), Action::Add),
+        }
+    }
 }
 
 pub(crate) fn render(
@@ -53,20 +66,26 @@ pub(crate) fn render(
     session: Option<&Session>,
     page: Value,
 ) -> Result<Html<String>, AdminError> {
-    let models: Vec<NavModel<'_>> = state
-        .resources
-        .iter()
-        .map(|r| NavModel {
-            slug: r.slug(),
-            label: r.label(),
+    // Only the models this account may see; nothing for a visitor.
+    let models: Vec<NavModel<'_>> = session
+        .map(|session| {
+            state
+                .resources
+                .iter()
+                .filter(|r| session.can(r.slug(), Action::View))
+                .map(|r| NavModel::new(r.as_ref(), session))
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     let shared = context! {
         site => Value::from(Serde(&state.settings)),
         base => &state.base,
         models => Value::from(Serde(&models)),
         user => session.map(|s| s.username.as_str()),
         csrf => session.map(Session::csrf),
+        // Whether to link to the Users and Groups pages.
+        manages_accounts => state.accounts.is_some()
+            && session.is_some_and(|s| s.access.is_superuser()),
     };
     let html = state
         .templates
@@ -219,6 +238,7 @@ async fn list(
     Query(params): Query<ListParams>,
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::View)?;
     let query = list_query(&state, resource, &params);
     let page = resource.list(&query).await?;
 
@@ -251,7 +271,8 @@ async fn list(
         "list.html",
         Some(&session),
         context! {
-            model => Value::from(Serde(NavModel { slug: resource.slug(), label: resource.label() })),
+            model => Value::from(Serde(NavModel::new(resource, &session))),
+            can_change => session.can(&model, Action::Change),
             columns => columns.iter().map(|f| f.label.clone()).collect::<Vec<_>>(),
             rows => Value::from(Serde(&rows)),
             total => page.total,
@@ -329,10 +350,13 @@ fn render_form(
         "form.html",
         Some(session),
         context! {
-            model => Value::from(Serde(NavModel { slug: resource.slug(), label: resource.label() })),
+            model => Value::from(Serde(NavModel::new(resource, session))),
             fields => Value::from(Serde(form_fields(resource, row))),
             id => id,
             error => error,
+            // A new record can always be saved here: the page itself required `add`.
+            can_save => id.is_none() || session.can(resource.slug(), Action::Change),
+            can_delete => session.can(resource.slug(), Action::Delete),
         },
     )
 }
@@ -371,6 +395,7 @@ async fn new_form(
     Path(model): Path<String>,
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::Add)?;
     render_form(&state, &session, resource, None, None, None)
 }
 
@@ -407,6 +432,7 @@ async fn create(
 ) -> Result<Response, AdminError> {
     session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::Add)?;
     match resource.create(&form_input(resource, &form)).await {
         Ok(_) => Ok(Redirect::to(&format!("{}/{model}", state.base)).into_response()),
         Err(error) => form_error(&state, &session, resource, None, &form, error),
@@ -419,6 +445,7 @@ async fn edit_form(
     Path((model, id)): Path<(String, String)>,
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::View)?;
     let row = resource
         .get(&id)
         .await?
@@ -434,6 +461,7 @@ async fn update(
 ) -> Result<Response, AdminError> {
     session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
     let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::Change)?;
     match resource
         .update(&id, &form_input(resource, &form), WriteMode::Replace)
         .await
@@ -450,6 +478,8 @@ async fn delete(
     Form(form): Form<FormData>,
 ) -> Result<Redirect, AdminError> {
     session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
-    state.resource(&model)?.delete(&id).await?;
+    let resource = state.resource(&model)?;
+    session.require(&model, Action::Delete)?;
+    resource.delete(&id).await?;
     Ok(Redirect::to(&format!("{}/{model}", state.base)))
 }

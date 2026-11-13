@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Groups · {{ site.site_title }}{% endblock %}
+{% block content %}
+<h1>{% if id is not none %}Edit{% else %}Add{% endif %} group</h1>
+<div class="panel">
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ base }}/auth/groups/{% if id is not none %}{{ id }}{% else %}new{% endif %}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label for="f-name">Name</label>
+    <input id="f-name" name="name" value="{{ name }}" required>
+    <fieldset>
+      <legend>Permissions</legend>
+      {% if permissions %}
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Model</th>{% for a in actions %}<th class="center">{{ a|capitalize }}</th>{% endfor %}</tr></thead>
+        <tbody>
+        {% for row in permissions %}
+          <tr>
+            <td>{{ row.label }}</td>
+            {% for cell in row.cells %}<td class="center"><input type="checkbox" name="perm" value="{{ cell.value }}" aria-label="{{ row.label }}: {{ actions[loop.index0] }}"{% if cell.checked %} checked{% endif %}></td>{% endfor %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="muted">Whoever may change a model may also view it.</p>
+      {% else %}
+      <p class="muted">No models are registered.</p>
+      {% endif %}
+    </fieldset>
+    <div class="actions">
+      <button type="submit">Save</button>
+      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/auth/groups">Cancel</a>
+    </div>
+  </form>
+  {% if id is not none %}
+  <form method="post" action="{{ base }}/auth/groups/{{ id }}/delete" class="actions">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button class="danger" type="submit">Delete</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

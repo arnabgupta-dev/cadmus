@@ -34,6 +34,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::AdminState;
+use crate::access::Action;
 use crate::api::bad_request;
 use crate::auth::Session;
 use crate::error::{AdminError, ApiError, ApiResult};
@@ -493,6 +494,9 @@ fn clean_content_type(raw: &str) -> String {
 
 type Shared = State<Arc<AdminState>>;
 
+/// The name file permissions are granted under, as if uploads were a model.
+pub(crate) const FILES: &str = "files";
+
 pub(crate) fn router(state: Arc<AdminState>, uploads: &Uploads) -> Router {
     let b = state.api_base.clone();
     let whole_file = usize::try_from(uploads.max_file_bytes)
@@ -550,6 +554,7 @@ async fn upload_multipart(
     mut multipart: Multipart,
 ) -> ApiResult<Response> {
     session.require_bearer()?;
+    session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
     loop {
         let mut field = match multipart.next_field().await {
@@ -611,6 +616,7 @@ async fn list_files(
     Query(params): Query<PageParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
     session.require_bearer()?;
+    session.require(FILES, Action::View)?;
     let uploads = service(&state)?;
     let page = params.page.unwrap_or(1).max(1);
     let paginator = file::Entity::find()
@@ -634,6 +640,7 @@ async fn file_info(
     Path(id): Path<i32>,
 ) -> ApiResult<Json<serde_json::Value>> {
     session.require_bearer()?;
+    session.require(FILES, Action::View)?;
     let found = service(&state)?.file(id).await?;
     Ok(Json(file_json(&state, &found)))
 }
@@ -644,6 +651,7 @@ async fn download(
     Path(id): Path<i32>,
 ) -> ApiResult<Response> {
     session.require_bearer()?;
+    session.require(FILES, Action::View)?;
     let uploads = service(&state)?;
     let found = uploads.file(id).await?;
     let object = uploads.storage.get(&found.key).await?;
@@ -685,6 +693,7 @@ async fn delete_file(
     Path(id): Path<i32>,
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
+    session.require(FILES, Action::Delete)?;
     service(&state)?.remove(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -721,6 +730,7 @@ fn session_response(
 
 async fn begin_upload(State(state): Shared, session: Session, body: Bytes) -> ApiResult<Response> {
     session.require_bearer()?;
+    session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
     let request: BeginUpload = serde_json::from_slice(&body)
         .map_err(|_| bad_request("expected JSON with `filename` and `size`"))?;
@@ -746,6 +756,7 @@ async fn upload_status(
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     session.require_bearer()?;
+    session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
     let current = uploads.session(&id).await?;
     Ok(session_response(&state, uploads, StatusCode::OK, &current))
@@ -759,6 +770,7 @@ async fn append_chunk(
     body: Bytes,
 ) -> ApiResult<Response> {
     session.require_bearer()?;
+    session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
     let offset = headers
         .get(OFFSET_HEADER)
@@ -780,6 +792,7 @@ async fn abort_upload(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
+    session.require(FILES, Action::Add)?;
     service(&state)?.abort(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
