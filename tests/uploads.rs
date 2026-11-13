@@ -5,18 +5,15 @@ use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
 use heraapi::{App, AuthConfig, Storage, Uploads, create_superuser};
 use http_body_util::BodyExt;
-use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+use sea_orm::DatabaseConnection;
 use tower::ServiceExt;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 const PASSWORD: &str = "correct horse battery staple";
 const BOUNDARY: &str = "----test-boundary-7MA4YWxkTrZu0gW";
 
-async fn database() -> DatabaseConnection {
-    let mut options = ConnectOptions::new("sqlite::memory:");
-    options.max_connections(1);
-    Database::connect(options).await.unwrap()
-}
+mod common;
+use common::database;
 
 /// Builds a router over `db` and `uploads`; migrating and creating the account only once.
 async fn router(db: &DatabaseConnection, uploads: Uploads, first: bool) -> Router {

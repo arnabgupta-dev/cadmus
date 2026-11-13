@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Where generated projects get the framework from until it is on crates.io.
 const REPOSITORY: &str = "https://github.com/arnabgupta-dev/heraapi";
@@ -40,6 +40,9 @@ enum Command {
         /// Use a local checkout of the framework instead of the GitHub repository.
         #[arg(long)]
         framework_path: Option<PathBuf>,
+        /// Database the project will use.
+        #[arg(long, value_enum, default_value_t = Database::Sqlite)]
+        database: Database,
     },
     /// Generate code inside an existing project.
     #[command(alias = "g")]
@@ -49,6 +52,35 @@ enum Command {
     },
     /// Print a random value suitable for ADMIN_JWT_SECRET.
     Secret,
+}
+
+/// A database the framework has a driver for.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Database {
+    Sqlite,
+    Postgres,
+    Mysql,
+}
+
+impl Database {
+    /// The framework's Cargo feature for this driver.
+    fn feature(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+            Self::Mysql => "mysql",
+        }
+    }
+
+    /// A `DATABASE_URL` to start from.
+    fn url(self, project: &str) -> String {
+        let name = project.replace('-', "_");
+        match self {
+            Self::Sqlite => "sqlite://db.sqlite3?mode=rwc".to_owned(),
+            Self::Postgres => format!("postgres://postgres:postgres@localhost:5432/{name}"),
+            Self::Mysql => format!("mysql://root:root@localhost:3306/{name}"),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -68,7 +100,8 @@ fn main() -> ExitCode {
         Command::New {
             name,
             framework_path,
-        } => new_project(Path::new("."), &name, framework_path.as_deref()),
+            database,
+        } => new_project(Path::new("."), &name, framework_path.as_deref(), database),
         Command::Generate {
             what: Generate::Model { name, fields },
         } => generate_model(Path::new("."), &name, &fields),
@@ -105,7 +138,12 @@ fn write_new(path: &Path, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn new_project(parent: &Path, name: &str, framework_path: Option<&Path>) -> Result<(), String> {
+fn new_project(
+    parent: &Path,
+    name: &str,
+    framework_path: Option<&Path>,
+    database: Database,
+) -> Result<(), String> {
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name
             .chars()
@@ -120,14 +158,23 @@ fn new_project(parent: &Path, name: &str, framework_path: Option<&Path>) -> Resu
     if root.exists() {
         return Err(format!("{} already exists", root.display()));
     }
-    let framework = match framework_path {
+    let source = match framework_path {
         Some(path) => {
             let absolute = path
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("{{ path = {:?} }}", absolute.display().to_string())
+            format!("path = {:?}", absolute.display().to_string())
         }
-        None => format!("{{ git = {REPOSITORY:?} }}"),
+        None => format!("git = {REPOSITORY:?}"),
+    };
+    // SQLite is the framework's default feature; the others replace it.
+    let framework = if database == Database::Sqlite {
+        format!("{{ {source} }}")
+    } else {
+        format!(
+            "{{ {source}, default-features = false, features = [{:?}] }}",
+            database.feature()
+        )
     };
 
     write_new(
@@ -189,15 +236,18 @@ pub fn register(app: App) -> App {{
 "
         ),
     )?;
-    let env_example = r"# Copy to .env and fill in. Never commit .env.
-DATABASE_URL=sqlite://db.sqlite3?mode=rwc
+    let env_example = &format!(
+        r"# Copy to .env and fill in. Never commit .env.
+DATABASE_URL={url}
 ADMIN_JWT_SECRET=
 # Set to true (the default) once you serve over HTTPS.
 ADMIN_COOKIE_SECURE=false
 ADMIN_SITE_TITLE=Administration
 # Enable file uploads: file:///absolute/path, s3://bucket/prefix, az://container/prefix
 # STORAGE_URL=
-";
+",
+        url = database.url(name)
+    );
     write_new(&root.join(".env.example"), env_example)?;
     write_new(
         &root.join(".env"),
@@ -464,9 +514,44 @@ mod tests {
     }
 
     #[test]
+    fn new_project_selects_the_database_driver() {
+        let dir = temp("database");
+        let read = |project: &str, file: &str| {
+            std::fs::read_to_string(dir.join(project).join(file)).unwrap()
+        };
+
+        new_project(&dir, "lite", None, Database::Sqlite).unwrap();
+        assert!(
+            read("lite", "Cargo.toml").contains(&format!("heraapi = {{ git = {REPOSITORY:?} }}"))
+        );
+        assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
+
+        new_project(&dir, "my-shop", None, Database::Postgres).unwrap();
+        assert!(read("my-shop", "Cargo.toml").contains(&format!(
+            "heraapi = {{ git = {REPOSITORY:?}, default-features = false, features = [\"postgres\"] }}"
+        )));
+        for file in [".env", ".env.example"] {
+            assert!(
+                read("my-shop", file)
+                    .contains("DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_shop\n"),
+                "{file}"
+            );
+        }
+
+        new_project(&dir, "legacy", None, Database::Mysql).unwrap();
+        assert!(read("legacy", "Cargo.toml").contains("features = [\"mysql\"]"));
+        assert!(
+            read("legacy", ".env")
+                .contains("DATABASE_URL=mysql://root:root@localhost:3306/legacy\n")
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn new_project_then_generate_model() {
         let dir = temp("project");
-        new_project(&dir, "blog", None).unwrap();
+        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
         let root = dir.join("blog");
         for file in [
             "Cargo.toml",
@@ -520,11 +605,11 @@ mod tests {
         );
 
         assert!(
-            new_project(&dir, "blog", None).is_err(),
+            new_project(&dir, "blog", None, Database::Sqlite).is_err(),
             "must not overwrite a project"
         );
-        assert!(new_project(&dir, "Bad Name", None).is_err());
-        assert!(new_project(&dir, "../escape", None).is_err());
+        assert!(new_project(&dir, "Bad Name", None, Database::Sqlite).is_err());
+        assert!(new_project(&dir, "../escape", None, Database::Sqlite).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -5,10 +5,10 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use sea_orm::sea_query::ColumnType;
+use sea_orm::sea_query::{Alias, ColumnType, Expr, Func, SimpleExpr};
 use sea_orm::{
-    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbErr,
-    EntityTrait, IdenStatic, IntoActiveModel, Iterable, ModelTrait, PaginatorTrait,
+    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbBackend,
+    DbErr, EntityTrait, IdenStatic, IntoActiveModel, Iterable, ModelTrait, PaginatorTrait,
     PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, Value,
 };
 
@@ -99,6 +99,71 @@ impl<E: EntityTrait> SeaOrmResource<E> {
         }
         self.options = options;
         self
+    }
+
+    /// Condition: column `i`, as text, contains `term`, ignoring case.
+    ///
+    /// Written with a substring function rather than `LIKE` so that the result is the same on
+    /// every database: `LIKE` is case-sensitive on PostgreSQL but not on SQLite, and would
+    /// treat `%` and `_` in the term as wildcards.
+    fn matches(&self, i: usize, term: &str) -> SimpleExpr {
+        // Imported here only: its `max`/`min` would otherwise shadow the integer ones.
+        use sea_orm::sea_query::ExprTrait;
+
+        let backend = self.db.get_database_backend();
+        let column = Expr::col((E::default(), self.columns[i]));
+        let text = if matches!(self.fields[i].kind, FieldKind::Text | FieldKind::LongText) {
+            column
+        } else {
+            let text_type = if backend == DbBackend::MySql {
+                "char"
+            } else {
+                "text"
+            };
+            column.cast_as(Alias::new(text_type))
+        };
+        let position = if backend == DbBackend::Postgres {
+            "strpos"
+        } else {
+            "instr"
+        };
+        let found = Func::cust(Alias::new(position))
+            .arg(Func::lower(text))
+            .arg(Func::lower(Expr::val(term)));
+        Expr::expr(found).gt(0)
+    }
+
+    /// Makes a row read from the database look the same whichever database it came from.
+    ///
+    /// Two generated types are printed differently by the drivers:
+    /// - date-times: SQLite returns its stored text (`2026-03-04 05:06:07`), PostgreSQL an
+    ///   ISO 8601 string;
+    /// - JSON: SQLite returns the document as a string, PostgreSQL as the document itself.
+    fn normalise(&self, mut row: Row) -> Row {
+        let sqlite = self.db.get_database_backend() == DbBackend::Sqlite;
+        for (field, ty) in self.fields.iter().zip(&self.types) {
+            let Some(value) = row.get_mut(&field.name) else {
+                continue;
+            };
+            let serde_json::Value::String(text) = value else {
+                continue;
+            };
+            match field.kind {
+                FieldKind::DateTime => {
+                    if let Some(iso) = iso_datetime(ty, text) {
+                        *text = iso;
+                    }
+                }
+                // Elsewhere a string here is a JSON document that is itself a string.
+                FieldKind::Json if sqlite => {
+                    if let Ok(document) = serde_json::from_str(text) {
+                        *value = document;
+                    }
+                }
+                _ => {}
+            }
+        }
+        row
     }
 
     fn pk_index(&self) -> Result<usize, AdminError> {
@@ -196,7 +261,7 @@ where
                     self.options.search_fields.contains(&field.name)
                 };
                 if chosen && !self.options.hidden_fields.contains(&field.name) {
-                    any = any.add(self.columns[i].contains(term));
+                    any = any.add(self.matches(i, term));
                     searchable += 1;
                 }
             }
@@ -214,7 +279,7 @@ where
             .await?
             .into_iter()
             .filter_map(|v| match v {
-                serde_json::Value::Object(map) => Some(map),
+                serde_json::Value::Object(map) => Some(self.normalise(map)),
                 _ => None,
             })
             .collect();
@@ -233,7 +298,7 @@ where
             .one(&self.db)
             .await?;
         Ok(match row {
-            Some(serde_json::Value::Object(map)) => Some(map),
+            Some(serde_json::Value::Object(map)) => Some(self.normalise(map)),
             _ => None,
         })
     }
@@ -362,6 +427,20 @@ fn naive_datetime(text: &str) -> Result<NaiveDateTime, String> {
         .iter()
         .find_map(|format| NaiveDateTime::parse_from_str(&text, format).ok())
         .ok_or_else(|| format!("`{text}` is not a date and time"))
+}
+
+/// A stored date-time as ISO 8601, with a zone offset only if the column has one; `None` if
+/// the text is not a date-time this crate understands, in which case it is left as it is.
+fn iso_datetime(ty: &ColumnType, text: &str) -> Option<String> {
+    if matches!(ty, ColumnType::TimestampWithTimeZone) {
+        let text = text.trim().replacen(' ', "T", 1);
+        return DateTime::<FixedOffset>::parse_from_rfc3339(&text)
+            .ok()
+            .map(|d| d.to_rfc3339());
+    }
+    naive_datetime(text)
+        .ok()
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
 }
 
 /// Converts form text to the SeaORM value for `ty`; `None` produces a typed NULL.

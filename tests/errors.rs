@@ -7,8 +7,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use heraapi::{AdminError, ApiResult, App, AuthConfig, ModelOptions, create_superuser};
 use http_body_util::BodyExt;
-use sea_orm::{ConnectOptions, Database};
 use tower::ServiceExt;
+
+mod common;
 
 mod note {
     use sea_orm::entity::prelude::*;
@@ -51,9 +52,7 @@ async fn internal() -> Result<String, AdminError> {
 }
 
 async fn app() -> Router {
-    let mut options = ConnectOptions::new("sqlite::memory:");
-    options.max_connections(1);
-    let db = Database::connect(options).await.unwrap();
+    let db = common::database().await;
     let routes = Router::new()
         .route("/shop/typed", get(typed))
         .route("/shop/untyped", get(untyped))

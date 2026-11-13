@@ -6,7 +6,7 @@ A Django-style framework for [axum](https://docs.rs/axum) and
 [SeaORM](https://www.sea-ql.org/SeaORM/). Define a model once and get its table, admin pages
 and REST endpoints, with authentication, file uploads and management commands built in.
 
-Status: early (0.1). Tested against SQLite only.
+Status: early (0.1). Tested against SQLite and PostgreSQL.
 
 ## Quick start
 
@@ -24,6 +24,9 @@ Generated projects depend on this repository through a Cargo `git` dependency. F
 checkout, use `cargo install --path cli` and `hera new blog --framework-path /path/to/checkout`.
 
 `hera new` writes a `.env` with a generated signing secret (git-ignored) and a `.env.example`.
+`hera new blog --database postgres` (or `mysql`) sets the project up for that database instead
+of SQLite: it selects the driver and writes a matching `DATABASE_URL` to edit.
+
 Field types: `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`;
 add `?` for nullable.
 
@@ -177,7 +180,25 @@ handlers.
 | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits | 1 GiB, 8 MiB |
 | `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR` | Admin look and feel | see `UiSettings::from_env` |
 
-Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`.
+Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`. `hera new
+--database` picks one for a new project; to switch an existing project, change the dependency
+to `heraapi = { ..., default-features = false, features = ["postgres"] }` and its
+`DATABASE_URL`.
+
+The API behaves the same on SQLite and PostgreSQL: date-times are ISO 8601
+(`2026-03-04T05:06:07`), JSON columns are returned as JSON, and `?q=` search ignores case and
+treats `%` and `_` as ordinary characters.
+
+## Running the tests
+
+```sh
+cargo test                       # SQLite, in memory
+
+# the same tests against PostgreSQL (each test uses its own schema)
+docker run -d --rm -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:17-alpine
+TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
+  cargo test --features postgres
+```
 
 ## Not done yet
 
@@ -192,8 +213,8 @@ Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`.
   (no direct-to-S3 multipart yet); abandoned sessions are not cleaned up automatically.
 - **Server:** no request timeout, compression, CORS or request-logging layers by default; add
   them with your own `tower` layers. No OpenAPI document.
-- **Verification:** PostgreSQL, MySQL, S3, Azure and GCS compile but have not been run against
-  real services.
+- **Verification:** MySQL, S3, Azure and GCS compile but have not been run against real
+  services.
 
 ## License
 

@@ -9,8 +9,10 @@ use heraapi::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend};
 use tower::ServiceExt;
+
+mod common;
 
 mod post {
     use sea_orm::entity::prelude::*;
@@ -42,22 +44,25 @@ const PASSWORD: &str = "correct horse battery staple";
 const TOTP_SECRET: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
 async fn database() -> DatabaseConnection {
-    // One connection: every pooled connection to `:memory:` would otherwise be its own database.
-    let mut options = ConnectOptions::new("sqlite::memory:");
-    options.max_connections(1);
-    let db = Database::connect(options).await.unwrap();
-    db.execute_unprepared(
+    let db = common::database().await;
+    // Hand-written rather than migrated, so the tests also cover a table the app did not
+    // create, with a database-side default the entity does not know about.
+    let (id, real, timestamp) = match db.get_database_backend() {
+        DbBackend::Postgres => ("SERIAL PRIMARY KEY", "DOUBLE PRECISION", "TIMESTAMP"),
+        _ => ("INTEGER PRIMARY KEY AUTOINCREMENT", "DOUBLE", "DATETIME"),
+    };
+    db.execute_unprepared(&format!(
         "CREATE TABLE post (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id},
             title TEXT NOT NULL,
             body TEXT NOT NULL,
             published BOOLEAN NOT NULL,
             views INTEGER NOT NULL,
-            rating DOUBLE,
-            created_at DATETIME,
+            rating {real},
+            created_at {timestamp},
             secret TEXT NOT NULL DEFAULT 'hunter2-default'
-        )",
-    )
+        )"
+    ))
     .await
     .unwrap();
     db
@@ -845,9 +850,7 @@ mod note {
 
 #[tokio::test]
 async fn app_migrates_registered_models_and_uses_database_accounts() {
-    let mut options = ConnectOptions::new("sqlite::memory:");
-    options.max_connections(1);
-    let db = Database::connect(options).await.unwrap();
+    let db = common::database().await;
 
     let app = App::new(db.clone(), AuthConfig::new(SECRET).unwrap())
         .model::<note::Entity>(ModelOptions::new().label("Notes"));
