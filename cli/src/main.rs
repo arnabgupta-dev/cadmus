@@ -1,0 +1,530 @@
+//! `hera`: creates projects and models for heraapi.
+//!
+//! ```text
+//! hera new blog
+//! cd blog
+//! hera generate model Post title:string body:text published:bool views:int rating:float?
+//! cargo run -- migrate
+//! cargo run -- createsuperuser --username admin
+//! cargo run -- serve
+//! ```
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+
+/// Where generated projects get the framework from until it is on crates.io.
+const REPOSITORY: &str = "https://github.com/arnabgupta-dev/heraapi";
+const MODULES_MARKER: &str = "// hera:modules (generated modules are added above this line)";
+const MODELS_MARKER: &str = "// hera:models (generated models are registered above this line)";
+
+#[derive(Parser)]
+#[command(
+    name = "hera",
+    about = "Project and model generator for heraapi",
+    version
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Create a new project directory.
+    New {
+        /// Project (and crate) name: lowercase letters, digits, `-` and `_`.
+        name: String,
+        /// Use a local checkout of the framework instead of the GitHub repository.
+        #[arg(long)]
+        framework_path: Option<PathBuf>,
+    },
+    /// Generate code inside an existing project.
+    #[command(alias = "g")]
+    Generate {
+        #[command(subcommand)]
+        what: Generate,
+    },
+    /// Print a random value suitable for ADMIN_JWT_SECRET.
+    Secret,
+}
+
+#[derive(Subcommand)]
+enum Generate {
+    /// Create a model with table, admin pages and REST endpoints.
+    Model {
+        /// Model name in PascalCase, e.g. `BlogPost`.
+        name: String,
+        /// Fields as `name:type`, with `?` for nullable. Types: string, text, int, bigint,
+        /// float, bool, datetime, date, json.
+        fields: Vec<String>,
+    },
+}
+
+fn main() -> ExitCode {
+    let result = match Cli::parse().command {
+        Command::New {
+            name,
+            framework_path,
+        } => new_project(Path::new("."), &name, framework_path.as_deref()),
+        Command::Generate {
+            what: Generate::Model { name, fields },
+        } => generate_model(Path::new("."), &name, &fields),
+        Command::Secret => {
+            println!("{}", secret());
+            Ok(())
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn secret() -> String {
+    rand::random::<[u8; 32]>()
+        .iter()
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+fn write_new(path: &Path, content: &str) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, content).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn new_project(parent: &Path, name: &str, framework_path: Option<&Path>) -> Result<(), String> {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
+    if !valid {
+        return Err(
+            "project names start with a lowercase letter and use lowercase letters, digits, `-`, `_`"
+                .into(),
+        );
+    }
+    let root = parent.join(name);
+    if root.exists() {
+        return Err(format!("{} already exists", root.display()));
+    }
+    let framework = match framework_path {
+        Some(path) => {
+            let absolute = path
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            format!("{{ path = {:?} }}", absolute.display().to_string())
+        }
+        None => format!("{{ git = {REPOSITORY:?} }}"),
+    };
+
+    write_new(
+        &root.join("Cargo.toml"),
+        &format!(
+            r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+heraapi = {framework}
+sea-orm = {{ version = "2", default-features = false, features = ["macros", "with-json", "with-chrono"] }}
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
+"#
+        ),
+    )?;
+    write_new(
+        &root.join("src/main.rs"),
+        r"mod models;
+mod routes;
+
+use heraapi::{AdminError, App};
+
+#[tokio::main]
+async fn main() -> Result<(), AdminError> {
+    let app = App::from_env().await?;
+    models::register(app).routes(routes::router()).run().await
+}
+",
+    )?;
+    write_new(
+        &root.join("src/routes.rs"),
+        r#"//! Your own routes, served next to the generated admin and REST API.
+
+use axum::Router;
+use axum::routing::get;
+
+pub fn router() -> Router {
+    Router::new().route("/health", get(|| async { "ok" }))
+}
+"#,
+    )?;
+    write_new(
+        &root.join("src/models/mod.rs"),
+        &format!(
+            r"//! Models. `hera generate model` adds a module and a registration line here.
+
+use heraapi::App;
+
+{MODULES_MARKER}
+
+/// Registers every model: each gets its table, admin pages and REST endpoints.
+pub fn register(app: App) -> App {{
+    app
+    {MODELS_MARKER}
+}}
+"
+        ),
+    )?;
+    let env_example = r"# Copy to .env and fill in. Never commit .env.
+DATABASE_URL=sqlite://db.sqlite3?mode=rwc
+ADMIN_JWT_SECRET=
+# Set to true (the default) once you serve over HTTPS.
+ADMIN_COOKIE_SECURE=false
+ADMIN_SITE_TITLE=Administration
+# Enable file uploads: file:///absolute/path, s3://bucket/prefix, az://container/prefix
+# STORAGE_URL=
+";
+    write_new(&root.join(".env.example"), env_example)?;
+    write_new(
+        &root.join(".env"),
+        &env_example.replace(
+            "ADMIN_JWT_SECRET=",
+            &format!("ADMIN_JWT_SECRET={}", secret()),
+        ),
+    )?;
+    write_new(
+        &root.join(".gitignore"),
+        "/target\n.env\n*.sqlite3\n/media\n",
+    )?;
+
+    println!("created {}", root.display());
+    println!("next:");
+    println!("  cd {name}");
+    println!("  hera generate model Post title:string body:text published:bool");
+    println!("  cargo run -- migrate");
+    println!("  cargo run -- createsuperuser --username admin");
+    println!("  cargo run -- serve");
+    Ok(())
+}
+
+/// One parsed `name:type[?]` field.
+#[derive(Debug, PartialEq)]
+struct FieldSpec {
+    name: String,
+    rust_type: &'static str,
+    attribute: Option<&'static str>,
+    nullable: bool,
+}
+
+/// Words that cannot be used as field names in generated Rust.
+const KEYWORDS: [&str; 24] = [
+    "as", "async", "await", "box", "const", "crate", "dyn", "enum", "fn", "for", "if", "impl",
+    "loop", "match", "mod", "move", "pub", "ref", "self", "struct", "trait", "type", "use",
+    "where",
+];
+
+fn parse_field(spec: &str) -> Result<FieldSpec, String> {
+    let (name, kind) = spec
+        .split_once(':')
+        .ok_or_else(|| format!("`{spec}`: fields look like name:type"))?;
+    let valid_name = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !valid_name || KEYWORDS.contains(&name) {
+        return Err(format!(
+            "`{name}`: field names are snake_case and must not be Rust keywords"
+        ));
+    }
+    if name == "id" {
+        return Err("`id` is generated automatically as the primary key".into());
+    }
+    let (kind, nullable) = match kind.strip_suffix('?') {
+        Some(base) => (base, true),
+        None => (kind, false),
+    };
+    let (rust_type, attribute) = match kind {
+        "string" => ("String", None),
+        "text" => ("String", Some("#[sea_orm(column_type = \"Text\")]")),
+        "int" => ("i32", None),
+        "bigint" => ("i64", None),
+        "float" => ("f64", None),
+        "bool" => ("bool", None),
+        "datetime" => ("DateTime", None),
+        "date" => ("Date", None),
+        "json" => ("Json", None),
+        other => {
+            return Err(format!(
+                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json)"
+            ));
+        }
+    };
+    Ok(FieldSpec {
+        name: name.to_owned(),
+        rust_type,
+        attribute,
+        nullable,
+    })
+}
+
+/// `BlogPost` -> `blog_post`.
+fn snake_case(pascal: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in pascal.chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// `BlogPost` -> `Blog posts`.
+fn label(pascal: &str) -> String {
+    let words = snake_case(pascal).replace('_', " ");
+    let mut chars = words.chars();
+    let capitalised: String = match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => words.clone(),
+    };
+    format!("{capitalised}s")
+}
+
+fn render_model(table: &str, fields: &[FieldSpec]) -> String {
+    // `f64` has no total equality, so `Eq` can only be derived without float fields.
+    let eq = if fields
+        .iter()
+        .any(|f| f.rust_type == "f64" || f.rust_type == "Json")
+    {
+        ""
+    } else {
+        ", Eq"
+    };
+    let mut body = String::new();
+    for field in fields {
+        if let Some(attribute) = field.attribute {
+            let _ = writeln!(body, "    {attribute}");
+        }
+        let ty = if field.nullable {
+            format!("Option<{}>", field.rust_type)
+        } else {
+            field.rust_type.to_owned()
+        };
+        let _ = writeln!(body, "    pub {}: {ty},", field.name);
+    }
+    format!(
+        r#"use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq{eq}, DeriveEntityModel)]
+#[sea_orm(table_name = "{table}")]
+pub struct Model {{
+    #[sea_orm(primary_key)]
+    pub id: i32,
+{body}}}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {{}}
+
+impl ActiveModelBehavior for ActiveModel {{}}
+"#
+    )
+}
+
+fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), String> {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if !valid {
+        return Err("model names are PascalCase letters and digits, e.g. BlogPost".into());
+    }
+    let module = snake_case(name);
+    if KEYWORDS.contains(&module.as_str()) {
+        return Err(format!(
+            "`{name}` would produce the Rust keyword `{module}`"
+        ));
+    }
+    let mut parsed = Vec::new();
+    for spec in fields {
+        let field = parse_field(spec)?;
+        if parsed.iter().any(|f: &FieldSpec| f.name == field.name) {
+            return Err(format!("field `{}` is listed twice", field.name));
+        }
+        parsed.push(field);
+    }
+
+    let index = project.join("src/models/mod.rs");
+    let existing = std::fs::read_to_string(&index).map_err(|_| {
+        "src/models/mod.rs not found: run this inside a project created by `hera new`".to_owned()
+    })?;
+    if !existing.contains(MODULES_MARKER) || !existing.contains(MODELS_MARKER) {
+        return Err("src/models/mod.rs has lost its `// hera:` marker comments".into());
+    }
+    // Check before writing anything, so a failure leaves the project untouched.
+    let file = project.join(format!("src/models/{module}.rs"));
+    if file.exists() {
+        return Err(format!("{} already exists", file.display()));
+    }
+
+    let updated = existing
+        .replace(
+            MODULES_MARKER,
+            &format!("pub mod {module};\n{MODULES_MARKER}"),
+        )
+        .replace(
+            MODELS_MARKER,
+            &format!(
+                "    .model::<{module}::Entity>(heraapi::ModelOptions::new().label({:?}))\n    {MODELS_MARKER}",
+                label(name)
+            ),
+        );
+    write_new(&file, &render_model(&module, &parsed))?;
+    std::fs::write(&index, updated).map_err(|e| format!("{}: {e}", index.display()))?;
+
+    println!("created {}", file.display());
+    println!("registered {name} in src/models/mod.rs");
+    println!("next: cargo run -- migrate");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hera-cli-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parses_field_specs() {
+        assert_eq!(
+            parse_field("title:string").unwrap(),
+            FieldSpec {
+                name: "title".into(),
+                rust_type: "String",
+                attribute: None,
+                nullable: false
+            }
+        );
+        let rating = parse_field("rating:float?").unwrap();
+        assert!(rating.nullable && rating.rust_type == "f64");
+        assert!(parse_field("body:text").unwrap().attribute.is_some());
+    }
+
+    #[test]
+    fn rejects_bad_field_specs() {
+        for bad in [
+            "title",
+            "title:varchar",
+            "Title:string",
+            "1st:int",
+            "type:string",
+            "id:int",
+            "a b:int",
+            ":int",
+            "x:",
+        ] {
+            assert!(parse_field(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn names_are_converted() {
+        assert_eq!(snake_case("BlogPost"), "blog_post");
+        assert_eq!(label("BlogPost"), "Blog posts");
+    }
+
+    #[test]
+    fn renders_entity_source() {
+        let fields = [
+            parse_field("title:string").unwrap(),
+            parse_field("score:float?").unwrap(),
+        ];
+        let source = render_model("post", &fields);
+        assert!(source.contains("#[sea_orm(table_name = \"post\")]"));
+        assert!(source.contains("pub title: String,"));
+        assert!(source.contains("pub score: Option<f64>,"));
+        assert!(!source.contains(", Eq"), "float fields cannot derive Eq");
+        assert!(render_model("tag", &[parse_field("name:string").unwrap()]).contains(", Eq"));
+    }
+
+    #[test]
+    fn new_project_then_generate_model() {
+        let dir = temp("project");
+        new_project(&dir, "blog", None).unwrap();
+        let root = dir.join("blog");
+        for file in [
+            "Cargo.toml",
+            "src/main.rs",
+            "src/routes.rs",
+            "src/models/mod.rs",
+            ".env",
+            ".env.example",
+            ".gitignore",
+        ] {
+            assert!(root.join(file).is_file(), "{file} missing");
+        }
+        // The real secret is only in the ignored file.
+        let env = std::fs::read_to_string(root.join(".env")).unwrap();
+        let secret_line = env
+            .lines()
+            .find(|l| l.starts_with("ADMIN_JWT_SECRET="))
+            .unwrap();
+        assert_eq!(secret_line.len(), "ADMIN_JWT_SECRET=".len() + 64);
+        assert!(
+            std::fs::read_to_string(root.join(".env.example"))
+                .unwrap()
+                .contains("ADMIN_JWT_SECRET=\n")
+        );
+        assert!(
+            std::fs::read_to_string(root.join(".gitignore"))
+                .unwrap()
+                .contains(".env")
+        );
+
+        generate_model(
+            &root,
+            "BlogPost",
+            &["title:string".into(), "body:text".into()],
+        )
+        .unwrap();
+        let index = std::fs::read_to_string(root.join("src/models/mod.rs")).unwrap();
+        assert!(index.contains("pub mod blog_post;"));
+        assert!(index.contains(".model::<blog_post::Entity>("));
+        assert!(root.join("src/models/blog_post.rs").is_file());
+
+        // Refusals must leave the project exactly as it was.
+        assert!(generate_model(&root, "BlogPost", &[]).is_err());
+        assert!(generate_model(&root, "Tag", &["name:nope".into()]).is_err());
+        assert!(generate_model(&root, "Tag", &["name:string".into(), "name:int".into()]).is_err());
+        assert!(generate_model(&root, "lowercase", &[]).is_err());
+        assert!(!root.join("src/models/tag.rs").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/models/mod.rs")).unwrap(),
+            index
+        );
+
+        assert!(
+            new_project(&dir, "blog", None).is_err(),
+            "must not overwrite a project"
+        );
+        assert!(new_project(&dir, "Bad Name", None).is_err());
+        assert!(new_project(&dir, "../escape", None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

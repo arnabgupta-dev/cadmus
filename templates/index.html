@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ site.site_title }}</h1>
+<div class="panel">
+  {% if models %}
+  <table>
+    <thead><tr><th>Model</th><th></th></tr></thead>
+    <tbody>
+    {% for m in models %}
+      <tr><td><a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a></td><td><a href="{{ base }}/{{ m.slug }}/new">Add</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No models are registered.</p>
+  {% endif %}
+</div>
+{% endblock %}

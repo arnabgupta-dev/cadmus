@@ -1,0 +1,17 @@
+[package]
+name = "heraapi-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Project and model generator for heraapi"
+license = "MIT"
+repository = "https://github.com/arnabgupta-dev/heraapi"
+keywords = ["axum", "sea-orm", "admin", "generator", "cli"]
+categories = ["command-line-utilities", "web-programming"]
+
+[[bin]]
+name = "hera"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rand = "0.10"

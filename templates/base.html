@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en" data-theme="{{ site.theme }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ site.site_title }}{% endblock %}</title>
+<style>
+:root { --accent: {{ site.accent_color }}; --bg: #f6f7f9; --panel: #fff; --text: #1c2330; --muted: #667085; --line: #dfe3ea; --danger: #c0352b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #98a2b3; --line: #2c3340; --danger: #f0776c; } }
+:root[data-theme="dark"] { --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #98a2b3; --line: #2c3340; --danger: #f0776c; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--text); }
+header .brand img { height: 26px; }
+header nav { display: flex; flex-wrap: wrap; gap: 14px; flex: 1; }
+header form { margin: 0; display: flex; align-items: center; gap: 10px; color: var(--muted); }
+main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+h1 { font-size: 22px; margin: 0 0 16px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+input, textarea { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; width: 100%; }
+input[type=checkbox] { width: auto; }
+input[readonly], textarea[readonly] { color: var(--muted); }
+label { display: block; font-weight: 600; margin: 14px 0 4px; }
+button, .button { font: inherit; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 7px 14px; display: inline-block; }
+button.plain { background: transparent; color: var(--accent); }
+button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+.error { border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 9px 12px; margin-bottom: 14px; }
+.muted { color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.pager { display: flex; gap: 14px; align-items: center; margin-top: 14px; }
+footer { text-align: center; color: var(--muted); padding: 24px 16px; font-size: 13px; }
+</style>
+{% if site.custom_css_url %}<link rel="stylesheet" href="{{ site.custom_css_url }}">{% endif %}
+</head>
+<body>
+<header>
+  <a class="brand" href="{{ base }}/">{% if site.logo_url %}<img src="{{ site.logo_url }}" alt="">{% endif %}{{ site.site_title }}</a>
+  <nav>
+    {% if user %}{% for m in models %}<a href="{{ base }}/{{ m.slug }}">{{ m.label }}</a>{% endfor %}{% endif %}
+    {% for link in site.nav_links %}<a href="{{ link.url }}">{{ link.label }}</a>{% endfor %}
+  </nav>
+  {% if user %}
+  <form method="post" action="{{ base }}/logout">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <span>{{ user }}</span><button class="plain" type="submit">Log out</button>
+  </form>
+  {% endif %}
+</header>
+<main>{% block content %}{% endblock %}</main>
+{% if site.footer_text %}<footer>{{ site.footer_text }}</footer>{% endif %}
+</body>
+</html>

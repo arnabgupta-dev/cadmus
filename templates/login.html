@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Log in · {{ site.site_title }}{% endblock %}
+{% block content %}
+<div class="panel" style="max-width: 380px; margin: 40px auto;">
+  <h1>Log in</h1>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ base }}/login">
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <label for="totp">Authenticator code{% if not totp_required %} <span class="muted">(if enabled)</span>{% endif %}</label>
+    <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}"{% if totp_required %} required{% endif %}>
+    <div class="actions"><button type="submit">Log in</button></div>
+  </form>
+</div>
+{% endblock %}

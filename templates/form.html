@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ model.label }} · {{ site.site_title }}{% endblock %}
+{% block content %}
+<h1>{% if id is not none %}Edit{% else %}Add{% endif %} {{ model.label }}</h1>
+<div class="panel">
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    {% for f in fields %}
+      <label for="f-{{ f.name }}">{{ f.label }}</label>
+      {% if f.kind == "boolean" %}
+        <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if f.readonly %} disabled{% endif %}>
+      {% elif f.kind == "long_text" or f.kind == "json" %}
+        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="6"{% if f.required %} required{% endif %}{% if f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
+      {% else %}
+        <input id="f-{{ f.name }}" name="{{ f.name }}" value="{{ f.value }}"
+          type="{% if f.kind == "integer" or f.kind == "float" %}number{% elif f.kind == "date_time" %}datetime-local{% elif f.kind == "date" %}date{% elif f.kind == "time" %}time{% else %}text{% endif %}"
+          {% if f.kind == "float" %}step="any"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% endif %}
+          {% if f.required %}required{% endif %}{% if f.readonly %} readonly{% endif %}>
+      {% endif %}
+    {% endfor %}
+    <div class="actions">
+      <button type="submit">Save</button>
+      <a class="button" style="background: transparent; color: var(--accent);" href="{{ base }}/{{ model.slug }}">Cancel</a>
+    </div>
+  </form>
+  {% if id is not none %}
+  <form method="post" action="{{ base }}/{{ model.slug }}/{{ id|urlencode }}/delete" class="actions">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button class="danger" type="submit">Delete</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
