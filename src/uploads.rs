@@ -34,9 +34,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::AdminState;
-use crate::api::{ApiError, ApiResult, bad_request};
+use crate::api::bad_request;
 use crate::auth::Session;
-use crate::error::AdminError;
+use crate::error::{AdminError, ApiError, ApiResult};
 use crate::storage::Storage;
 
 const OFFSET_HEADER: &str = "upload-offset";

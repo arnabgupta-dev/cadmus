@@ -9,6 +9,7 @@ use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
 use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -19,8 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
 use crate::AdminState;
-use crate::api::ApiError;
-use crate::error::AdminError;
+use crate::error::{AdminError, ApiError};
 
 pub(crate) const COOKIE: &str = "admin_token";
 const MIN_SECRET_BYTES: usize = 32;
@@ -397,6 +397,17 @@ impl Session {
         Ok(())
     }
 
+    /// The session carried by the admin cookie, if there is a valid one.
+    pub(crate) fn from_cookie(headers: &HeaderMap, state: &AdminState) -> Option<Self> {
+        let jar = CookieJar::from_headers(headers);
+        let claims = state.auth.verify(jar.get(COOKIE)?.value())?;
+        Some(Self {
+            username: claims.sub,
+            csrf: claims.csrf,
+            via_cookie: true,
+        })
+    }
+
     /// Token to embed in forms.
     pub(crate) fn csrf(&self) -> &str {
         &self.csrf
@@ -443,16 +454,8 @@ impl FromRequestParts<Arc<AdminState>> for Session {
                 via_cookie: false,
             });
         }
-        let jar = CookieJar::from_headers(&parts.headers);
-        let claims = jar
-            .get(COOKIE)
-            .and_then(|cookie| state.auth.verify(cookie.value()));
-        match claims {
-            Some(claims) => Ok(Self {
-                username: claims.sub,
-                csrf: claims.csrf,
-                via_cookie: true,
-            }),
+        match Self::from_cookie(&parts.headers, state) {
+            Some(session) => Ok(session),
             None if parts
                 .uri
                 .path()

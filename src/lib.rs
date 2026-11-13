@@ -32,7 +32,7 @@ pub use app::App;
 pub use auth::{
     AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, verify_totp,
 };
-pub use error::AdminError;
+pub use error::{AdminError, ApiError, ApiResult};
 pub use resource::{
     Field, FieldKind, Input, ListQuery, ModelOptions, Page, Resource, Row, WriteMode,
 };
@@ -43,12 +43,13 @@ pub use uploads::{Progress, Uploads, file, session};
 pub use users::{DbUserStore, change_password, create_superuser, user};
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 5] = [
+const TEMPLATES: [(&str, &str); 6] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
     ("list.html", include_str!("../templates/list.html")),
     ("form.html", include_str!("../templates/form.html")),
+    ("error.html", include_str!("../templates/error.html")),
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
@@ -88,7 +89,25 @@ impl Admin {
     }
 
     /// Routes for the panel, already prefixed with the base path; `merge` it into your app.
+    ///
+    /// Errors from these routes are JSON under the API path and pages under the admin path.
+    /// To get the same for routes of your own, and to turn panics into `500`s, pass the
+    /// merged router through [`Admin::handle_errors`].
     pub fn router(&self) -> axum::Router {
+        self.handle_errors(self.routes())
+    }
+
+    /// Adds the central error handling to `router`: panics become `500`s, and error
+    /// responses (including unknown URLs and wrong methods) are JSON under the API path and
+    /// pages under the admin path. Responses outside both paths are left alone.
+    pub fn handle_errors(&self, router: axum::Router) -> axum::Router {
+        router.layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&self.state),
+            error::middleware,
+        ))
+    }
+
+    pub(crate) fn routes(&self) -> axum::Router {
         let router =
             handlers::router(Arc::clone(&self.state)).merge(api::router(Arc::clone(&self.state)));
         match &self.state.uploads {

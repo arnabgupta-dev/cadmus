@@ -5,18 +5,17 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::header::{LOCATION, WWW_AUTHENTICATE};
+use axum::http::header::LOCATION;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use sea_orm::SqlErr;
 use serde::Serialize;
 use serde_json::json;
 
 use crate::AdminState;
 use crate::auth::{self, Credentials, Session};
-use crate::error::AdminError;
+use crate::error::{AdminError, ApiError, ApiResult};
 use crate::handlers::{ListParams, list_query};
 use crate::resource::{Input, Resource, Row, WriteMode};
 
@@ -37,80 +36,8 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         .with_state(state)
 }
 
-/// An [`AdminError`] rendered as `{"error": {"code", "message", "field"}}`.
-pub(crate) struct ApiError(AdminError);
-
-impl From<AdminError> for ApiError {
-    fn from(error: AdminError) -> Self {
-        Self(error)
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self.0 {
-            AdminError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found", self.0.to_string()),
-            AdminError::BadInput { message, .. } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_field",
-                message.clone(),
-            ),
-            AdminError::Unsupported(message) => {
-                (StatusCode::BAD_REQUEST, "bad_request", message.clone())
-            }
-            AdminError::Unauthorized => {
-                (StatusCode::UNAUTHORIZED, "unauthorized", self.0.to_string())
-            }
-            AdminError::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message.clone()),
-            AdminError::Conflict(message) => (StatusCode::CONFLICT, "conflict", message.clone()),
-            AdminError::TooLarge(message) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, "too_large", message.clone())
-            }
-            // Constraint violations are the caller's to fix; say so without echoing SQL.
-            AdminError::Db(db)
-                if matches!(
-                    db.sql_err(),
-                    Some(
-                        SqlErr::UniqueConstraintViolation(_)
-                            | SqlErr::ForeignKeyConstraintViolation(_)
-                    )
-                ) =>
-            {
-                (
-                    StatusCode::CONFLICT,
-                    "conflict",
-                    "the change conflicts with existing data (unique or foreign key constraint)"
-                        .to_owned(),
-                )
-            }
-            _ => {
-                tracing::error!(error = %self.0, "API request failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "internal error".to_owned(),
-                )
-            }
-        };
-        let field = match &self.0 {
-            AdminError::BadInput { field, .. } => Some(field.as_str()),
-            _ => None,
-        };
-        let body = Json(json!({ "error": { "code": code, "message": message, "field": field } }));
-        let mut response = (status, body).into_response();
-        if status == StatusCode::UNAUTHORIZED {
-            response
-                .headers_mut()
-                .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        }
-        response
-    }
-}
-
-pub(crate) type ApiResult<T> = Result<T, ApiError>;
-
 pub(crate) fn bad_request(message: &str) -> ApiError {
-    ApiError(AdminError::Unsupported(message.to_owned()))
+    AdminError::Unsupported(message.to_owned()).into()
 }
 
 fn strip_hidden(resource: &dyn Resource, mut row: Row) -> Row {
@@ -131,7 +58,7 @@ fn json_input(resource: &dyn Resource, body: &Bytes, creating: bool) -> ApiResul
     let mut input = Input::new();
     for (name, value) in object {
         let bad = |message: &str| {
-            ApiError(AdminError::BadInput {
+            ApiError::from(AdminError::BadInput {
                 field: name.clone(),
                 message: message.to_owned(),
             })

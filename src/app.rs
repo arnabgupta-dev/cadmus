@@ -1,7 +1,7 @@
 //! The framework entry point: one [`App`] owns the database, the registered models, the admin,
 //! the REST API and the management commands.
 
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::sync::Arc;
 
 use axum::Router;
@@ -216,7 +216,8 @@ impl App {
         for resource in &self.resources {
             builder = builder.register_shared(Arc::clone(resource));
         }
-        Ok(builder.build()?.router().merge(self.routes.clone()))
+        let admin = builder.build()?;
+        Ok(admin.handle_errors(admin.routes().merge(self.routes.clone())))
     }
 
     /// Serves the app until Ctrl-C.
@@ -244,7 +245,9 @@ impl App {
     /// # Errors
     /// Returns whatever the chosen command fails with.
     pub async fn run(self) -> Result<(), AdminError> {
-        match Cli::parse().command {
+        let command = Cli::parse().command;
+        init_logging()?;
+        match command {
             Command::Serve { bind } => match bind {
                 Some(address) => self.bind(address).serve().await,
                 None => self.serve().await,
@@ -296,6 +299,43 @@ impl App {
             }
         }
     }
+}
+
+/// Prints the framework's log messages (failed requests, panics, rejected logins) to standard
+/// error. Does nothing if the application has already installed a `tracing` subscriber.
+///
+/// `LOG_LEVEL` is `error`, `warn`, `info` (default), `debug` or `trace`. SQL statements are
+/// logged from `debug` up.
+fn init_logging() -> Result<(), AdminError> {
+    use tracing::Level;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let level = match std::env::var("LOG_LEVEL") {
+        Ok(text) => text.parse::<Level>().map_err(|_| {
+            AdminError::Config("LOG_LEVEL must be error, warn, info, debug or trace".into())
+        })?,
+        Err(_) => Level::INFO,
+    };
+    let sql = if level >= Level::DEBUG {
+        level
+    } else {
+        Level::WARN
+    };
+    let filter = tracing_subscriber::filter::Targets::new()
+        .with_default(level)
+        .with_target("sqlx", sql);
+    // Fails only when a subscriber is already installed, which is the application's choice.
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                // Colour only when a person is looking, not in a log file.
+                .with_ansi(std::io::stderr().is_terminal()),
+        )
+        .with(filter)
+        .try_init();
+    Ok(())
 }
 
 /// Connection-pool settings from the environment.

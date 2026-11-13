@@ -47,7 +47,7 @@ struct NavModel<'a> {
     label: &'a str,
 }
 
-fn render(
+pub(crate) fn render(
     state: &AdminState,
     template: &str,
     session: Option<&Session>,

@@ -79,6 +79,37 @@ Errors are JSON: `{"error": {"code", "message", "field"}}` with `400`, `401`, `4
 `409` (unique/foreign-key conflict), `413` or `422`. Unknown, hidden and read-only fields in a
 body are rejected rather than ignored.
 
+## Errors
+
+Every failure is an `AdminError`, and one layer decides how it is shown:
+
+| Where the request went | An error looks like |
+|---|---|
+| under `/api` | JSON, `{"error": {"code", "message", "field"}}` |
+| under `/admin` | a page in the admin layout (`error.html`, overridable like the other templates) |
+| anywhere else | plain text, or whatever your handler returned |
+
+This includes unknown URLs, wrong methods (`405`) and panics, which become a `500` instead of a
+dropped connection. Internal details (SQL, file paths, panic messages) are logged and never
+sent to the client.
+
+In your own handlers, return `ApiResult<T>` for JSON errors. Database, storage and I/O errors
+convert with `?`, and `AdminError::custom` gives an error your own status and code:
+
+```rust
+async fn buy(State(db): State<DatabaseConnection>) -> ApiResult<Json<Receipt>> {
+    let item = item::Entity::find_by_id(1).one(&db).await?
+        .ok_or_else(|| AdminError::NotFound("item".into()))?;
+    if item.left == 0 {
+        return Err(AdminError::custom(StatusCode::CONFLICT, "out_of_stock", "sold out").into());
+    }
+    Ok(Json(Receipt { id: item.id }))
+}
+```
+
+Log messages go to standard error; `LOG_LEVEL` sets the detail. If your `main` installs its own
+`tracing` subscriber before `run()`, that one is used instead.
+
 ## Authentication
 
 Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); implement
@@ -134,6 +165,7 @@ handlers.
 | `DATABASE_URL` | **Required** | — |
 | `ADMIN_JWT_SECRET` | **Required.** Signing secret, ≥ 32 bytes (`hera secret`) | — |
 | `APP_BIND` | Listen address | `127.0.0.1:3000` |
+| `LOG_LEVEL` | `error`, `warn`, `info`, `debug` (adds SQL statements) or `trace` | `info` |
 | `ADMIN_BASE_PATH`, `API_BASE_PATH` | URL prefixes | `/admin`, `/api` |
 | `DB_MAX_CONNECTIONS`, `DB_MIN_CONNECTIONS`, `DB_ACQUIRE_TIMEOUT_SECS` | Connection pool | driver defaults |
 | `ADMIN_JWT_TTL_SECS` | Token lifetime | `3600` |
