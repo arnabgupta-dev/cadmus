@@ -1,5 +1,6 @@
 //! HTTP handlers. They only translate between HTTP and the `Resource`/auth seams.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -240,10 +241,74 @@ pub(crate) fn list_query(
     }
 }
 
+/// One cell of a list page. A foreign key shows the name of the row it points to, linked.
+#[derive(Serialize)]
+struct ListCell {
+    text: String,
+    /// Model and id of the related row to link to.
+    link: Option<(String, String)>,
+}
+
 #[derive(Serialize)]
 struct ListRow {
     id: Option<String>,
-    cells: Vec<String>,
+    cells: Vec<ListCell>,
+}
+
+/// The most related rows a form offers in a dropdown. Beyond this the id is typed instead.
+const MAX_CHOICES: u64 = 200;
+
+/// The model a foreign-key field points to, if it is registered, the key is its primary key,
+/// and this account may view it. Otherwise the field is shown as the plain value it holds,
+/// so nothing about the other model leaks.
+fn related<'a>(
+    state: &'a AdminState,
+    session: &Session,
+    field: &Field,
+) -> Option<&'a dyn Resource> {
+    let reference = field.reference.as_ref()?;
+    let target = state.resource(&reference.model).ok()?.as_ref();
+    let usable = pk_name(target) == Some(reference.column.as_str())
+        && session.can(target.slug(), Action::View);
+    usable.then_some(target)
+}
+
+/// The name of a row where another model points to it: its display field (by default the
+/// first text column), or `#id` if that is empty or there is none.
+fn row_label(resource: &dyn Resource, row: &Row) -> String {
+    let chosen = resource.options().display_field.as_deref();
+    let field = visible_fields(resource).find(|f| match chosen {
+        Some(name) => f.name == name,
+        None => f.kind == FieldKind::Text && f.reference.is_none(),
+    });
+    field
+        .map(|f| display(row.get(&f.name)))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| {
+            let id = pk_name(resource).map(|pk| display(row.get(pk)));
+            format!("#{}", id.unwrap_or_default())
+        })
+}
+
+/// A related model with the names of some of its rows, keyed by id.
+type RelatedNames<'a> = (&'a dyn Resource, HashMap<String, String>);
+
+/// Names of the rows of `target` with these ids, keyed by id.
+async fn related_labels(
+    target: &dyn Resource,
+    mut ids: Vec<String>,
+) -> Result<HashMap<String, String>, AdminError> {
+    ids.sort();
+    ids.dedup();
+    let Some(pk) = pk_name(target) else {
+        return Ok(HashMap::new());
+    };
+    Ok(target
+        .get_many(&ids)
+        .await?
+        .iter()
+        .map(|row| (display(row.get(pk)), row_label(target, row)))
+        .collect())
 }
 
 async fn list(
@@ -267,6 +332,23 @@ async fn list(
             .filter_map(|name| visible_fields(resource).find(|f| &f.name == name))
             .collect()
     };
+    // For each foreign-key column, the names of the rows this page points to: one query per
+    // such column, however many rows are shown.
+    let mut names: Vec<Option<RelatedNames<'_>>> = Vec::new();
+    for field in &columns {
+        names.push(match related(&state, &session, field) {
+            Some(target) => {
+                let ids = page
+                    .rows
+                    .iter()
+                    .map(|row| display(row.get(&field.name)))
+                    .filter(|id| !id.is_empty())
+                    .collect();
+                Some((target, related_labels(target, ids).await?))
+            }
+            None => None,
+        });
+    }
     let pk = pk_name(resource);
     let rows: Vec<ListRow> = page
         .rows
@@ -275,7 +357,24 @@ async fn list(
             id: pk.map(|name| display(row.get(name))),
             cells: columns
                 .iter()
-                .map(|f| truncate(display(row.get(&f.name))))
+                .zip(&names)
+                .map(|(f, names)| {
+                    let value = display(row.get(&f.name));
+                    let named = names
+                        .as_ref()
+                        .and_then(|(target, labels)| Some((target, labels.get(&value)?)));
+                    match named {
+                        Some((target, label)) => ListCell {
+                            text: truncate(label.clone()),
+                            link: Some((target.slug().to_owned(), value)),
+                        },
+                        // Not a foreign key, or one that points at nothing.
+                        None => ListCell {
+                            text: truncate(value),
+                            link: None,
+                        },
+                    }
+                })
                 .collect(),
         })
         .collect();
@@ -306,6 +405,68 @@ struct FormField<'a> {
     value: String,
     required: bool,
     readonly: bool,
+    /// For a foreign key: the rows it can point to, as a dropdown.
+    choices: Option<Vec<Choice>>,
+    /// Extra line under the input.
+    hint: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Choice {
+    value: String,
+    label: String,
+    selected: bool,
+}
+
+/// How a foreign-key field is offered: a dropdown of the related rows, or, if there are too
+/// many to list, the plain input with a hint naming the row it currently points to.
+async fn reference_input(
+    target: &dyn Resource,
+    current: &str,
+) -> Result<(Option<Vec<Choice>>, Option<String>), AdminError> {
+    let Some(pk) = pk_name(target) else {
+        return Ok((None, None));
+    };
+    let query = ListQuery {
+        page: 0,
+        per_page: MAX_CHOICES,
+        search: None,
+    };
+    let page = target.list(&query).await?;
+    if page.total > MAX_CHOICES {
+        let labels = related_labels(target, vec![current.to_owned()]).await?;
+        let pointing = labels
+            .get(current)
+            .map(|label| format!("Currently: {label}. "))
+            .unwrap_or_default();
+        let hint = format!(
+            "{pointing}There are too many {} to list here; enter an id.",
+            target.label()
+        );
+        return Ok((None, Some(hint)));
+    }
+    let mut choices: Vec<Choice> = page
+        .rows
+        .iter()
+        .map(|row| {
+            let value = display(row.get(pk));
+            Choice {
+                selected: value == current,
+                label: row_label(target, row),
+                value,
+            }
+        })
+        .collect();
+    choices.sort_by_cached_key(|c| c.label.to_lowercase());
+    // Keep a value that points at nothing visible, so saving does not silently change it.
+    if !current.is_empty() && !choices.iter().any(|c| c.selected) {
+        choices.push(Choice {
+            value: current.to_owned(),
+            label: format!("#{current} (not found)"),
+            selected: true,
+        });
+    }
+    Ok((Some(choices), None))
 }
 
 fn input_value(field: &Field, value: Option<&serde_json::Value>) -> String {
@@ -322,37 +483,48 @@ fn input_value(field: &Field, value: Option<&serde_json::Value>) -> String {
 }
 
 /// Builds the form description for a new (`row == None`) or existing record.
-fn form_fields<'a>(resource: &'a dyn Resource, row: Option<&Row>) -> Vec<FormField<'a>> {
+async fn form_fields<'a>(
+    state: &AdminState,
+    session: &Session,
+    resource: &'a dyn Resource,
+    row: Option<&Row>,
+) -> Result<Vec<FormField<'a>>, AdminError> {
     let creating = row.is_none();
     let readonly_names = &resource.options().readonly_fields;
-    visible_fields(resource)
-        // A database-generated key has nothing to show before the row exists.
-        .filter(|f| !(creating && f.auto))
-        .map(|f| {
-            let readonly = !f.editable
-                || f.auto
-                || (f.primary_key && !creating)
-                || readonly_names.contains(&f.name);
-            FormField {
-                name: &f.name,
-                label: &f.label,
-                kind: f.kind,
-                value: row
-                    .map(|r| input_value(f, r.get(&f.name)))
-                    .unwrap_or_default(),
-                required: !f.nullable
-                    && !readonly
-                    && !matches!(
-                        f.kind,
-                        FieldKind::Boolean | FieldKind::Text | FieldKind::LongText
-                    ),
-                readonly,
-            }
-        })
-        .collect()
+    let mut fields = Vec::new();
+    // A database-generated key has nothing to show before the row exists.
+    for f in visible_fields(resource).filter(|f| !(creating && f.auto)) {
+        let readonly = !f.editable
+            || f.auto
+            || (f.primary_key && !creating)
+            || readonly_names.contains(&f.name);
+        let value = row
+            .map(|r| input_value(f, r.get(&f.name)))
+            .unwrap_or_default();
+        let (choices, hint) = match related(state, session, f) {
+            Some(target) => reference_input(target, &value).await?,
+            None => (None, None),
+        };
+        fields.push(FormField {
+            name: &f.name,
+            label: &f.label,
+            kind: f.kind,
+            value,
+            required: !f.nullable
+                && !readonly
+                && !matches!(
+                    f.kind,
+                    FieldKind::Boolean | FieldKind::Text | FieldKind::LongText
+                ),
+            readonly,
+            choices,
+            hint,
+        });
+    }
+    Ok(fields)
 }
 
-fn render_form(
+async fn render_form(
     state: &AdminState,
     session: &Session,
     resource: &dyn Resource,
@@ -360,13 +532,14 @@ fn render_form(
     row: Option<&Row>,
     error: Option<String>,
 ) -> Result<Html<String>, AdminError> {
+    let fields = form_fields(state, session, resource, row).await?;
     render(
         state,
         "form.html",
         Some(session),
         context! {
             model => Value::from(Serde(NavModel::new(resource, session))),
-            fields => Value::from(Serde(form_fields(resource, row))),
+            fields => Value::from(Serde(fields)),
             id => id,
             error => error,
             // A new record can always be saved here: the page itself required `add`.
@@ -411,11 +584,11 @@ async fn new_form(
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
-    render_form(&state, &session, resource, None, None, None)
+    render_form(&state, &session, resource, None, None, None).await
 }
 
 /// Re-renders the form for errors the user can fix; passes everything else up.
-fn form_error(
+async fn form_error(
     state: &AdminState,
     session: &Session,
     resource: &dyn Resource,
@@ -435,7 +608,7 @@ fn form_error(
     if let (Some(id), Some(pk)) = (id, pk_name(resource)) {
         row.insert(pk.to_owned(), serde_json::Value::String(id.to_owned()));
     }
-    let page = render_form(state, session, resource, id, Some(&row), Some(message))?;
+    let page = render_form(state, session, resource, id, Some(&row), Some(message)).await?;
     Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
 }
 
@@ -450,7 +623,7 @@ async fn create(
     session.require(&model, Action::Add)?;
     match resource.create(&form_input(resource, &form)).await {
         Ok(_) => Ok(Redirect::to(&format!("{}/{model}", state.base)).into_response()),
-        Err(error) => form_error(&state, &session, resource, None, &form, error),
+        Err(error) => form_error(&state, &session, resource, None, &form, error).await,
     }
 }
 
@@ -465,7 +638,7 @@ async fn edit_form(
         .get(&id)
         .await?
         .ok_or_else(|| AdminError::NotFound(format!("{model} `{id}`")))?;
-    render_form(&state, &session, resource, Some(&id), Some(&row), None)
+    render_form(&state, &session, resource, Some(&id), Some(&row), None).await
 }
 
 async fn update(
@@ -482,7 +655,7 @@ async fn update(
         .await
     {
         Ok(()) => Ok(Redirect::to(&format!("{}/{model}", state.base)).into_response()),
-        Err(error) => form_error(&state, &session, resource, Some(&id), &form, error),
+        Err(error) => form_error(&state, &session, resource, Some(&id), &form, error).await,
     }
 }
 

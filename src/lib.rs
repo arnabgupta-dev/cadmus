@@ -39,7 +39,7 @@ pub use auth::{
 };
 pub use error::{AdminError, ApiError, ApiResult};
 pub use resource::{
-    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Resource, Row, WriteMode,
+    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
 };
 pub use seaorm::SeaOrmResource;
 pub use settings::{NavLink, Theme, UiSettings};

@@ -27,8 +27,8 @@ checkout, use `cargo install --path cli` and `hera new blog --framework-path /pa
 `hera new blog --database postgres` (or `mysql`) sets the project up for that database instead
 of SQLite: it selects the driver and writes a matching `DATABASE_URL` to edit.
 
-Field types: `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`;
-add `?` for nullable.
+Field types: `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`,
+and `references` for a foreign key to another model; add `?` for nullable.
 
 A project's `main.rs` is this:
 
@@ -52,6 +52,34 @@ app.model::<post::Entity>(
         .hidden_fields(["internal_note"]),
 )
 ```
+
+## Relations
+
+A foreign key is a `references` field. Generate the model it points to first:
+
+```sh
+hera generate model Author name:string email:string
+hera generate model Post title:string author:references editor:references=author?
+```
+
+`author:references` adds an `author_id` column pointing at `author`. `editor:references=author?`
+adds an optional `editor_id` that also points at `author`. A model can point to itself
+(`parent:references=category?` on `Category`). `migrate` creates the foreign-key constraints.
+
+In the admin, such a field is a dropdown of the related rows on forms, and lists show the
+related row's name, linked to it, instead of its number.
+
+- **Which name:** a row is named by its first text column (`name`, `title`, ...). Choose
+  another with `ModelOptions::new().display_field("email")`.
+- **Long lists:** above 200 related rows there is no dropdown; the form takes the id and says
+  which row it currently points to.
+- **Permissions:** names are shown only to accounts that may view the related model. Others
+  see and edit the plain number.
+- **Deleting:** a row that others still point to cannot be deleted (`409`).
+- **Hand-written entities:** any `belongs_to` relation in an entity's `Relation` enum is
+  picked up the same way; there is nothing to configure.
+
+The REST API is unchanged: it reads and writes the id (`author_id`).
 
 ## Management commands
 
@@ -271,8 +299,9 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
   for two-factor authentication, or a page for users to change their own password. Login
   limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.
-- **Admin:** uploaded files are not editable in the admin; no relation widgets, filters or
-  bulk actions; no file-upload field on model forms.
+- **Admin:** uploaded files are not editable in the admin; no filters or bulk actions; no
+  file-upload field on model forms. Relations: no many-to-many widget, no list of the rows
+  that point to a record, and no search-as-you-type for long lists of related rows.
 - **Models:** single-column primary keys only; UUID, decimal, enum and array columns are
   read-only.
 - **Uploads:** completing a resumable upload copies the chunks once inside the storage backend

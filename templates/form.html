@@ -8,7 +8,12 @@
     <input type="hidden" name="_csrf" value="{{ csrf }}">
     {% for f in fields %}
       <label for="f-{{ f.name }}">{{ f.label }}</label>
-      {% if f.kind == "boolean" %}
+      {% if f.choices is not none %}
+        <select id="f-{{ f.name }}" name="{{ f.name }}"{% if f.required %} required{% endif %}{% if f.readonly %} disabled{% endif %}>
+          <option value="">{% if f.required %}Choose…{% else %}— none —{% endif %}</option>
+          {% for c in f.choices %}<option value="{{ c.value }}"{% if c.selected %} selected{% endif %}>{{ c.label }}</option>{% endfor %}
+        </select>
+      {% elif f.kind == "boolean" %}
         <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if f.readonly %} disabled{% endif %}>
       {% elif f.kind == "long_text" or f.kind == "json" %}
         <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="6"{% if f.required %} required{% endif %}{% if f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
@@ -18,6 +23,7 @@
           {% if f.kind == "float" %}step="any"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% endif %}
           {% if f.required %}required{% endif %}{% if f.readonly %} readonly{% endif %}>
       {% endif %}
+      {% if f.hint %}<p class="muted">{{ f.hint }}</p>{% endif %}
     {% endfor %}
     <div class="actions">
       {% if can_save %}<button type="submit">Save</button>{% endif %}

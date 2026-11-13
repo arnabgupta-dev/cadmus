@@ -90,7 +90,8 @@ enum Generate {
         /// Model name in PascalCase, e.g. `BlogPost`.
         name: String,
         /// Fields as `name:type`, with `?` for nullable. Types: string, text, int, bigint,
-        /// float, bool, datetime, date, json.
+        /// float, bool, datetime, date, json, and `references` for a foreign key to another
+        /// model (`author:references`, or `editor:references=author` to name it differently).
         fields: Vec<String>,
     },
 }
@@ -278,6 +279,22 @@ struct FieldSpec {
     rust_type: &'static str,
     attribute: Option<&'static str>,
     nullable: bool,
+    /// For a foreign key: the module of the model it points to.
+    references: Option<String>,
+}
+
+/// `blog_post` -> `BlogPost`.
+fn pascal_case(snake: &str) -> String {
+    snake
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 /// Words that cannot be used as field names in generated Rust.
@@ -307,6 +324,34 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         Some(base) => (base, true),
         None => (kind, false),
     };
+    // `author:references` points at the model `author`; `editor:references=author` gives the
+    // column another name than the model it points to.
+    let reference = match kind.split_once('=') {
+        Some(("references", target)) => Some(target),
+        None if kind == "references" => Some(name),
+        _ => None,
+    };
+    if let Some(target) = reference {
+        let valid_target = target
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+            && target
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !valid_target {
+            return Err(format!(
+                "`{spec}`: name the model to point to in snake_case, e.g. author:references or editor:references=author"
+            ));
+        }
+        return Ok(FieldSpec {
+            name: format!("{name}_id"),
+            rust_type: "i32",
+            attribute: None,
+            nullable,
+            references: Some(target.to_owned()),
+        });
+    }
     let (rust_type, attribute) = match kind {
         "string" => ("String", None),
         "text" => ("String", Some("#[sea_orm(column_type = \"Text\")]")),
@@ -319,7 +364,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         "json" => ("Json", None),
         other => {
             return Err(format!(
-                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json)"
+                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, references)"
             ));
         }
     };
@@ -328,6 +373,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         rust_type,
         attribute,
         nullable,
+        references: None,
     })
 }
 
@@ -343,7 +389,7 @@ fn snake_case(pascal: &str) -> String {
     out
 }
 
-/// `BlogPost` -> `Blog posts`.
+/// `BlogPost` -> `Blog posts`, `Category` -> `Categories`.
 fn label(pascal: &str) -> String {
     let words = snake_case(pascal).replace('_', " ");
     let mut chars = words.chars();
@@ -351,7 +397,23 @@ fn label(pascal: &str) -> String {
         Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
         None => words.clone(),
     };
-    format!("{capitalised}s")
+    // Enough English to avoid "Categorys" and "Boxs"; anything irregular can be changed in
+    // the generated `.label(...)` call.
+    let vowel_before_y = capitalised
+        .chars()
+        .rev()
+        .nth(1)
+        .is_some_and(|c| "aeiou".contains(c));
+    if let Some(stem) = capitalised.strip_suffix('y').filter(|_| !vowel_before_y) {
+        format!("{stem}ies")
+    } else if ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|ending| capitalised.ends_with(ending))
+    {
+        format!("{capitalised}es")
+    } else {
+        format!("{capitalised}s")
+    }
 }
 
 fn render_model(table: &str, fields: &[FieldSpec]) -> String {
@@ -376,6 +438,31 @@ fn render_model(table: &str, fields: &[FieldSpec]) -> String {
         };
         let _ = writeln!(body, "    pub {}: {ty},", field.name);
     }
+    // One `belongs_to` per foreign key. The admin reads these to offer a dropdown, and
+    // `migrate` to create the constraint.
+    let mut relations = String::new();
+    for field in fields {
+        let Some(target) = &field.references else {
+            continue;
+        };
+        // A model may point to itself, e.g. a category's parent category.
+        let path = if target == table {
+            String::new()
+        } else {
+            format!("super::{target}::")
+        };
+        let column = pascal_case(&field.name);
+        let variant = pascal_case(field.name.trim_end_matches("_id"));
+        let _ = writeln!(
+            relations,
+            "    #[sea_orm(\n        belongs_to = \"{path}Entity\",\n        from = \"Column::{column}\",\n        to = \"{path}Column::Id\"\n    )]\n    {variant},"
+        );
+    }
+    let relations = if relations.is_empty() {
+        "{}".to_owned()
+    } else {
+        format!("{{\n{relations}}}")
+    };
     format!(
         r#"use sea_orm::entity::prelude::*;
 
@@ -387,7 +474,7 @@ pub struct Model {{
 {body}}}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {{}}
+pub enum Relation {relations}
 
 impl ActiveModelBehavior for ActiveModel {{}}
 "#
@@ -426,6 +513,13 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
     let file = project.join(format!("src/models/{module}.rs"));
     if file.exists() {
         return Err(format!("{} already exists", file.display()));
+    }
+    for target in parsed.iter().filter_map(|f| f.references.as_ref()) {
+        if *target != module && !project.join(format!("src/models/{target}.rs")).is_file() {
+            return Err(format!(
+                "there is no model `{target}` to reference: generate it first (src/models/{target}.rs)"
+            ));
+        }
     }
 
     let updated = existing
@@ -468,9 +562,22 @@ mod tests {
                 name: "title".into(),
                 rust_type: "String",
                 attribute: None,
-                nullable: false
+                nullable: false,
+                references: None,
             }
         );
+        let author = parse_field("author:references").unwrap();
+        assert_eq!(
+            (
+                author.name.as_str(),
+                author.rust_type,
+                author.references.as_deref()
+            ),
+            ("author_id", "i32", Some("author"))
+        );
+        let editor = parse_field("editor:references=blog_user?").unwrap();
+        assert_eq!(editor.name, "editor_id");
+        assert!(editor.nullable && editor.references.as_deref() == Some("blog_user"));
         let rating = parse_field("rating:float?").unwrap();
         assert!(rating.nullable && rating.rust_type == "f64");
         assert!(parse_field("body:text").unwrap().attribute.is_some());
@@ -488,6 +595,9 @@ mod tests {
             "a b:int",
             ":int",
             "x:",
+            "author:references=",
+            "author:references=Author",
+            "author:int=author",
         ] {
             assert!(parse_field(bad).is_err(), "{bad} should be rejected");
         }
@@ -497,6 +607,12 @@ mod tests {
     fn names_are_converted() {
         assert_eq!(snake_case("BlogPost"), "blog_post");
         assert_eq!(label("BlogPost"), "Blog posts");
+        assert_eq!(label("Category"), "Categories");
+        assert_eq!(label("Day"), "Days");
+        assert_eq!(label("Box"), "Boxes");
+        assert_eq!(label("Address"), "Addresses");
+        assert_eq!(label("Branch"), "Branches");
+        assert_eq!(pascal_case("blog_post_id"), "BlogPostId");
     }
 
     #[test]
@@ -511,6 +627,24 @@ mod tests {
         assert!(source.contains("pub score: Option<f64>,"));
         assert!(!source.contains(", Eq"), "float fields cannot derive Eq");
         assert!(render_model("tag", &[parse_field("name:string").unwrap()]).contains(", Eq"));
+        assert!(source.contains("pub enum Relation {}"));
+
+        let fields = [
+            parse_field("author:references").unwrap(),
+            parse_field("parent:references=post?").unwrap(),
+        ];
+        let source = render_model("post", &fields);
+        assert!(
+            source.contains("pub author_id: i32,")
+                && source.contains("pub parent_id: Option<i32>,")
+        );
+        assert!(source.contains("belongs_to = \"super::author::Entity\""));
+        assert!(source.contains("from = \"Column::AuthorId\"") && source.contains("    Author,"));
+        // A model pointing to itself names its own entity.
+        assert!(
+            source.contains("belongs_to = \"Entity\"") && source.contains("to = \"Column::Id\"")
+        );
+        assert!(source.contains("    Parent,"));
     }
 
     #[test]
@@ -598,6 +732,8 @@ mod tests {
         assert!(generate_model(&root, "Tag", &["name:nope".into()]).is_err());
         assert!(generate_model(&root, "Tag", &["name:string".into(), "name:int".into()]).is_err());
         assert!(generate_model(&root, "lowercase", &[]).is_err());
+        // A reference needs the other model to exist already.
+        assert!(generate_model(&root, "Tag", &["owner:references".into()]).is_err());
         assert!(!root.join("src/models/tag.rs").exists());
         assert_eq!(
             std::fs::read_to_string(root.join("src/models/mod.rs")).unwrap(),

@@ -8,13 +8,15 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use sea_orm::sea_query::{Alias, ColumnType, Expr, Func, SimpleExpr};
 use sea_orm::{
     ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbBackend,
-    DbErr, EntityTrait, IdenStatic, IntoActiveModel, Iterable, ModelTrait, PaginatorTrait,
-    PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, Value,
+    DbErr, EntityTrait, IdenStatic, Identity, IntoActiveModel, Iterable, ModelTrait,
+    PaginatorTrait, PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, RelationTrait,
+    Value,
 };
 
 use crate::error::AdminError;
 use crate::resource::{
-    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Resource, Row, WriteMode, humanize,
+    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
+    humanize,
 };
 
 /// Admin resource backed by a SeaORM entity.
@@ -51,6 +53,7 @@ impl<E: EntityTrait> SeaOrmResource<E> {
             .collect();
         let auto = <E::PrimaryKey as PrimaryKeyTrait>::auto_increment();
 
+        let references = references::<E>(&table);
         let mut fields = Vec::new();
         let mut columns = Vec::new();
         let mut types = Vec::new();
@@ -61,14 +64,24 @@ impl<E: EntityTrait> SeaOrmResource<E> {
             let name = column.as_str();
             let primary_key = pk_names.contains(&name);
             let kind = kind_of(&ty);
+            let reference = references
+                .iter()
+                .find(|(column, _)| column == name)
+                .map(|(_, reference)| reference.clone());
+            // `author_id` pointing at an author is labelled "Author", not "Author id".
+            let label = match (&reference, name.strip_suffix("_id")) {
+                (Some(_), Some(stem)) if !stem.is_empty() => humanize(stem),
+                _ => humanize(name),
+            };
             fields.push(Field {
                 name: name.to_owned(),
-                label: humanize(name),
+                label,
                 kind,
                 nullable: def.is_null(),
                 primary_key,
                 auto: primary_key && auto,
                 editable: kind != FieldKind::Other,
+                reference,
             });
             columns.push(column);
             types.push(ty);
@@ -303,6 +316,30 @@ where
         })
     }
 
+    async fn get_many(&self, ids: &[String]) -> Result<Vec<Row>, AdminError> {
+        let i = self.pk_index()?;
+        // An id that does not parse cannot name an existing row.
+        let values: Vec<Value> = ids
+            .iter()
+            .filter_map(|id| parse_value(&self.types[i], Some(id)).ok())
+            .collect();
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = E::find()
+            .filter(self.columns[i].is_in(values))
+            .into_json()
+            .all(&self.db)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::Object(map) => Some(self.normalise(map)),
+                _ => None,
+            })
+            .collect())
+    }
+
     async fn create(&self, input: &Input) -> Result<Option<Row>, AdminError> {
         let mut model = <E::ActiveModel as ActiveModelTrait>::default();
         self.apply_input(&mut model, input, true, WriteMode::Replace)?;
@@ -361,6 +398,30 @@ fn set_value<E: EntityTrait>(
         return model.try_set(column, utc);
     }
     model.try_set(column, value)
+}
+
+/// The foreign keys of `E`, read from its `Relation` enum: each column of `table` that a
+/// `belongs_to` relation uses, with what it points to.
+///
+/// Relations declared from the other side (`has_many`, `has_one`) and foreign keys of more
+/// than one column are left out.
+fn references<E: EntityTrait>(table: &str) -> Vec<(String, Reference)> {
+    E::Relation::iter()
+        .filter_map(|relation| {
+            let def = relation.def();
+            let owns_key = !def.is_owner && def.from_tbl.sea_orm_table().inner() == table;
+            match (owns_key, &def.from_col, &def.to_col) {
+                (true, Identity::Unary(from), Identity::Unary(to)) => Some((
+                    from.inner().into_owned(),
+                    Reference {
+                        model: def.to_tbl.sea_orm_table().inner().into_owned(),
+                        column: to.inner().into_owned(),
+                    },
+                )),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Primary-key value as it appears in a URL.

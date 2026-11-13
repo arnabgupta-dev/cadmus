@@ -69,6 +69,17 @@ pub struct Field {
     pub auto: bool,
     /// Whether the admin can write this column.
     pub editable: bool,
+    /// The row of another model this column points to, if it is a foreign key.
+    pub reference: Option<Reference>,
+}
+
+/// What a foreign-key column points to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Reference {
+    /// URL name ([`Resource::slug`]) of the model pointed to.
+    pub model: String,
+    /// The column of that model holding the value, normally its primary key.
+    pub column: String,
 }
 
 /// Per-model UI customisation, in the spirit of Django's `ModelAdmin`.
@@ -80,6 +91,7 @@ pub struct ModelOptions {
     pub(crate) readonly_fields: Vec<String>,
     pub(crate) hidden_fields: Vec<String>,
     pub(crate) per_page: Option<u64>,
+    pub(crate) display_field: Option<String>,
 }
 
 impl ModelOptions {
@@ -140,6 +152,15 @@ impl ModelOptions {
         self
     }
 
+    /// The column that names a row wherever another model points to it: in the dropdown on
+    /// that model's form and in its list. Defaults to the first text column, e.g. `name` or
+    /// `title`.
+    #[must_use]
+    pub fn display_field(mut self, column: impl Into<String>) -> Self {
+        self.display_field = Some(column.into());
+        self
+    }
+
     /// Rows per list page for this model (overrides the global setting).
     #[must_use]
     pub fn per_page(mut self, per_page: u64) -> Self {
@@ -187,6 +208,17 @@ pub trait Resource: Send + Sync {
     async fn list(&self, query: &ListQuery) -> Result<Page, AdminError>;
     /// Returns the row with primary key `id`, if it exists.
     async fn get(&self, id: &str) -> Result<Option<Row>, AdminError>;
+    /// Returns the rows with these primary keys, in any order, leaving out those that do not
+    /// exist. Used to show what foreign keys point to.
+    ///
+    /// The default asks for them one by one; override it if they can be fetched together.
+    async fn get_many(&self, ids: &[String]) -> Result<Vec<Row>, AdminError> {
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            rows.extend(self.get(id).await?);
+        }
+        Ok(rows)
+    }
     /// Inserts a row and returns it as stored (`None` if it cannot be read back by id).
     async fn create(&self, input: &Input) -> Result<Option<Row>, AdminError>;
     /// Updates the row with primary key `id`.
