@@ -1,5 +1,7 @@
 # heraapi
 
+[![CI](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml)
+
 A Django-style framework for [axum](https://docs.rs/axum) and
 [SeaORM](https://www.sea-ql.org/SeaORM/). Define a model once and get its table, admin pages
 and REST endpoints, with authentication, file uploads and management commands built in.
