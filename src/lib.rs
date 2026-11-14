@@ -50,7 +50,8 @@ pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
 pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
 pub use resource::{
-    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
+    Field, FieldKind, Filter, FilterOp, Input, ListQuery, ModelOptions, Page, Reference, Resource,
+    Row, WriteMode,
 };
 pub use seaorm::SeaOrmResource;
 pub use settings::{NavLink, Settings, Theme, UiSettings};

@@ -266,7 +266,22 @@ async fn the_document_describes_every_model_as_the_api_behaves() {
         .iter()
         .map(|p| p["name"].as_str().unwrap())
         .collect();
-    assert_eq!(query, ["page", "per_page", "q", "sort"]);
+    // Then one filter per visible column; the hidden one cannot be filtered on.
+    assert_eq!(query[..4], ["page", "per_page", "q", "sort"]);
+    assert!(query.contains(&"published") && query.contains(&"author_id"));
+    assert!(!query.contains(&"internal_note"));
+    let published_at = list["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "published_at")
+        .unwrap();
+    assert!(
+        published_at["description"]
+            .as_str()
+            .unwrap()
+            .contains("published_at__range=today|7d|30d|month|year")
+    );
 
     // What is returned: everything but the hidden column.
     let read = &schemas["BlogPost"]["properties"];

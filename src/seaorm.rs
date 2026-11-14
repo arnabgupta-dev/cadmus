@@ -9,14 +9,14 @@ use sea_orm::sea_query::{Alias, ColumnType, Expr, Func, SimpleExpr};
 use sea_orm::{
     ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbBackend,
     DbErr, EntityTrait, IdenStatic, Identity, IntoActiveModel, Iterable, ModelTrait,
-    PaginatorTrait, PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, RelationTrait,
-    Value,
+    PaginatorTrait, PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, QuerySelect,
+    RelationTrait, Value,
 };
 
 use crate::error::AdminError;
 use crate::resource::{
-    Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
-    humanize,
+    Field, FieldKind, Filter, FilterOp, Input, ListQuery, ModelOptions, Page, Reference, Resource,
+    Row, WriteMode, humanize,
 };
 
 /// Admin resource backed by a SeaORM entity.
@@ -113,6 +113,36 @@ impl<E: EntityTrait> SeaOrmResource<E> {
         }
         self.options = options;
         self
+    }
+
+    /// The SQL condition for one list filter.
+    fn condition(&self, filter: &Filter) -> Result<SimpleExpr, AdminError> {
+        let i = self
+            .fields
+            .iter()
+            .position(|f| f.name == filter.field)
+            .ok_or_else(|| AdminError::BadInput {
+                field: filter.field.clone(),
+                message: "no such column".into(),
+            })?;
+        let column = self.columns[i];
+        let value = || {
+            parse_value(&self.types[i], Some(&filter.value)).map_err(|message| {
+                AdminError::BadInput {
+                    field: filter.field.clone(),
+                    message: format!("`{}` is not a valid value: {message}", filter.value),
+                }
+            })
+        };
+        Ok(match filter.op {
+            FilterOp::Equal => column.eq(value()?),
+            FilterOp::Greater => column.gt(value()?),
+            FilterOp::GreaterOrEqual => column.gte(value()?),
+            FilterOp::Less => column.lt(value()?),
+            FilterOp::LessOrEqual => column.lte(value()?),
+            FilterOp::IsNull => column.is_null(),
+            FilterOp::IsNotNull => column.is_not_null(),
+        })
     }
 
     /// Condition: column `i`, as text, contains `term`, ignoring case.
@@ -283,6 +313,9 @@ where
                 select = select.filter(any);
             }
         }
+        for filter in &query.filters {
+            select = select.filter(self.condition(filter)?);
+        }
         let sorted = query.sort.as_deref().and_then(|name| {
             self.fields
                 .iter()
@@ -352,6 +385,37 @@ where
                 serde_json::Value::Object(map) => Some(self.normalise(map)),
                 _ => None,
             })
+            .collect())
+    }
+
+    async fn distinct(&self, field: &str, limit: u64) -> Result<Vec<String>, AdminError> {
+        let Some(i) = self.fields.iter().position(|f| f.name == field) else {
+            return Ok(Vec::new());
+        };
+        let column = self.columns[i];
+        let values = E::find()
+            .select_only()
+            .column(column)
+            .distinct()
+            .filter(column.is_not_null())
+            .order_by_asc(column)
+            .limit(limit)
+            .into_json()
+            .all(&self.db)
+            .await?;
+        Ok(values
+            .into_iter()
+            .filter_map(|value| match value {
+                serde_json::Value::Object(map) => {
+                    let row = self.normalise(map);
+                    row.get(field).map(|v| match v {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                }
+                _ => None,
+            })
+            .filter(|text| !text.is_empty())
             .collect())
     }
 
@@ -502,6 +566,12 @@ fn naive_datetime(text: &str) -> Result<NaiveDateTime, String> {
     ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"]
         .iter()
         .find_map(|format| NaiveDateTime::parse_from_str(&text, format).ok())
+        // A bare date means its start, as in `?created_at__gte=2026-01-01`.
+        .or_else(|| {
+            NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+                .ok()
+                .map(|day| day.and_time(NaiveTime::MIN))
+        })
         .ok_or_else(|| format!("`{text}` is not a date and time"))
 }
 

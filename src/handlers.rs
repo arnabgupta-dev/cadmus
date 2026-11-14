@@ -20,7 +20,9 @@ use crate::AdminState;
 use crate::access::Action;
 use crate::auth::{self, COOKIE, Session};
 use crate::error::AdminError;
-use crate::resource::{Field, FieldKind, FormData, Input, ListQuery, Resource, Row, WriteMode};
+use crate::resource::{
+    Field, FieldKind, Filter, FilterOp, FormData, Input, ListQuery, Resource, Row, WriteMode,
+};
 
 type Shared = State<Arc<AdminState>>;
 
@@ -423,6 +425,140 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
     })
 }
 
+/// Query parameters of a list that are not filters.
+const LIST_PARAMS: [&str; 5] = ["page", "per_page", "q", "sort", "notice"];
+/// The choice in a filter's dropdown that means "empty".
+const NULL_CHOICE: &str = "__null";
+/// Filter suffixes: `?views__gte=10`, `?deleted_at__isnull=true`, `?created_at__range=7d`.
+const FILTER_SUFFIXES: [&str; 6] = ["gt", "gte", "lt", "lte", "isnull", "range"];
+
+/// Whether a list can be filtered by `field`.
+fn filterable(field: &Field) -> bool {
+    !matches!(field.kind, FieldKind::Json | FieldKind::Other)
+}
+
+/// The start of a period and the start of the one after it, for date filters:
+/// `today`, `7d`, `30d`, `month` and `year`, counted in UTC.
+fn period(kind: FieldKind, name: &str) -> Option<(String, String)> {
+    use chrono::{Datelike, Duration, NaiveDate, Utc};
+    let today = Utc::now().date_naive();
+    let tomorrow = today + Duration::days(1);
+    let (from, to) = match name {
+        "today" => (today, tomorrow),
+        "7d" => (today - Duration::days(6), tomorrow),
+        "30d" => (today - Duration::days(29), tomorrow),
+        "month" => {
+            let first = today.with_day(1)?;
+            let next = if first.month() == 12 {
+                NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)?
+            } else {
+                NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)?
+            };
+            (first, next)
+        }
+        "year" => (
+            NaiveDate::from_ymd_opt(today.year(), 1, 1)?,
+            NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)?,
+        ),
+        _ => return None,
+    };
+    let format = match kind {
+        FieldKind::Date => "%Y-%m-%d",
+        FieldKind::DateTime => "%Y-%m-%dT00:00:00",
+        _ => return None,
+    };
+    Some((
+        from.format(format).to_string(),
+        to.format(format).to_string(),
+    ))
+}
+
+/// The filters in a list's query string: `field=value` for equality, `field__gte=value` and
+/// the like for comparisons. With `strict`, a parameter that names no filterable column is
+/// an error (the API); otherwise it is ignored (the admin, where links may be stale).
+pub(crate) fn parse_filters(
+    resource: &dyn Resource,
+    raw: &HashMap<String, String>,
+    strict: bool,
+) -> Result<Vec<Filter>, AdminError> {
+    let mut keys: Vec<&String> = raw.keys().collect();
+    keys.sort();
+    let mut filters = Vec::new();
+    for key in keys {
+        let value = raw[key].trim();
+        if LIST_PARAMS.contains(&key.as_str()) || value.is_empty() {
+            continue;
+        }
+        let (name, suffix) = match key.rsplit_once("__") {
+            Some((name, suffix)) if FILTER_SUFFIXES.contains(&suffix) => (name, suffix),
+            _ => (key.as_str(), ""),
+        };
+        let wrong = |message: String| AdminError::BadInput {
+            field: key.clone(),
+            message,
+        };
+        let Some(field) = visible_fields(resource).find(|f| f.name == name && filterable(f)) else {
+            if strict {
+                return Err(wrong(format!(
+                    "`{name}` is not a column this list can be filtered by"
+                )));
+            }
+            continue;
+        };
+        let filter = |op, value: &str| Filter {
+            field: field.name.clone(),
+            op,
+            value: value.to_owned(),
+        };
+        match suffix {
+            "" if value == NULL_CHOICE => filters.push(filter(FilterOp::IsNull, "")),
+            "" => filters.push(filter(FilterOp::Equal, value)),
+            "gt" => filters.push(filter(FilterOp::Greater, value)),
+            "gte" => filters.push(filter(FilterOp::GreaterOrEqual, value)),
+            "lt" => filters.push(filter(FilterOp::Less, value)),
+            "lte" => filters.push(filter(FilterOp::LessOrEqual, value)),
+            "isnull" => match value.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => filters.push(filter(FilterOp::IsNull, "")),
+                "false" | "0" | "no" => filters.push(filter(FilterOp::IsNotNull, "")),
+                _ if strict => return Err(wrong("must be true or false".into())),
+                _ => {}
+            },
+            _ => match period(field.kind, value) {
+                Some((from, to)) => {
+                    filters.push(filter(FilterOp::GreaterOrEqual, &from));
+                    filters.push(filter(FilterOp::Less, &to));
+                }
+                None if strict => {
+                    return Err(wrong(
+                        "must be today, 7d, 30d, month or year, on a date column".into(),
+                    ));
+                }
+                None => {}
+            },
+        }
+    }
+    Ok(filters)
+}
+
+/// The filter parameters of a list, ready to append to its links: `a=1&b=2&`.
+fn filter_query(raw: &HashMap<String, String>) -> (String, Vec<(String, String)>) {
+    let mut pairs: Vec<(String, String)> = raw
+        .iter()
+        .filter(|(key, value)| !LIST_PARAMS.contains(&key.as_str()) && !value.trim().is_empty())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    pairs.sort();
+    let text = pairs
+        .iter()
+        .map(|(key, value)| {
+            let encode =
+                |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+            format!("{}={}&", encode(key), encode(value))
+        })
+        .collect();
+    (text, pairs)
+}
+
 pub(crate) fn list_query(
     state: &AdminState,
     resource: &dyn Resource,
@@ -438,6 +574,7 @@ pub(crate) fn list_query(
         search: params.q.clone().filter(|q| !q.trim().is_empty()),
         sort: None,
         descending: false,
+        filters: Vec::new(),
     }
     .sorted(resource, params.sort.as_deref())
 }
@@ -538,16 +675,101 @@ async fn related_labels(
         .collect())
 }
 
+/// One dropdown above a list.
+#[derive(Serialize)]
+struct FilterView {
+    /// The query parameter it sets.
+    param: String,
+    label: String,
+    options: Vec<(String, String)>,
+    selected: String,
+}
+
+/// The dropdowns for a model's `list_filter` columns.
+async fn filter_views(
+    state: &AdminState,
+    session: &Session,
+    resource: &dyn Resource,
+    raw: &HashMap<String, String>,
+) -> Result<Vec<FilterView>, AdminError> {
+    let mut views = Vec::new();
+    for name in &resource.options().list_filter {
+        let Some(field) = visible_fields(resource).find(|f| &f.name == name && filterable(f))
+        else {
+            continue;
+        };
+        let mut param = field.name.clone();
+        let mut options = vec![(String::new(), "All".to_owned())];
+        if let Some(target) = related(state, session, field) {
+            let (choices, _) = reference_input(target, "").await?;
+            match choices {
+                Some(choices) => options.extend(choices.into_iter().map(|c| (c.value, c.label))),
+                // Too many rows to list.
+                None => continue,
+            }
+        } else {
+            match field.kind {
+                FieldKind::Boolean => {
+                    options.push(("true".into(), "Yes".into()));
+                    options.push(("false".into(), "No".into()));
+                }
+                FieldKind::Date | FieldKind::DateTime => {
+                    param = format!("{}__range", field.name);
+                    options[0].1 = "Any date".into();
+                    for (value, label) in [
+                        ("today", "Today"),
+                        ("7d", "Past 7 days"),
+                        ("30d", "Past 30 days"),
+                        ("month", "This month"),
+                        ("year", "This year"),
+                    ] {
+                        options.push((value.into(), label.into()));
+                    }
+                }
+                _ => {
+                    let values = resource.distinct(&field.name, MAX_CHOICES).await?;
+                    if values.is_empty() {
+                        continue;
+                    }
+                    options.extend(values.into_iter().map(|v| (v.clone(), truncate(v))));
+                }
+            }
+        }
+        if field.nullable && !param.ends_with("__range") {
+            options.push((NULL_CHOICE.into(), "(empty)".into()));
+        }
+        views.push(FilterView {
+            selected: raw.get(&param).cloned().unwrap_or_default(),
+            label: field.label.clone(),
+            param,
+            options,
+        });
+    }
+    Ok(views)
+}
+
 async fn list(
     State(state): Shared,
     session: Session,
     Path(model): Path<String>,
     Query(params): Query<ListParams>,
+    Query(raw): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::View)?;
-    let query = list_query(&state, resource, &params);
-    let page = resource.list(&query).await?;
+    let mut query = list_query(&state, resource, &params);
+    query.filters = parse_filters(resource, &raw, false)?;
+    let filters = filter_views(&state, &session, resource, &raw).await?;
+    let (filter_qs, filter_pairs) = filter_query(&raw);
+    let page = match resource.list(&query).await {
+        Ok(page) => page,
+        // A hand-edited link with a value the column cannot hold: show nothing, not an error.
+        Err(AdminError::BadInput { .. }) => crate::resource::Page {
+            rows: Vec::new(),
+            total: 0,
+        },
+        Err(other) => return Err(other),
+    };
 
     let chosen = &resource.options().list_display;
     let columns: Vec<&Field> = if chosen.is_empty() {
@@ -649,6 +871,10 @@ async fn list(
             page => query.page + 1,
             pages => pages,
             q => query.search.unwrap_or_default(),
+            filters => Value::from(Serde(&filters)),
+            filter_qs,
+            filter_pairs => Value::from(Serde(&filter_pairs)),
+            filtered => !query.filters.is_empty(),
         },
     )
 }

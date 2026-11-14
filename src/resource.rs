@@ -94,6 +94,7 @@ pub struct ModelOptions {
     pub(crate) hidden_fields: Vec<String>,
     pub(crate) per_page: Option<u64>,
     pub(crate) display_field: Option<String>,
+    pub(crate) list_filter: Vec<String>,
 }
 
 impl ModelOptions {
@@ -163,6 +164,19 @@ impl ModelOptions {
         self
     }
 
+    /// Columns the list page offers filters for, in order, as Django's `list_filter`: yes/no
+    /// for booleans, the related rows for foreign keys, periods such as "past 7 days" for
+    /// dates, and the values present for other columns.
+    #[must_use]
+    pub fn list_filter<I, S>(mut self, columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.list_filter = columns.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Rows per list page for this model (overrides the global setting).
     #[must_use]
     pub fn per_page(mut self, per_page: u64) -> Self {
@@ -184,6 +198,38 @@ pub struct ListQuery {
     pub sort: Option<String>,
     /// Whether `sort` runs from highest to lowest.
     pub descending: bool,
+    /// Conditions every row must meet. Callers only pass visible, filterable columns.
+    pub filters: Vec<Filter>,
+}
+
+/// How a [`Filter`] compares the column with its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOp {
+    /// Equal to the value.
+    Equal,
+    /// Greater than the value.
+    Greater,
+    /// Greater than or equal to the value.
+    GreaterOrEqual,
+    /// Less than the value.
+    Less,
+    /// Less than or equal to the value.
+    LessOrEqual,
+    /// Empty (NULL); the value is unused.
+    IsNull,
+    /// Not empty; the value is unused.
+    IsNotNull,
+}
+
+/// One condition on a column, as `?published=true` or `?created_at__gte=2026-01-01` asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filter {
+    /// Column name.
+    pub field: String,
+    /// The comparison.
+    pub op: FilterOp,
+    /// The value as text, parsed like form input for the column's type.
+    pub value: String,
 }
 
 impl ListQuery {
@@ -196,6 +242,7 @@ impl ListQuery {
             search: None,
             sort: None,
             descending: false,
+            filters: Vec::new(),
         }
     }
 }
@@ -238,6 +285,11 @@ pub trait Resource: Send + Sync {
             rows.extend(self.get(id).await?);
         }
         Ok(rows)
+    }
+    /// Up to `limit` distinct non-empty values of column `field`, in order, for a list filter.
+    /// The default offers none, so the filter is left out.
+    async fn distinct(&self, _field: &str, _limit: u64) -> Result<Vec<String>, AdminError> {
+        Ok(Vec::new())
     }
     /// Inserts a row and returns it as stored (`None` if it cannot be read back by id).
     async fn create(&self, input: &Input) -> Result<Option<Row>, AdminError>;

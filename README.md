@@ -50,9 +50,15 @@ app.model::<post::Entity>(
         .list_display(["id", "title", "published"])
         .search_fields(["title"])
         .readonly_fields(["views"])
-        .hidden_fields(["internal_note"]),
+        .hidden_fields(["internal_note"])
+        .list_filter(["published", "author_id", "created_at"]),
 )
 ```
+
+`list_filter` adds a dropdown per column above the list, as in Django: Yes/No for booleans,
+the related rows by name for foreign keys, periods ("Past 7 days", "This month") for dates,
+the values present for other columns, and "(empty)" for nullable ones. Filters combine with
+search, and sorting and paging keep them.
 
 ## Settings
 
@@ -222,6 +228,13 @@ For every model, under `/api`:
 | `PUT /api/{model}/{id}` | replace: every required field must be present |
 | `PATCH /api/{model}/{id}` | change only the fields sent |
 | `DELETE /api/{model}/{id}` | `204` |
+
+**Filtering** works on any visible column, with the same parameters as the admin's filters:
+`?published=true&author_id=3`, comparisons with `__gt`, `__gte`, `__lt` and `__lte`
+(`?views__gte=100`, `?created_at__gte=2026-01-01`), `__isnull=true|false`, and for dates
+`__range=today|7d|30d|month|year` (UTC). An unknown column or a value the column cannot hold
+is a `422`. A column named like a list parameter (`page`, `per_page`, `q`, `sort`) cannot be
+filtered on.
 
 Errors are JSON: `{"error": {"code", "message", "field"}}` with `400`, `401`, `403`, `404`,
 `409` (unique/foreign-key conflict), `413`, `422` or `429` (too many login attempts). Unknown, hidden and read-only fields in a

@@ -81,7 +81,7 @@ code, .mono { font-family: var(--mono); font-size: .88em; }
 
 /* Shell */
 .shell { min-height: 100dvh; }
-.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 40; width: min(86vw, var(--sidebar)); display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--line); transform: translateX(-102%); transition: transform .22s var(--ease); }
+.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 40; width: min(86vw, var(--sidebar)); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border-right: 1px solid var(--line); transform: translateX(-102%); transition: transform .22s var(--ease); }
 .nav-open .sidebar { transform: none; box-shadow: var(--shadow-lift); }
 .scrim { position: fixed; inset: 0; z-index: 30; background: rgb(2 6 23 / .45); opacity: 0; pointer-events: none; transition: opacity .2s var(--ease); }
 .nav-open .scrim { opacity: 1; pointer-events: auto; }
@@ -102,9 +102,10 @@ code, .mono { font-family: var(--mono); font-size: .88em; }
 .me-name { font-weight: 600; overflow-wrap: anywhere; line-height: 1.25; }
 .me a { color: inherit; text-decoration: none; }
 .me a:hover .me-name { text-decoration: underline; }
-.me-actions { display: flex; gap: 8px; }
-.me-actions form { margin: 0; flex: 1; }
-.me-actions form .btn { width: 100%; white-space: nowrap; }
+.me-actions { display: flex; gap: 6px; min-width: 0; }
+.me-actions > .btn.icon { flex: none; }
+.me-actions form { margin: 0; flex: 1; min-width: 0; }
+.me-actions form .btn { width: 100%; white-space: nowrap; padding: 0 10px; }
 .role { display: inline-flex; align-items: center; gap: 6px; margin-top: 2px; font-size: .8rem; color: var(--muted); }
 .role.super { color: var(--accent-ink); }
 

@@ -135,6 +135,7 @@ async fn list(
     session: Session,
     Path(model): Path<String>,
     Query(params): Query<ListParams>,
+    Query(raw): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
@@ -149,6 +150,7 @@ async fn list(
         .into());
     }
     let mut query = list_query(&state, resource, &params);
+    query.filters = crate::handlers::parse_filters(resource, &raw, true)?;
     if let Some(per_page) = params.per_page {
         query.per_page = per_page.clamp(1, MAX_PER_PAGE);
     }

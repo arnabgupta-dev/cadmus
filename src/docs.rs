@@ -514,6 +514,40 @@ fn describe_model(
         .filter(|f| !hidden.contains(&f.name))
         .flat_map(|f| [f.name.clone(), format!("-{}", f.name)])
         .collect();
+    // One parameter per column a list can be filtered by; the comparison suffixes are
+    // described rather than listed, or every model would have hundreds of parameters.
+    let reserved = ["page", "per_page", "q", "sort"];
+    let mut parameters = vec![
+        json!({ "name": "page", "in": "query", "description": "Page number, from 1", "schema": { "type": "integer", "minimum": 1, "default": 1 } }),
+        json!({ "name": "per_page", "in": "query", "description": "Rows per page", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } }),
+        json!({ "name": "q", "in": "query", "description": "Search text; matches any searchable column, ignoring case", "schema": { "type": "string" } }),
+        json!({ "name": "sort", "in": "query", "description": "Column to order by; prefix with `-` for highest first. By default rows come in primary-key order.", "schema": { "type": "string", "enum": sort_values } }),
+    ];
+    for field in resource.fields().iter().filter(|f| {
+        !hidden.contains(&f.name)
+            && !reserved.contains(&f.name.as_str())
+            && !matches!(f.kind, FieldKind::Json | FieldKind::Other)
+    }) {
+        let mut description = format!(
+            "Only rows whose {} equals this. Also `{name}__gt`, `{name}__gte`, `{name}__lt`, \
+             `{name}__lte` to compare, and `{name}__isnull=true|false`",
+            field.label.to_lowercase(),
+            name = field.name
+        );
+        if matches!(field.kind, FieldKind::Date | FieldKind::DateTime) {
+            description.push_str(&format!(
+                "; `{}__range=today|7d|30d|month|year` for a period (UTC)",
+                field.name
+            ));
+        }
+        description.push('.');
+        parameters.push(json!({
+            "name": field.name,
+            "in": "query",
+            "description": description,
+            "schema": { "type": "string" },
+        }));
+    }
     let list = json!({
         "type": "object",
         "properties": {
@@ -529,16 +563,12 @@ fn describe_model(
                 "summary": format!("List {tag}"),
                 "description": needs(resource, Action::View),
                 "operationId": format!("list_{slug}"),
-                "parameters": [
-                    { "name": "page", "in": "query", "description": "Page number, from 1", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
-                    { "name": "per_page", "in": "query", "description": "Rows per page", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
-                    { "name": "q", "in": "query", "description": "Search text; matches any searchable column, ignoring case", "schema": { "type": "string" } },
-                    { "name": "sort", "in": "query", "description": "Column to order by; prefix with `-` for highest first. By default rows come in primary-key order.", "schema": { "type": "string", "enum": sort_values } },
-                ],
+                "parameters": parameters,
                 "responses": {
                     "200": json_response("One page of rows", &list),
                     "401": error_response("Unauthorized"),
                     "403": error_response("Forbidden"),
+                    "422": error_response("Invalid"),
                 },
             },
             "post": {
