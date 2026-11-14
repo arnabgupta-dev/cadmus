@@ -99,6 +99,29 @@
       <button class="btn primary submit" type="submit" data-busy-text="Saving…">Save the password</button>
     </form>
 
+    {% elif mode == "invite" %}
+    <h1>Welcome to {{ site.site_title }}</h1>
+    <p class="lede">{% if password_login %}Choose the password you will log in with: at least 8 characters.{% else %}Your account is ready.{% endif %}</p>
+    {{ messages() }}
+    <form method="post" data-busy>
+      {% if password_login %}
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="pw">
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required autofocus>
+          <button type="button" data-reveal aria-label="Show password" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg></button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="password2">Password again</label>
+        <input id="password2" name="password2" type="password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <button class="btn primary submit" type="submit" data-busy-text="Saving…">Save and log in</button>
+      {% else %}
+      <button class="btn primary submit" type="submit" data-busy-text="Logging in…" autofocus>Log in to {{ site.site_title }}</button>
+      {% endif %}
+    </form>
+
     {% else %}
     <h1>Log in</h1>
     <p class="lede">{% if password_login %}Use the account an administrator gave you.{% else %}Choose how to log in.{% endif %}</p>

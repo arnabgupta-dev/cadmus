@@ -32,10 +32,12 @@ const PENDING_COOKIE: &str = "hera_pending";
 const PENDING_PURPOSE: &str = "pending-login";
 const LINK_PURPOSE: &str = "login-link";
 const RESET_PURPOSE: &str = "password-reset";
+const INVITE_PURPOSE: &str = "invitation";
 /// How long someone may take to type their authenticator code.
 const PENDING_SECS: u64 = 300;
 const LINK_SECS: u64 = 15 * 60;
 const RESET_SECS: u64 = 60 * 60;
+const INVITE_SECS: u64 = 7 * 24 * 60 * 60;
 
 pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.base.clone();
@@ -54,6 +56,12 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
                 &format!("{b}/login/link/{{token}}"),
                 get(link_page).post(link_use),
             );
+    }
+    if can_invite(&state) {
+        router = router.route(
+            &format!("{b}/invite/{{token}}"),
+            get(invite_page).post(invite_accept),
+        );
     }
     if can_reset(&state) {
         router = router
@@ -74,6 +82,12 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
 pub(crate) fn can_reset(state: &AdminState) -> bool {
     let methods = &state.auth.methods;
     methods.password && state.accounts.is_some() && methods.has_public_url()
+}
+
+/// Whether superusers can invite people by e-mail: accounts are the built-in ones, and links
+/// in e-mails can point back to the site.
+pub(crate) fn can_invite(state: &AdminState) -> bool {
+    state.accounts.is_some() && state.auth.methods.has_public_url()
 }
 
 fn unix_now() -> u64 {
@@ -657,6 +671,154 @@ async fn reset_submit(
         None,
         Some("Your password is changed. Log in with it now.".into()),
     )
+}
+
+// ---- invitations -------------------------------------------------------------------------------
+
+/// What an invitation stands for. It retires once the account sets a password or logs in.
+#[derive(Serialize, Deserialize)]
+struct InviteClaims {
+    sub: String,
+    pw: String,
+    seen: String,
+    exp: u64,
+}
+
+/// E-mails `account` an invitation from `inviter`: a link to choose a password, or to log in
+/// when passwords are off.
+pub(crate) fn invite(
+    state: &AdminState,
+    account: &users::user::Model,
+    inviter: &str,
+) -> Result<(), AdminError> {
+    let email = account.email.clone().ok_or_else(|| AdminError::BadInput {
+        field: "email".into(),
+        message: "an invitation needs the account's e-mail address".into(),
+    })?;
+    let claims = InviteClaims {
+        sub: account.username.clone(),
+        pw: fingerprint(&account.password_hash),
+        seen: last_login_print(account),
+        exp: unix_now() + INVITE_SECS,
+    };
+    let token = state.auth.seal(INVITE_PURPOSE, &claims)?;
+    let link = state
+        .auth
+        .methods
+        .absolute(&format!("{}/invite/{token}", state.base));
+    let methods = &state.auth.methods;
+    let site = &state.settings.site_title;
+    let (first, button) = if methods.password {
+        (
+            "Choose your password here to get started:",
+            "Choose a password",
+        )
+    } else {
+        ("Log in here to get started:", "Log in")
+    };
+    let mut after = String::from("The link works for 7 days, once.");
+    let others: Vec<&str> = methods.providers.iter().map(|p| p.label.as_str()).collect();
+    if !others.is_empty() {
+        after.push_str(&format!(
+            " You can also log in with {} using this address.",
+            others.join(" or ")
+        ));
+    }
+    if methods.magic_link {
+        after.push_str(" The login page can e-mail you a login link at any time, too.");
+    }
+    let message = link_email(
+        state,
+        email,
+        format!("You are invited to {site}"),
+        &[
+            &format!(
+                "{inviter} invited you to {site}, with the username {}.",
+                account.username
+            ),
+            first,
+        ],
+        button,
+        &link,
+        &after,
+    );
+    send_later(Arc::clone(&state.mailer), message);
+    tracing::info!(username = %account.username, %inviter, "invitation sent");
+    Ok(())
+}
+
+/// The account an invitation is for, if it is still good.
+async fn invited_account(
+    state: &AdminState,
+    token: &str,
+) -> Result<Option<users::user::Model>, AdminError> {
+    let Some(claims) = state.auth.open::<InviteClaims>(INVITE_PURPOSE, token) else {
+        return Ok(None);
+    };
+    let Some(db) = state.accounts.as_ref() else {
+        return Ok(None);
+    };
+    Ok(users::find_account(db, &claims.sub).await?.filter(|a| {
+        fingerprint(&a.password_hash) == claims.pw && last_login_print(a) == claims.seen
+    }))
+}
+
+fn expired_invite(state: &AdminState) -> Result<Response, AdminError> {
+    login_page_as(
+        state,
+        StatusCode::BAD_REQUEST,
+        Mode::Login,
+        Some(
+            "That invitation has expired or was already used. Log in, or ask for a new one.".into(),
+        ),
+        None,
+    )
+}
+
+async fn invite_page(
+    State(state): Shared,
+    Path(token): Path<String>,
+) -> Result<Response, AdminError> {
+    if invited_account(&state, &token).await?.is_none() {
+        return expired_invite(&state);
+    }
+    login_page_as(&state, StatusCode::OK, Mode::Invite, None, None)
+}
+
+async fn invite_accept(
+    State(state): Shared,
+    jar: CookieJar,
+    Path(token): Path<String>,
+    Form(form): Form<NewPassword>,
+) -> Result<Response, AdminError> {
+    let Some(account) = invited_account(&state, &token).await? else {
+        return expired_invite(&state);
+    };
+    if state.auth.methods.password {
+        let again = |message: String| {
+            login_page_as(
+                &state,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Mode::Invite,
+                Some(message),
+                None,
+            )
+        };
+        if form.password != form.password2 {
+            return again("The two passwords are different.".into());
+        }
+        let db = state
+            .accounts
+            .as_ref()
+            .ok_or_else(|| AdminError::Config("invitations need the built-in accounts".into()))?;
+        match users::change_password(db, &account.username, &form.password).await {
+            Ok(()) => {}
+            Err(AdminError::BadInput { message, .. }) => return again(capitalised(&message)),
+            Err(other) => return Err(other),
+        }
+    }
+    tracing::info!(username = %account.username, "invitation accepted");
+    complete(&state, jar, &account.username, false).await
 }
 
 /// `"the password is too short"` -> `"The password is too short."`

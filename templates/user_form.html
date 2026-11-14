@@ -23,6 +23,11 @@
 {% endblock %}
 {% block scripts %}
 <script>
+document.querySelectorAll("[data-invite]").forEach(function (box) {
+  var password = document.getElementById("f-password"), email = document.getElementById("f-email");
+  function sync() { password.required = !box.checked; password.disabled = box.checked; if (email) email.required = box.checked; }
+  box.addEventListener("change", sync); sync();
+});
 document.querySelectorAll("[data-row-all]").forEach(function (b) {
   var boxes = b.closest("tr").querySelectorAll("input[type=checkbox]");
   function paint() { var all = Array.prototype.every.call(boxes, function (x) { return x.checked; }); b.textContent = all ? "None" : "All"; b.setAttribute("aria-label", (all ? "Clear all permissions for " : "Allow everything on ") + b.previousElementSibling.textContent); }
@@ -63,9 +68,12 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
         <input id="f-phone" name="phone" type="tel" value="{{ phone }}" autocomplete="off" inputmode="tel">
       </div>
       <div class="field">
-        <label for="f-password"{% if id is none %} class="required"{% endif %}>Password</label>
-        <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none %} required{% endif %}>
+        <label for="f-password"{% if id is none and not invite %} class="required"{% endif %}>Password</label>
+        <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none and not invite %} required{% endif %}>
         <p class="muted">{% if id is not none %}Leave empty to keep the current password.{% else %}At least 8 characters.{% endif %}</p>
+        {% if id is none and can_invite %}
+        <label class="option" style="margin-top:10px"><input type="checkbox" name="invite" value="true" data-invite{% if invite %} checked{% endif %}><span><strong>Send an invitation instead</strong><span>{% if password_login %}They get an e-mail with a link to choose their own password.{% else %}They get an e-mail with a link to log in.{% endif %} Needs the e-mail address.</span></span></label>
+        {% endif %}
       </div>
     </div>
     {% if id is not none %}<p class="muted" style="padding:0 24px 20px">{% if date_joined %}Joined {{ date_joined }}. {% endif %}{% if last_login %}Last logged in {{ last_login }}.{% else %}Has not logged in yet.{% endif %}</p>{% endif %}
@@ -114,11 +122,13 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
     <button class="btn primary" type="submit" data-busy-text="Saving…">Save</button>
     <a class="btn ghost" href="{{ base }}/auth/users">Cancel</a>
     <span class="spacer"></span>
+    {% if id is not none and can_invite and email %}<button class="btn ghost" type="submit" form="invite-form">Send invitation</button>{% endif %}
     {% if id is not none %}<button class="btn danger" type="submit" form="delete-form" data-confirm="confirm-delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>{% endif %}
   </div>
 </form>
 {% if id is not none %}
 <form id="delete-form" method="post" action="{{ base }}/auth/users/{{ id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
+<form id="invite-form" method="post" action="{{ base }}/auth/users/{{ id }}/invite"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
 {% for i in identities %}<form id="unlink-{{ i.id }}" method="post" action="{{ base }}/auth/users/{{ id }}/identities/{{ i.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
 <dialog id="confirm-delete" aria-labelledby="confirm-title">
   <div class="dialog-body"><h2 id="confirm-title">Delete {{ username }}?</h2><p class="muted">The account can no longer log in, and its tokens stop working at once. This cannot be undone; to lock it out for now, untick Active instead.</p></div>

@@ -34,6 +34,7 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             get(user_edit).post(user_update),
         )
         .route(&format!("{b}/users/{{id}}/delete"), post(user_delete))
+        .route(&format!("{b}/users/{{id}}/invite"), post(user_invite))
         .route(
             &format!("{b}/users/{{id}}/identities/{{identity}}/delete"),
             post(identity_delete),
@@ -285,6 +286,8 @@ struct UserView {
     has_totp: bool,
     groups: Vec<i32>,
     grants: Access,
+    /// "Send an invitation" was ticked.
+    invite: bool,
 }
 
 impl UserView {
@@ -303,6 +306,7 @@ impl UserView {
             has_totp: false,
             groups: Vec::new(),
             grants: Access::none(),
+            invite: false,
         }
     }
 
@@ -321,6 +325,7 @@ impl UserView {
             has_totp,
             groups: input.groups.clone(),
             grants: as_access(&input.grants),
+            invite: false,
         }
     }
 }
@@ -331,6 +336,7 @@ async fn render_user(
     id: Option<i32>,
     view: &UserView,
     error: Option<String>,
+    notice: Option<&str>,
 ) -> Result<Html<String>, AdminError> {
     let groups: Vec<GroupChoice> = users::all_groups(database(state)?)
         .await?
@@ -381,6 +387,10 @@ async fn render_user(
             actions => action_names(),
             permissions => Value::from(Serde(permission_grid(state, &view.grants))),
             identities => Value::from(Serde(&identities)),
+            can_invite => crate::login::can_invite(state),
+            invite => view.invite,
+            password_login => state.auth.methods.password,
+            notice => notice_text(notice),
             error,
         },
     )
@@ -441,7 +451,7 @@ fn when(at: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
 
 async fn user_new(State(state): Shared, session: Session) -> Result<Html<String>, AdminError> {
     session.require_superuser()?;
-    render_user(&state, &session, None, &UserView::blank(), None).await
+    render_user(&state, &session, None, &UserView::blank(), None, None).await
 }
 
 async fn user_create(
@@ -452,13 +462,15 @@ async fn user_create(
     let form = Submitted::parse(&body);
     session.check_csrf(form.get("_csrf"))?;
     session.require_superuser()?;
-    save_user(&state, &session, None, user_input(&state, &form)).await
+    let invite = form.checked("invite") && crate::login::can_invite(&state);
+    save_user(&state, &session, None, user_input(&state, &form), invite).await
 }
 
 async fn user_edit(
     State(state): Shared,
     session: Session,
     Path(id): Path<String>,
+    Query(query): Query<NoticeQuery>,
 ) -> Result<Html<String>, AdminError> {
     session.require_superuser()?;
     let id = parse_id("user", &id)?;
@@ -481,8 +493,17 @@ async fn user_edit(
         has_totp: account.totp_secret.is_some(),
         groups: users::user_groups(db, id).await?,
         grants: users::user_grants(db, id).await?,
+        invite: false,
     };
-    render_user(&state, &session, Some(id), &view, None).await
+    render_user(
+        &state,
+        &session,
+        Some(id),
+        &view,
+        None,
+        query.notice.as_deref(),
+    )
+    .await
 }
 
 async fn user_update(
@@ -495,7 +516,33 @@ async fn user_update(
     session.check_csrf(form.get("_csrf"))?;
     session.require_superuser()?;
     let id = parse_id("user", &id)?;
-    save_user(&state, &session, Some(id), user_input(&state, &form)).await
+    save_user(&state, &session, Some(id), user_input(&state, &form), false).await
+}
+
+/// Sends (or sends again) an account's invitation.
+async fn user_invite(
+    State(state): Shared,
+    session: Session,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Redirect, AdminError> {
+    session.check_csrf(Submitted::parse(&body).get("_csrf"))?;
+    session.require_superuser()?;
+    if !crate::login::can_invite(&state) {
+        return Err(AdminError::NotFound(
+            "invitations need server.public_url".into(),
+        ));
+    }
+    let id = parse_id("user", &id)?;
+    let account = user::Entity::find_by_id(id)
+        .one(database(&state)?)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{id}`")))?;
+    crate::login::invite(&state, &account, &session.username)?;
+    Ok(Redirect::to(&format!(
+        "{}/auth/users/{id}?notice=invitation_sent",
+        state.base
+    )))
 }
 
 /// Whether `id` is the account that is making the request.
@@ -515,9 +562,34 @@ async fn save_user(
     state: &AdminState,
     session: &Session,
     id: Option<i32>,
-    input: AccountInput,
+    mut input: AccountInput,
+    invite: bool,
 ) -> Result<Response, AdminError> {
-    let view = UserView::from_input(&input, has_totp(state, id).await?);
+    let mut view = UserView::from_input(&input, has_totp(state, id).await?);
+    view.invite = invite;
+    if invite {
+        // They choose their own password from the invitation; until then nobody knows one.
+        if input.password.is_none() {
+            input.password = Some(
+                rand::random::<[u8; 32]>()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect(),
+            );
+        }
+        if input.email.as_deref().is_none_or(|e| e.trim().is_empty()) {
+            let page = render_user(
+                state,
+                session,
+                id,
+                &view,
+                Some("Email: an invitation is sent to the account's e-mail address.".into()),
+                None,
+            )
+            .await?;
+            return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
+        }
+    }
     // Nobody can lock themselves out, so there is always a superuser left to undo a mistake.
     let keeps_access = input.is_active && input.is_staff && input.is_superuser;
     let outcome = match id {
@@ -530,9 +602,16 @@ async fn save_user(
         _ => users::save_user(database(state)?, id, input).await,
     };
     match outcome {
-        Ok(_) => {
+        Ok(saved) => {
             let notice = if id.is_some() {
                 "user_saved"
+            } else if invite {
+                let account = user::Entity::find_by_id(saved)
+                    .one(database(state)?)
+                    .await?
+                    .ok_or_else(|| AdminError::NotFound(format!("user `{saved}`")))?;
+                crate::login::invite(state, &account, &session.username)?;
+                "user_invited"
             } else {
                 "user_created"
             };
@@ -540,7 +619,7 @@ async fn save_user(
         }
         Err(error) => {
             let message = fixable(error)?;
-            let page = render_user(state, session, id, &view, Some(message)).await?;
+            let page = render_user(state, session, id, &view, Some(message), None).await?;
             Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
         }
     }

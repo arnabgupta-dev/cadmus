@@ -542,3 +542,188 @@ async fn mail_settings_are_checked() {
         _ => panic!("login links without public_url must be refused"),
     }
 }
+
+/// Logs in as `ada` (a superuser) and returns the session cookie and a CSRF token.
+async fn superuser_session(site: &Site) -> (String, String) {
+    let session = format!(
+        "admin_token={}",
+        log_in(&site.app, "ada", PASSWORD)
+            .await
+            .cookie("admin_token")
+            .unwrap()
+    );
+    let page = get(&site.app, "/admin/auth/users/new", Some(&session)).await;
+    let csrf = page
+        .body
+        .split("name=\"_csrf\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_owned();
+    (session, csrf)
+}
+
+#[tokio::test]
+async fn invited_people_choose_their_own_password() {
+    let site = site(|_| {}).await;
+    let (session, csrf) = superuser_session(&site).await;
+    let form = get(&site.app, "/admin/auth/users/new", Some(&session)).await;
+    assert!(form.body.contains("Send an invitation instead"));
+
+    let without_email = post(
+        &site.app,
+        "/admin/auth/users/new",
+        &format!("_csrf={csrf}&username=grace&email=&is_active=true&is_staff=true&invite=true"),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(without_email.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(account(&site.db, "grace").await.is_none());
+
+    let created = post(
+        &site.app,
+        "/admin/auth/users/new",
+        &format!(
+            "_csrf={csrf}&username=grace&email=grace%40acme.com&is_active=true&is_staff=true&invite=true"
+        ),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.body);
+    assert_eq!(created.location(), "/admin/auth/users?notice=user_invited");
+    let email = site.outbox.nth(0).await;
+    assert_eq!(email.to, "grace@acme.com");
+    assert_eq!(email.subject, "You are invited to Acme");
+    assert!(
+        email
+            .text
+            .contains("ada invited you to Acme, with the username grace")
+    );
+    let path = link_path(&email);
+    assert!(path.starts_with("/admin/invite/"), "{path}");
+    // Nobody knows the password in the meantime.
+    assert!(
+        log_in(&site.app, "grace", "")
+            .await
+            .cookie("admin_token")
+            .is_none()
+    );
+
+    let welcome = get(&site.app, &path, None).await;
+    assert_eq!(welcome.status, StatusCode::OK);
+    assert!(welcome.body.contains("Welcome to Acme"));
+    let mismatch = post(
+        &site.app,
+        &path,
+        "password=grace-secret-1&password2=other",
+        None,
+    )
+    .await;
+    assert_eq!(mismatch.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let accepted = post(
+        &site.app,
+        &path,
+        "password=grace-secret-1&password2=grace-secret-1",
+        None,
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert_eq!(accepted.location(), "/admin/");
+    assert!(
+        accepted.cookie("admin_token").is_some(),
+        "accepting logs in"
+    );
+    assert!(
+        log_in(&site.app, "grace", "grace-secret-1")
+            .await
+            .cookie("admin_token")
+            .is_some()
+    );
+
+    // An invitation works once.
+    let again = post(
+        &site.app,
+        &path,
+        "password=x-secret-22&password2=x-secret-22",
+        None,
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn invitations_can_be_sent_again_and_work_without_passwords() {
+    let site = site(|s| s.auth.methods = vec![AuthMethod::MagicLink, AuthMethod::Password]).await;
+    let (session, csrf) = superuser_session(&site).await;
+    post(
+        &site.app,
+        "/admin/auth/users/new",
+        &format!("_csrf={csrf}&username=grace&password=grace-secret-1&email=grace%40acme.com&is_active=true&is_staff=true"),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(
+        site.outbox.count_after_a_moment().await,
+        0,
+        "no invitation unless asked"
+    );
+    let grace = account(&site.db, "grace").await.unwrap();
+    let page = get(
+        &site.app,
+        &format!("/admin/auth/users/{}", grace.id),
+        Some(&session),
+    )
+    .await;
+    assert!(page.body.contains("Send invitation"));
+    let sent = post(
+        &site.app,
+        &format!("/admin/auth/users/{}/invite", grace.id),
+        &format!("_csrf={csrf}"),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(sent.status, StatusCode::SEE_OTHER);
+    assert!(sent.location().ends_with("?notice=invitation_sent"));
+    let email = site.outbox.nth(0).await;
+    assert!(email.text.contains("login link at any time"));
+
+    // Without passwords, the invitation is a login.
+    let site = self::site(|s| s.auth.methods = vec![AuthMethod::MagicLink]).await;
+    let ada = account(&site.db, "ada").await.unwrap();
+    let session = format!("admin_token={}", {
+        post(&site.app, "/admin/login/link", "email=ada%40acme.com", None).await;
+        let path = link_path(&site.outbox.nth(0).await);
+        post(&site.app, &path, "", None)
+            .await
+            .cookie("admin_token")
+            .unwrap()
+    });
+    let page = get(
+        &site.app,
+        &format!("/admin/auth/users/{}", ada.id),
+        Some(&session),
+    )
+    .await;
+    let csrf = page
+        .body
+        .split("name=\"_csrf\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_owned();
+    let created = post(
+        &site.app,
+        "/admin/auth/users/new",
+        &format!("_csrf={csrf}&username=lin&email=lin%40acme.com&is_active=true&is_staff=true&invite=true"),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.body);
+    let path = link_path(&site.outbox.nth(1).await);
+    let welcome = get(&site.app, &path, None).await;
+    assert!(welcome.body.contains("Your account is ready"));
+    assert!(!welcome.body.contains("name=\"password\""));
+    let accepted = post(&site.app, &path, "", None).await;
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER);
+    assert!(accepted.cookie("admin_token").is_some());
+}

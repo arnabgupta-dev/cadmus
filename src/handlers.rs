@@ -174,6 +174,8 @@ pub(crate) enum Mode {
     Forgot,
     /// Choosing the new password.
     Reset,
+    /// Accepting an invitation.
+    Invite,
 }
 
 impl Mode {
@@ -185,6 +187,7 @@ impl Mode {
             Self::Link => "link",
             Self::Forgot => "forgot",
             Self::Reset => "reset",
+            Self::Invite => "invite",
         }
     }
 }
@@ -413,6 +416,8 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
         "two_factor_on" => "Two-factor authentication is on.",
         "two_factor_off" => "Two-factor authentication is off.",
         "password_changed" => "Your password is changed.",
+        "user_invited" => "Account created and invitation sent.",
+        "invitation_sent" => "Invitation sent.",
         _ => return None,
     })
 }
