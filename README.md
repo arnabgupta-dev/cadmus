@@ -783,19 +783,24 @@ needs.
 
 ## Building with AI agents
 
-The `cadmus` command includes an [MCP](https://modelcontextprotocol.io) server, so coding
-agents such as Claude Code, Cursor or VS Code's can read the documentation, create projects,
-add models and run migrations. Connect it with:
+Cadmus offers two [MCP](https://modelcontextprotocol.io) servers, so AI assistants can work
+with it:
 
-```sh
-claude mcp add cadmus -- cadmus mcp                 # Claude Code
-```
+- **Hosted docs server**, for any app that adds an MCP server by its address (ChatGPT,
+  Claude, Gemini CLI, Cursor, VS Code). Nothing to install; the assistant can search and read
+  the documentation. Add `https://cadmus-mcp.example.workers.dev/mcp`.
+- **Local server**, `cadmus mcp`, for coding agents on your computer. The agent can also
+  create projects, add models and run migrations for you:
 
-or, for clients with an `mcpServers` list (Claude Desktop, Cursor):
+  ```sh
+  claude mcp add cadmus -- cadmus mcp                 # Claude Code
+  ```
 
-```json
-{ "mcpServers": { "cadmus": { "command": "cadmus", "args": ["mcp"] } } }
-```
+  or, for clients with an `mcpServers` list (Claude Desktop, Cursor):
+
+  ```json
+  { "mcpServers": { "cadmus": { "command": "cadmus", "args": ["mcp"] } } }
+  ```
 
 Every project made by `cadmus new` also has an `AGENTS.md` guide, and the website offers
 [llms.txt](https://arnabgupta-dev.github.io/cadmus/llms.txt). Details:

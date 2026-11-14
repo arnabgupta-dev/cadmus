@@ -162,8 +162,9 @@
       <div>
         <p class="eyebrow">Built for AI agents</p>
         <h2>Let your coding agent build on Cadmus</h2>
-        <p class="section-lead">The <code>cadmus</code> command includes an MCP server. Connect Claude Code, Cursor, VS Code or any MCP client, and your agent can read these docs, create projects, add models and run migrations.</p>
+        <p class="section-lead">Two MCP servers: a hosted one that lets ChatGPT, Claude, Gemini or any MCP app search and read these docs, and a local one in the <code>cadmus</code> command that lets a coding agent create projects, add models and run migrations for you.</p>
         <ul class="checks">
+          <li>Hosted docs server: add one address, nothing to install</li>
           <li>Docs as tools and resources: list, read and search</li>
           <li>Create projects and models, make and apply migrations</li>
           <li>Every new project has an <code>AGENTS.md</code> guide</li>
@@ -172,9 +173,11 @@
         <a class="btn btn-light" href="docs/ai-agents.html">Connect your agent</a>
       </div>
       <div class="code-card dark">
-        <div class="code-tabs"><span class="active">Claude Code</span></div>
+        <div class="code-tabs"><span class="active">Hosted docs: ChatGPT, Claude, Gemini</span></div>
+<pre><code class="language-text">https://cadmus-mcp.example.workers.dev/mcp</code></pre>
+        <div class="code-tabs"><span class="active">Claude Code: local server</span></div>
 <pre><code class="language-bash">claude mcp add cadmus -- cadmus mcp</code></pre>
-        <div class="code-tabs"><span class="active">Cursor, Claude Desktop</span></div>
+        <div class="code-tabs"><span class="active">Cursor, Claude Desktop: local server</span></div>
 <pre><code class="language-json">{
   "mcpServers": {
     "cadmus": { "command": "cadmus", "args": ["mcp"] }
