@@ -28,6 +28,7 @@ mod home;
 mod limit;
 mod login;
 mod mail;
+pub mod migrations;
 mod oauth;
 mod resource;
 mod seaorm;

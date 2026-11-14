@@ -1,7 +1,7 @@
 //! Shared by the integration tests: the database every test runs against.
 //!
-//! SQLite in memory by default. Set `TEST_DATABASE_URL` to a PostgreSQL URL (and build with
-//! `--features postgres`) to run the same tests there.
+//! SQLite in memory by default. Set `TEST_DATABASE_URL` to a PostgreSQL or MySQL URL to run
+//! the same tests there.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,6 +31,19 @@ pub async fn database() -> DatabaseConnection {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
+    if url.starts_with("mysql:") {
+        // MySQL's schemas are databases: make one and connect to it.
+        let setup = Database::connect(&url).await.unwrap();
+        setup
+            .execute_unprepared(&format!("CREATE DATABASE {schema}"))
+            .await
+            .unwrap();
+        setup.close().await.unwrap();
+        let base = url.rsplit_once('/').map_or(url.as_str(), |(base, _)| base);
+        let mut options = ConnectOptions::new(format!("{base}/{schema}"));
+        options.max_connections(4);
+        return Database::connect(options).await.unwrap();
+    }
     let setup = Database::connect(&url).await.unwrap();
     setup
         .execute_unprepared(&format!("CREATE SCHEMA {schema}"))

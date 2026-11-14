@@ -53,6 +53,9 @@ pub enum AdminError {
     /// Database error.
     #[error(transparent)]
     Db(#[from] sea_orm::DbErr),
+    /// A migration could not be made or applied.
+    #[error("migration error: {0}")]
+    Migration(String),
     /// The request conflicts with the current state (e.g. an upload chunk at the wrong offset).
     #[error("conflict: {0}")]
     Conflict(String),
@@ -168,7 +171,12 @@ impl AdminError {
                         .to_owned(),
                 )
             }
-            Self::Config(_) | Self::Db(_) | Self::Io(_) | Self::Storage(_) | Self::Template(_) => {
+            Self::Config(_)
+            | Self::Db(_)
+            | Self::Migration(_)
+            | Self::Io(_)
+            | Self::Storage(_)
+            | Self::Template(_) => {
                 tracing::error!(error = %self, "request failed");
                 return (StatusCode::INTERNAL_SERVER_ERROR, ErrorInfo::internal());
             }

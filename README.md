@@ -15,7 +15,8 @@ Status: early (0.1). Tested against SQLite and PostgreSQL.
 cargo install --git https://github.com/arnabgupta-dev/heraapi heraapi-cli
 hera new blog && cd blog
 hera generate model Post title:string body:text published:bool views:int rating:float?
-cargo run -- migrate                # creates/updates tables from the models
+cargo run -- makemigrations         # writes src/migrations/m0001_initial.rs from the models
+cargo run -- migrate                # applies it
 cargo run -- createsuperuser --username admin
 cargo run -- serve                  # status page at /, admin at /admin, API docs at /api/docs
 ```
@@ -191,7 +192,7 @@ hera generate model Post title:string author:references editor:references=author
 
 `author:references` adds an `author_id` column pointing at `author`. `editor:references=author?`
 adds an optional `editor_id` that also points at `author`. A model can point to itself
-(`parent:references=category?` on `Category`). `migrate` creates the foreign-key constraints.
+(`parent:references=category?` on `Category`). Migrations create the foreign-key constraints.
 
 In the admin, such a field is a dropdown of the related rows on forms, and lists show the
 related row's name, linked to it, instead of its number.
@@ -213,7 +214,10 @@ The REST API is unchanged: it reads and writes the id (`author_id`).
 | Command | What it does |
 |---|---|
 | `serve [--bind addr]` | Start the server (graceful shutdown on Ctrl-C) |
-| `migrate` | Create missing tables, columns and unique keys for all models |
+| `makemigrations [--name N] [--empty] [--check] [--no-input]` | Write a migration for the model changes into `src/migrations` |
+| `migrate [target] [--fake]` | Apply new migrations, or roll back to `target` (a name, a number such as `0002`, or `zero`) |
+| `showmigrations` | List migrations and whether the database has had each |
+| `sqlmigrate NAME [--backwards]` | Print the SQL a migration runs on this database |
 | `createsuperuser --username U [--email E] [--password-stdin]` | Create a superuser |
 | `promote --username U` | Make an existing account an active superuser |
 | `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
@@ -222,8 +226,59 @@ The REST API is unchanged: it reads and writes the id (`author_id`).
 | `routes` | List generated URLs |
 | `check` | Validate configuration without serving |
 
-`migrate` is additive (SeaORM's entity-first schema sync): it does not drop or rename columns
-and keeps no migration history. Use `sea-orm-migration` for destructive changes.
+## Migrations
+
+Migrations work as in Django. Change a model, then:
+
+```sh
+cargo run -- makemigrations   # writes src/migrations/m0002_post_slug.rs
+cargo run -- migrate          # applies the migrations this database has not had
+```
+
+`makemigrations` compares the models with the tables the existing migrations build, and writes
+the difference as a Rust file:
+
+```rust
+pub fn migration() -> Migration {
+    Migration::new("0002_post_slug")
+        .rename_column("post", "body", "content")
+        .add_column_filled("post", Column::new("slug", Type::String(Some(200))), "")
+        .drop_column("post", Column::new("views", Type::Integer))
+}
+```
+
+The same file works on SQLite, PostgreSQL and MySQL; `migrate` turns each step into SQL for the
+database it runs on (`sqlmigrate 0002` prints it). Each migration runs in a transaction and is
+recorded in the `hera_migration` table. MySQL is the exception: it commits each change to a
+table's structure as it goes, so a migration that fails there can leave its earlier steps done.
+
+- **Renames:** a column marked `#[sea_orm(renamed_from = "body")]` is renamed. Otherwise, in a
+  terminal, `makemigrations` asks whether a dropped and a new column (or table) of the same
+  shape are a rename. Without a terminal (`--no-input`), nothing counts as a rename.
+- **New required columns:** rows already in the table need a value. Give the field a default,
+  or type a value when asked; it is saved as `add_column_filled`.
+- **Editing:** a migration can be changed until it has been applied somewhere. Add data
+  changes with `.sql_reversible(up, down)` or `.run(|db| Box::pin(async move { ... }))`;
+  `makemigrations --empty` writes a migration with no changes to start from.
+- **Rolling back:** `migrate 0001` undoes the migrations after `0001`; `migrate zero` undoes all.
+  A dropped column comes back empty (`0`, `''`, ...). SQL or code without a reverse cannot be
+  rolled back; `--fake` forgets such a migration without running anything.
+- **SQLite** cannot change or drop most columns in place, so for those steps the table is
+  rebuilt: created anew, rows copied, the old one dropped. Foreign keys are checked afterwards.
+- **CI:** `makemigrations --check` fails if a model changed without a migration, and `migrate`
+  warns about such changes.
+- **Not handled:** database enums and array columns, changing a primary key, and changing the
+  type of a column on PostgreSQL when the values cannot be cast (write that step with `.sql`).
+
+**Projects made before migrations** have `src/migrations` once they run `makemigrations`. Add
+`mod migrations;` to `main.rs` and `.migrations(migrations::all())` to the `App`. The first
+migration's tables already exist, so `migrate` just records it as applied. A project without
+`.migrations(...)` keeps the old behaviour: `migrate` adds missing tables and columns to match
+the models, and never drops or renames anything.
+
+The built-in tables (accounts, uploads) have migrations of their own, applied first.
+Databases from before migrations get their built-in tables brought up to date once, the first
+time `migrate` runs.
 
 ## REST API
 
@@ -644,8 +699,11 @@ cargo test                       # SQLite, in memory
 
 # the same tests against PostgreSQL (each test uses its own schema)
 docker run -d --rm -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:17-alpine
-TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
-  cargo test --features postgres
+TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres cargo test
+
+# or MySQL (each test uses its own database); only the migration tests pass there so far
+docker run -d --rm -e MYSQL_ROOT_PASSWORD=test -p 3306:3306 mysql:8.4
+TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test --test migrations
 ```
 
 ## Not done yet
@@ -665,8 +723,10 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
   add them with your own `tower` layers.
 - **API documentation:** your own routes are not discovered automatically, and the viewers are
   loaded from a CDN rather than bundled.
-- **Verification:** MySQL, S3, Azure and GCS compile but have not been run against real
-  services.
+- **MySQL:** migrations are tested on MySQL 8.4, but much of the rest of the test suite
+  still creates its tables with SQLite-style SQL and fails there. Known bug: true/false
+  columns come back from the API as `1`/`0`.
+- **Verification:** S3, Azure and GCS compile but have not been run against real services.
 
 ## License
 

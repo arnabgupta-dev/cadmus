@@ -4,6 +4,7 @@
 //! hera new blog
 //! cd blog
 //! hera generate model Post title:string body:text published:bool views:int rating:float?
+//! cargo run -- makemigrations
 //! cargo run -- migrate
 //! cargo run -- createsuperuser --username admin
 //! cargo run -- serve
@@ -181,7 +182,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     )?;
     write_new(
         &root.join("src/main.rs"),
-        r"mod models;
+        r"mod migrations;
+mod models;
 mod routes;
 mod settings;
 
@@ -189,12 +191,29 @@ use heraapi::{AdminError, App};
 
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
-    let app = App::from_settings(settings::settings()?).await?;
+    let app = App::from_settings(settings::settings()?)
+        .await?
+        .migrations(migrations::all());
     models::register(app).routes(routes::router()).run().await
 }
 ",
     )?;
     write_new(&root.join("src/settings.rs"), &settings_source(name))?;
+    write_new(
+        &root.join("src/migrations/mod.rs"),
+        r"//! The project's database migrations, oldest first.
+//!
+//! `cargo run -- makemigrations` adds a file here and rewrites this list;
+//! `cargo run -- migrate` applies the migrations the database has not had yet.
+
+use heraapi::migrations::Migration;
+
+/// Every migration, in the order they apply.
+pub fn all() -> Vec<Migration> {
+    Vec::new()
+}
+",
+    )?;
     write_new(
         &root.join("src/routes.rs"),
         r#"//! Your own routes, served next to the generated admin and REST API.
@@ -261,6 +280,7 @@ PUBLIC_URL=http://localhost:3000
     println!("next:");
     println!("  cd {name}");
     println!("  hera generate model Post title:string body:text published:bool");
+    println!("  cargo run -- makemigrations");
     println!("  cargo run -- migrate");
     println!("  cargo run -- createsuperuser --username admin");
     println!(
@@ -557,7 +577,7 @@ fn render_model(table: &str, fields: &[FieldSpec]) -> String {
         let _ = writeln!(body, "    pub {}: {ty},", field.name);
     }
     // One `belongs_to` per foreign key. The admin reads these to offer a dropdown, and
-    // `migrate` to create the constraint.
+    // `makemigrations` to create the constraint.
     let mut relations = String::new();
     for field in fields {
         let Some(target) = &field.references else {
@@ -670,7 +690,7 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
     if !files.is_empty() {
         println!("file fields need uploads: set uploads.storage_url in src/settings.rs");
     }
-    println!("next: cargo run -- migrate");
+    println!("next: cargo run -- makemigrations && cargo run -- migrate");
     Ok(())
 }
 
@@ -831,6 +851,7 @@ mod tests {
             "src/routes.rs",
             "src/models/mod.rs",
             "src/settings.rs",
+            "src/migrations/mod.rs",
             ".env",
             ".env.example",
             ".gitignore",
@@ -852,7 +873,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(root.join("src/main.rs"))
                 .unwrap()
-                .contains("App::from_settings(settings::settings()?)")
+                .contains(".migrations(migrations::all())")
         );
         assert!(
             std::fs::read_to_string(root.join(".gitignore"))

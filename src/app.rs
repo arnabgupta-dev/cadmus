@@ -17,6 +17,11 @@ use crate::auth::{AuthConfig, UserStore};
 use crate::docs::DocsConfig;
 use crate::error::AdminError;
 use crate::home::{self, Home, HomeConfig};
+use crate::migrations::runner::{self, AppMigrations, LegacySync};
+use crate::migrations::{
+    Answers, Detect, EntityTable, Migration, MigrationEvent, NewMigration, Operation, Questions,
+    State, builtin, describe, diff, render_list, render_migration, table_of,
+};
 use crate::resource::{ModelOptions, Resource};
 use crate::seaorm::SeaOrmResource;
 use crate::settings::{Settings, UiSettings};
@@ -28,6 +33,7 @@ use crate::users::{
 use crate::{Admin, base_path, server};
 
 type SchemaStep = Box<dyn Fn(SchemaBuilder) -> SchemaBuilder + Send + Sync>;
+type TableStep = Box<dyn Fn() -> Result<EntityTable, String> + Send + Sync>;
 
 /// An application: register models, add your own routes, then call [`App::run`].
 ///
@@ -57,6 +63,10 @@ pub struct App {
     builtin_users: bool,
     resources: Vec<Arc<dyn Resource>>,
     schema: Vec<SchemaStep>,
+    /// The registered models' tables, for `makemigrations`.
+    tables: Vec<TableStep>,
+    /// The project's migrations; `None` keeps the tables in sync with the models instead.
+    migrations: Option<Vec<Migration>>,
     uploads: Option<Uploads>,
     routes: Router,
     request_timeout: Option<Duration>,
@@ -84,6 +94,8 @@ impl App {
             api_base: None,
             resources: Vec::new(),
             schema: Vec::new(),
+            tables: Vec::new(),
+            migrations: None,
             uploads: None,
             routes: Router::new(),
             request_timeout: Some(Duration::from_secs(30)),
@@ -418,6 +430,23 @@ impl App {
         self.resources.push(Arc::new(resource));
         self.schema
             .push(Box::new(|builder| builder.register(E::default())));
+        self.tables.push(Box::new(table_of::<E>));
+        self
+    }
+
+    /// Keeps the project's tables with versioned migrations: `migrate` applies these (written
+    /// by `makemigrations` into `src/migrations/`) instead of syncing tables to the models.
+    ///
+    /// ```ignore
+    /// mod migrations;
+    ///
+    /// App::from_settings(settings).await?
+    ///     .migrations(migrations::all())
+    ///     .model::<post::Entity>(ModelOptions::new())
+    /// ```
+    #[must_use]
+    pub fn migrations(mut self, migrations: Vec<Migration>) -> Self {
+        self.migrations = Some(migrations);
         self
     }
 
@@ -435,20 +464,231 @@ impl App {
         self
     }
 
-    /// Creates missing tables and columns for the built-in accounts and every registered model.
+    /// Brings the database up to date: applies the built-in tables' migrations, then the
+    /// project's (see [`App::migrations`]). A project without migrations has its tables
+    /// created or extended to match the models instead, as with SeaORM's schema sync.
     ///
     /// # Errors
-    /// Returns [`AdminError::Db`] if the schema cannot be read or changed.
+    /// Returns [`AdminError::Migration`] if a migration fails (it is rolled back where the
+    /// database allows), and [`AdminError::Db`] if the database cannot be reached.
     pub async fn migrate(&self) -> Result<(), AdminError> {
-        let mut builder = crate::users::register_schema(self.db.get_schema_builder());
-        if self.uploads.is_some() {
-            builder = Uploads::register_schema(builder);
+        for event in self.migrate_to(None, false).await? {
+            if matches!(event, MigrationEvent::Unmigrated(_)) {
+                tracing::warn!("{event}");
+            } else {
+                tracing::info!("{event}");
+            }
         }
-        for step in &self.schema {
-            builder = step(builder);
-        }
-        builder.sync(&self.db).await?;
         Ok(())
+    }
+
+    /// Like [`App::migrate`], but moves the project to `target`: a migration name or its
+    /// number (`0002`), whose later migrations are rolled back, or `zero` to roll back all.
+    /// With `fake`, the project's migrations are recorded or forgotten without running them.
+    ///
+    /// # Errors
+    /// As [`App::migrate`]; also [`AdminError::Config`] for an unknown target.
+    pub async fn migrate_to(
+        &self,
+        target: Option<&str>,
+        fake: bool,
+    ) -> Result<Vec<MigrationEvent>, AdminError> {
+        let mut events = Vec::new();
+        runner::ensure_history(&self.db).await?;
+        for app in self.builtin_apps() {
+            let migrations = app.migrations.len();
+            runner::forward(&self.db, &app, migrations, false, &mut events).await?;
+        }
+        let Some(list) = &self.migrations else {
+            if target.is_some() || fake {
+                return Err(AdminError::Config(
+                    "the project has no migrations; run makemigrations first".into(),
+                ));
+            }
+            if !self.schema.is_empty() {
+                let mut builder = self.db.get_schema_builder();
+                for step in &self.schema {
+                    builder = step(builder);
+                }
+                builder.sync(&self.db).await?;
+                events.push(MigrationEvent::Synced);
+            }
+            return Ok(events);
+        };
+        check_names(list)?;
+        let keep = match target {
+            None => list.len(),
+            Some(target) => find_target(list, target)?,
+        };
+        let app = AppMigrations {
+            label: "app",
+            migrations: list,
+            legacy: None,
+        };
+        runner::backward(&self.db, &app, keep, fake, &mut events).await?;
+        runner::forward(&self.db, &app, keep, fake, &mut events).await?;
+        if keep == list.len() {
+            let changes = self.pending_changes()?;
+            if !changes.is_empty() {
+                events.push(MigrationEvent::Unmigrated(changes));
+            }
+        }
+        Ok(events)
+    }
+
+    /// The built-in apps with migrations: accounts always, uploads when configured.
+    fn builtin_apps(&self) -> Vec<AppMigrations<'static>> {
+        let leak =
+            |list: Vec<Migration>| -> &'static [Migration] { Box::leak(list.into_boxed_slice()) };
+        let db = self.db.clone();
+        let auth_sync: LegacySync<'static> = Box::new(move || {
+            let db = db.clone();
+            Box::pin(async move {
+                crate::users::register_schema(db.get_schema_builder())
+                    .sync(&db)
+                    .await
+            })
+        });
+        let mut apps = vec![AppMigrations {
+            label: "auth",
+            migrations: leak(builtin::auth()),
+            legacy: Some(("auth_user", auth_sync)),
+        }];
+        if self.uploads.is_some() {
+            let db = self.db.clone();
+            let uploads_sync: LegacySync<'static> = Box::new(move || {
+                let db = db.clone();
+                Box::pin(async move {
+                    Uploads::register_schema(db.get_schema_builder())
+                        .sync(&db)
+                        .await
+                })
+            });
+            apps.push(AppMigrations {
+                label: "uploads",
+                migrations: leak(builtin::uploads()),
+                legacy: Some(("storage_file", uploads_sync)),
+            });
+        }
+        apps
+    }
+
+    /// The registered models' tables, leaving out the built-in ones.
+    fn model_tables(&self) -> Result<Vec<EntityTable>, AdminError> {
+        let mut builtin_names: Vec<String> = Vec::new();
+        for tables in [builtin::auth_tables(), builtin::upload_tables()] {
+            builtin_names.extend(
+                tables
+                    .map_err(AdminError::Migration)?
+                    .into_iter()
+                    .map(|t| t.table.name),
+            );
+        }
+        let mut tables: Vec<EntityTable> = Vec::new();
+        for step in &self.tables {
+            let table = step().map_err(AdminError::Migration)?;
+            if !builtin_names.contains(&table.table.name)
+                && !tables.iter().any(|t| t.table.name == table.table.name)
+            {
+                tables.push(table);
+            }
+        }
+        Ok(tables)
+    }
+
+    fn model_changes(&self, questions: &mut dyn Questions) -> Result<Vec<Operation>, AdminError> {
+        let state = State::after(self.migrations.as_deref().unwrap_or_default())
+            .map_err(AdminError::Migration)?;
+        diff(&state, &self.model_tables()?, questions).map_err(AdminError::Migration)
+    }
+
+    /// The changes to the models that no migration makes yet, one line each; empty when the
+    /// migrations are up to date.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Migration`] if a model or migration cannot be read.
+    pub fn pending_changes(&self) -> Result<Vec<String>, AdminError> {
+        Ok(describe(&self.model_changes(&mut Detect)?))
+    }
+
+    /// Writes a migration for the model changes into `dir` (normally `src/migrations`) and
+    /// rewrites its `mod.rs`, as `makemigrations` does without asking questions: nothing is
+    /// taken as renamed. Returns `None` when there is nothing to do.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Migration`] if the change needs an answer (a value for existing
+    /// rows) or the files in `dir` are not the migrations the app was built with, and
+    /// [`AdminError::Io`] if the files cannot be written.
+    pub fn make_migration(
+        &self,
+        dir: impl AsRef<std::path::Path>,
+        name: Option<&str>,
+    ) -> Result<Option<NewMigration>, AdminError> {
+        self.make(dir.as_ref(), name, false, &mut Answers::new(true))
+    }
+
+    fn make(
+        &self,
+        dir: &std::path::Path,
+        name: Option<&str>,
+        empty: bool,
+        questions: &mut dyn Questions,
+    ) -> Result<Option<NewMigration>, AdminError> {
+        let registered = self.migrations.as_deref().unwrap_or_default();
+        let loaded: Vec<String> = registered
+            .iter()
+            .map(|m| format!("m{}", m.name()))
+            .collect();
+        let on_disk = migration_modules(dir)?;
+        if on_disk != loaded {
+            let message = if self.migrations.is_none() {
+                format!(
+                    "{} has migrations, but the app does not load them: add `mod migrations;` \
+                     to main.rs and `.migrations(migrations::all())` to the App",
+                    dir.display()
+                )
+            } else {
+                format!(
+                    "the files in {} ({}) are not the migrations the app was built with ({}); \
+                     check that its mod.rs lists every file, and build again",
+                    dir.display(),
+                    on_disk.join(", "),
+                    loaded.join(", ")
+                )
+            };
+            return Err(AdminError::Migration(message));
+        }
+        check_names(registered)?;
+        let operations = if empty {
+            Vec::new()
+        } else {
+            self.model_changes(questions)?
+        };
+        if operations.is_empty() && !empty {
+            return Ok(None);
+        }
+        let number = registered
+            .iter()
+            .filter_map(Migration::number)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let suffix = match name {
+            Some(name) => slug(name),
+            None => auto_name(registered.is_empty(), &operations),
+        };
+        let full = format!("{number:04}_{suffix}");
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("m{full}.rs"));
+        std::fs::write(&path, render_migration(&full, &operations))?;
+        let mut modules = loaded;
+        modules.push(format!("m{full}"));
+        std::fs::write(dir.join("mod.rs"), render_list(&modules))?;
+        Ok(Some(NewMigration {
+            name: full,
+            path,
+            changes: describe(&operations),
+        }))
     }
 
     /// The OpenAPI description of the REST API as JSON, as served at `openapi.json`. Use it
@@ -580,9 +820,98 @@ impl App {
                 Some(address) => self.bind(address).serve().await,
                 None => self.serve().await,
             },
-            Command::Migrate => {
-                self.migrate().await?;
-                println!("schema is up to date");
+            Command::Migrate { target, fake } => {
+                let events = self.migrate_to(target.as_deref(), fake).await?;
+                let quiet = events
+                    .iter()
+                    .all(|e| matches!(e, MigrationEvent::Unmigrated(_)));
+                for event in &events {
+                    println!("{event}");
+                }
+                if quiet {
+                    println!("no migrations to apply");
+                }
+                Ok(())
+            }
+            Command::Makemigrations {
+                name,
+                empty,
+                check,
+                no_input,
+            } => {
+                if check {
+                    let changes = self.pending_changes()?;
+                    if changes.is_empty() {
+                        println!("no changes");
+                        return Ok(());
+                    }
+                    for change in &changes {
+                        println!("  {change}");
+                    }
+                    return Err(AdminError::Migration(
+                        "the models have changes that no migration makes yet".into(),
+                    ));
+                }
+                let dir = migrations_dir();
+                let made = self.make(&dir, name.as_deref(), empty, &mut Answers::new(no_input))?;
+                let Some(made) = made else {
+                    println!("no changes");
+                    return Ok(());
+                };
+                println!("wrote {}", made.path.display());
+                for change in &made.changes {
+                    println!("  {change}");
+                }
+                if self.migrations.is_none() {
+                    println!();
+                    println!("to use it, add to main.rs:");
+                    println!("  mod migrations;");
+                    println!("and to the App: .migrations(migrations::all())");
+                }
+                println!("next: cargo run -- migrate");
+                Ok(())
+            }
+            Command::Showmigrations => {
+                let has_history = runner::has_table(&self.db, runner::HISTORY, &[]).await;
+                let project = self.migrations.clone().unwrap_or_default();
+                let mut apps: Vec<(&str, Vec<Migration>)> = self
+                    .builtin_apps()
+                    .into_iter()
+                    .map(|a| (a.label, a.migrations.to_vec()))
+                    .collect();
+                apps.push(("app", project));
+                for (label, migrations) in apps {
+                    let done = if has_history {
+                        runner::applied(&self.db, label).await?
+                    } else {
+                        std::collections::BTreeSet::new()
+                    };
+                    println!("{label}");
+                    if migrations.is_empty() {
+                        println!("  (no migrations)");
+                    }
+                    for migration in &migrations {
+                        let mark = if done.contains(migration.name()) {
+                            "X"
+                        } else {
+                            " "
+                        };
+                        println!("  [{mark}] {}", migration.name());
+                    }
+                }
+                Ok(())
+            }
+            Command::Sqlmigrate { name, backwards } => {
+                let list = self.migrations.as_deref().unwrap_or_default();
+                let keep = find_target(list, &name)?;
+                if keep == 0 {
+                    return Err(AdminError::Config(format!("no migration named `{name}`")));
+                }
+                let sql = runner::sql_of(list, keep - 1, self.db.get_database_backend(), backwards)
+                    .map_err(AdminError::Migration)?;
+                for statement in sql {
+                    println!("{statement}");
+                }
                 Ok(())
             }
             Command::Createsuperuser {
@@ -707,6 +1036,115 @@ impl App {
             }
         }
     }
+}
+
+/// Where `makemigrations` writes: `src/migrations` of the crate being run.
+fn migrations_dir() -> std::path::PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from)
+        .join("src")
+        .join("migrations")
+}
+
+/// The migration modules in `dir` (`m0001_initial`, ...), in order.
+fn migration_modules(dir: &std::path::Path) -> Result<Vec<String>, AdminError> {
+    let mut modules = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(modules),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if let Some(module) = name.strip_suffix(".rs")
+            && module.starts_with('m')
+            && module[1..].starts_with(|c: char| c.is_ascii_digit())
+        {
+            modules.push(module.to_owned());
+        }
+    }
+    modules.sort();
+    Ok(modules)
+}
+
+/// Migration names must start with a number, each higher than the last.
+fn check_names(migrations: &[Migration]) -> Result<(), AdminError> {
+    let mut last = 0;
+    for migration in migrations {
+        let Some(number) = migration.number() else {
+            return Err(AdminError::Migration(format!(
+                "migration `{}` must start with its number, like 0002_post_slug",
+                migration.name()
+            )));
+        };
+        if number <= last {
+            return Err(AdminError::Migration(format!(
+                "migration `{}` is out of order: each must have a higher number than the last",
+                migration.name()
+            )));
+        }
+        last = number;
+    }
+    Ok(())
+}
+
+/// How many migrations stay applied when moving to `target`.
+fn find_target(migrations: &[Migration], target: &str) -> Result<usize, AdminError> {
+    if target == "zero" {
+        return Ok(0);
+    }
+    if let Some(i) = migrations.iter().position(|m| m.name() == target) {
+        return Ok(i + 1);
+    }
+    let matches: Vec<usize> = migrations
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.name().starts_with(&format!("{target}_")))
+        .map(|(i, _)| i)
+        .collect();
+    match matches[..] {
+        [i] => Ok(i + 1),
+        [] => Err(AdminError::Config(format!("no migration named `{target}`"))),
+        _ => Err(AdminError::Config(format!(
+            "`{target}` matches several migrations; give the whole name"
+        ))),
+    }
+}
+
+/// A name for a migration file: lower case letters, digits and underscores.
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let trimmed: String = out.trim_matches('_').chars().take(50).collect();
+    if trimmed.is_empty() {
+        "changes".into()
+    } else {
+        trimmed
+    }
+}
+
+/// A migration name made up from its changes, as Django does.
+fn auto_name(initial: bool, operations: &[Operation]) -> String {
+    if initial {
+        return "initial".into();
+    }
+    let name = match operations {
+        [Operation::CreateTable(t)] => t.name.clone(),
+        [Operation::DropTable(t)] => format!("delete_{}", t.name),
+        [Operation::RenameTable { to, .. }] => format!("rename_{to}"),
+        [Operation::AddColumn { table, column, .. }] => format!("{table}_{}", column.name),
+        [Operation::DropColumn { table, column }] => format!("remove_{table}_{}", column.name),
+        [Operation::RenameColumn { table, to, .. }] => format!("rename_{table}_{to}"),
+        [Operation::AlterColumn { table, to, .. }] => format!("alter_{table}_{}", to.name),
+        _ => format!("auto_{}", chrono::Utc::now().format("%Y%m%d_%H%M")),
+    };
+    slug(&name)
 }
 
 /// The checks of [`App::with_settings`] that need no database, run before connecting.
@@ -853,8 +1291,40 @@ enum Command {
         #[arg(long)]
         bind: Option<String>,
     },
-    /// Create or update tables for the built-in accounts and all registered models.
-    Migrate,
+    /// Apply the migrations the database has not had yet (or, with a target, roll back to it).
+    Migrate {
+        /// Move the project's migrations to this one (a name or number such as 0002), rolling
+        /// back later ones; `zero` rolls back all of them.
+        target: Option<String>,
+        /// Record or forget migrations without running them, for tables changed by hand.
+        #[arg(long)]
+        fake: bool,
+    },
+    /// Write a migration for the changes to the models, into src/migrations.
+    Makemigrations {
+        /// Name the migration (default: made up from the changes).
+        #[arg(long)]
+        name: Option<String>,
+        /// Write a migration with no changes, to fill in by hand.
+        #[arg(long)]
+        empty: bool,
+        /// Write nothing; fail if the models have changes without a migration (for CI).
+        #[arg(long)]
+        check: bool,
+        /// Ask nothing: assume nothing was renamed.
+        #[arg(long)]
+        no_input: bool,
+    },
+    /// List the migrations and whether the database has had each.
+    Showmigrations,
+    /// Print the SQL a project migration runs on this database.
+    Sqlmigrate {
+        /// The migration's name or number.
+        name: String,
+        /// The SQL that rolls it back instead.
+        #[arg(long)]
+        backwards: bool,
+    },
     /// Create a superuser: an account that can do everything, including managing accounts.
     Createsuperuser {
         /// Login name.
