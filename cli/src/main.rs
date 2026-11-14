@@ -52,7 +52,7 @@ enum Command {
         #[command(subcommand)]
         what: Generate,
     },
-    /// Print a random value suitable for ADMIN_JWT_SECRET.
+    /// Print a random value suitable for SECRET_KEY.
     Secret,
 }
 

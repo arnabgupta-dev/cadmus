@@ -2,78 +2,405 @@
 
 [![CI](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml)
 
-A Django-style framework for [axum](https://docs.rs/axum) and
-[SeaORM](https://www.sea-ql.org/SeaORM/). Define a model once and get its table, admin pages
-and REST endpoints, with authentication, file uploads and management commands built in.
+**Django-style web framework for Rust.** Describe your data once, as a model, and heraapi
+gives you:
 
-Status: early (0.1). Tested against SQLite, PostgreSQL and MySQL.
+- **a database table** for it, kept up to date with migrations;
+- **an admin site** where people log in and add, edit, search and delete records;
+- **a REST API** (JSON) so other programs can do the same, with interactive documentation;
+- **accounts and permissions**: users, groups, two-factor login, login with Google and others;
+- **management commands** such as `migrate` and `createsuperuser`;
+- **file uploads**, to your disk or to cloud storage.
 
-## Quick start
+It is built on [axum](https://docs.rs/axum) (the web server) and
+[SeaORM](https://www.sea-ql.org/SeaORM/) (the database layer), and works with SQLite,
+PostgreSQL and MySQL.
+
+**Status:** early (version 0.1). Everything described here works and is tested on all three
+databases, but details may still change between versions.
+
+## Contents
+
+- [Coming from Django?](#coming-from-django)
+- [Your first project, step by step](#your-first-project-step-by-step)
+- [What is in a project](#what-is-in-a-project)
+- [Core ideas](#core-ideas)
+  - [Models](#models)
+  - [The admin site](#the-admin-site)
+  - [The REST API](#the-rest-api)
+  - [Migrations](#migrations)
+  - [Accounts and permissions](#accounts-and-permissions)
+  - [People log in, programs use keys](#people-log-in-programs-use-keys)
+  - [Settings](#settings)
+- [Guides](#guides): [relations](#relations), [login methods](#login-methods),
+  [e-mail](#e-mail), [two-factor authentication](#two-factor-authentication),
+  [login attempt limits](#login-attempt-limits), [file uploads](#file-uploads),
+  [API documentation](#api-documentation), [databases](#databases),
+  [errors and your own code](#errors-and-your-own-code), [home page](#home-page),
+  [deploying](#deploying)
+- [Reference](#reference): [commands](#management-commands), [settings](#all-settings),
+  [migrations in detail](#migrations-in-detail)
+- [Not done yet](#not-done-yet) · [Working on heraapi](#working-on-heraapi) ·
+  [License](#license)
+
+## Coming from Django?
+
+Most ideas carry over directly:
+
+| In Django | In heraapi |
+|---|---|
+| `django-admin startproject` | `hera new` |
+| `models.py` and a model class | `src/models/post.rs`, a SeaORM entity (`hera generate model` writes it) |
+| `admin.site.register(Post, PostAdmin)` | `app.model::<post::Entity>(ModelOptions::new()...)` |
+| `list_display`, `search_fields`, `list_filter`, `readonly_fields`, `actions` | the same names on `ModelOptions` |
+| `settings.py` | `src/settings.rs` |
+| `DATABASES` | `database.url` in the settings |
+| `manage.py makemigrations` / `migrate` | `cargo run -- makemigrations` / `migrate` |
+| `manage.py createsuperuser` | `cargo run -- createsuperuser` |
+| `manage.py runserver` | `cargo run -- serve` |
+| users, groups, `is_staff`, `is_superuser`, view/add/change/delete permissions | the same |
+| Django REST Framework: viewsets and routers | generated for every model, no code needed |
+| DRF's SimpleJWT and TokenAuthentication | login tokens and [API keys](#people-log-in-programs-use-keys) |
+| drf-spectacular (Swagger) | built in at `/api/docs` |
+
+What is different: it is Rust, so mistakes such as a misspelt setting or field are caught
+when the project compiles, before anything runs, and the result is one fast program with no
+interpreter to install on the server. There are no HTML templates to write for the admin or
+views for the API: both are generated from the models.
+
+## Your first project, step by step
+
+You need [Rust](https://www.rust-lang.org/tools/install) (a recent stable version, installed
+with `rustup`). Nothing else: the first project uses SQLite, a database kept in a single
+file.
+
+**1. Install the `hera` command**, which creates projects and models:
 
 ```sh
-# installs the `hera` generator
 cargo install --git https://github.com/arnabgupta-dev/heraapi heraapi-cli
-hera new blog && cd blog
-hera generate model Post title:string body:text published:bool views:int rating:float?
-cargo run -- makemigrations         # writes src/migrations/m0001_initial.rs from the models
-cargo run -- migrate                # applies it
-cargo run -- createsuperuser --username admin
-cargo run -- serve                  # status page at /, admin at /admin, API docs at /api/docs
 ```
 
-Generated projects depend on this repository through a Cargo `git` dependency. From a local
-checkout, use `cargo install --path cli` and `hera new blog --framework-path /path/to/checkout`.
+**2. Create a project:**
 
-`hera new` writes `src/settings.rs` (see [Settings](#settings)), a `.env` with the database URL
-and a generated signing secret (git-ignored), and a `.env.example`.
-`hera new blog --database postgres` (or `mysql`) writes a PostgreSQL `DATABASE_URL` to edit
-instead of the SQLite one; every driver is built in, so that address is the only difference.
+```sh
+hera new blog
+cd blog
+```
 
-Field types: `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`,
-`file` for an uploaded file (see [File uploads](#file-uploads)), and `references` for a foreign
-key to another model; add `?` for nullable.
+This writes a ready-to-run project (see [What is in a project](#what-is-in-a-project)),
+including a `.env` file with a fresh secret key. For PostgreSQL or MySQL instead of SQLite,
+use `hera new blog --database postgres` (or `mysql`) and edit the address in `.env`.
 
-A project's `main.rs` is this:
+**3. Describe your data.** A blog post with a title, a body, a published flag and a view
+count:
+
+```sh
+hera generate model Post title:string body:text published:bool views:int
+```
+
+This writes `src/models/post.rs` and registers it. The field types are `string`, `text`,
+`int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`, `file` (an uploaded file) and
+`references` (a link to another model, see [Relations](#relations)). Add `?` to make a field
+optional, as in `rating:float?`.
+
+**4. Create the table:**
+
+```sh
+cargo run -- makemigrations   # writes src/migrations/m0001_initial.rs, describing the table
+cargo run -- migrate          # creates it in the database
+```
+
+The first run compiles the project, which takes a minute or two; later runs are quick.
+
+**5. Make an account for yourself:**
+
+```sh
+cargo run -- createsuperuser --username admin
+```
+
+It asks for a password. A *superuser* can do everything, including managing other accounts.
+
+**6. Start the server:**
+
+```sh
+cargo run -- serve
+```
+
+Then open:
+
+| Address | What you see |
+|---|---|
+| <http://localhost:3000/admin> | the admin site: log in, then add and edit posts |
+| <http://localhost:3000/api/docs> | the API documentation, where you can try every request |
+| <http://localhost:3000/> | a public status page (is the service up, does the database answer) |
+
+**7. Change something.** Give posts an optional summary: in `src/models/post.rs`, add the
+line `pub summary: Option<String>,` to the `Model` struct. Then:
+
+```sh
+cargo run -- makemigrations   # notices the new field, writes m0002_post_summary.rs
+cargo run -- migrate          # adds the column; existing posts keep their data
+```
+
+That is the whole loop: change the models, make a migration, apply it.
+
+## What is in a project
+
+```text
+blog/
+├── Cargo.toml              Rust's project file: name and dependencies
+├── .env                    secrets for this machine: database address, secret key (not in git)
+├── .env.example            the same without the secrets, to share
+└── src/
+    ├── main.rs             starts the app: settings, migrations, models, your routes
+    ├── settings.rs         how the site behaves, like Django's settings.py
+    ├── models/
+    │   ├── mod.rs          lists the models, with the admin options for each
+    │   └── post.rs         one file per model
+    ├── migrations/
+    │   ├── mod.rs          the list of migrations, kept by makemigrations
+    │   └── m0001_initial.rs
+    └── routes.rs           your own pages and endpoints, next to the generated ones
+```
+
+`main.rs` is short:
 
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
-    let app = App::from_settings(settings::settings()?).await?;
+    let app = App::from_settings(settings::settings()?)
+        .await?
+        .migrations(migrations::all());
     models::register(app).routes(routes::router()).run().await
 }
 ```
 
-and registering a model is one line:
+`run()` reads the command line, so the same program is the server (`serve`) and every
+[management command](#management-commands).
+
+## Core ideas
+
+### Models
+
+A model describes one kind of record: its fields and their types. heraapi uses SeaORM
+entities as models; `hera generate model` writes one for you:
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[sea_orm(table_name = "post")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub title: String,
+    #[sea_orm(column_type = "Text")]
+    pub body: String,
+    pub published: bool,
+    pub views: i32,
+    pub summary: Option<String>,   // Option = may be empty
+}
+```
+
+Registering a model, in `src/models/mod.rs`, is one line, plus any options for the admin:
 
 ```rust
 app.model::<post::Entity>(
     ModelOptions::new()
-        .label("Posts")
-        .list_display(["id", "title", "published"])
-        .search_fields(["title"])
-        .readonly_fields(["views"])
-        .hidden_fields(["internal_note"])
-        .list_filter(["published", "author_id", "created_at"])
+        .label("Posts")                                   // name in the menu
+        .list_display(["id", "title", "published"])       // columns on the list page
+        .search_fields(["title"])                         // what the search box looks in
+        .list_filter(["published", "created_at"])         // filter dropdowns above the list
+        .readonly_fields(["views"])                       // shown, but not editable
+        .hidden_fields(["internal_note"])                 // never shown or sent anywhere
         .set_action("publish", "Mark as published", "published", "true"),
 )
 ```
 
-`list_filter` adds a dropdown per column above the list, as in Django: Yes/No for booleans,
-the related rows by name for foreign keys, periods ("Past 7 days", "This month") for dates,
-the values present for other columns, and "(empty)" for nullable ones. Filters combine with
-search, and sorting and paging keep them.
+Every registered model gets its admin pages and its API endpoints at once.
 
-**Bulk actions.** Rows on a list page can be selected (one by one, or all on the page) and
-acted on together. "Delete selected" is offered to accounts that may delete; it asks first,
-and keeps rows that other rows point to, saying how many. `set_action(name, label, column,
-value)` adds an action that sets a column in every selected row, as editing them would.
-`action(name, label, |ids| async move { ... })` runs your own code with the selected primary
-keys. Both need the `change` permission; at most 1000 rows are done at a time.
+### The admin site
 
-## Settings
+`/admin` is where people manage the data in a browser. It works on phones as well as
+desktops, has light and dark themes, and shows each account only what it may do.
+
+- **Dashboard:** the models the account can see, with how many records each has and what the
+  account may do with them.
+- **Lists:** search, sorting by clicking a column heading, and pages of results. On phones
+  each row becomes a card.
+- **Filters** (`list_filter`): a dropdown per column above the list, as in Django: Yes/No for
+  true/false fields, names for links to other models, periods ("Past 7 days", "This month")
+  for dates, the values present for other columns, and "(empty)" for optional ones. Filters
+  combine with search, and sorting and paging keep them.
+- **Acting on several rows:** tick rows (or all on the page), then pick an action. "Delete
+  selected" asks first, and keeps rows that other rows still point to.
+  `set_action(name, label, column, value)` adds an action that sets a column on every
+  selected row; `action(name, label, |ids| async move { ... })` runs your own code with the
+  selected ids. Both need the change permission; at most 1000 rows at a time.
+- **Forms:** buttons appear only for what the account may do, a record it cannot change opens
+  read-only, and deleting asks for confirmation. Links to other models are dropdowns, and file
+  fields have a file picker with a preview for images.
+- **Keyboard:** <kbd>/</kbd> jumps to the search box, and every control can be reached with the
+  keyboard.
+- **Your own look:** site title, colour, logo, theme and more are [settings](#settings). The
+  pages load the Fira Sans typeface from Google Fonts; `admin.web_fonts: false` uses the
+  system's typeface instead and contacts no other site.
+
+### The REST API
+
+Everything in the admin can also be done by a program, over HTTP with JSON. For every model,
+under `/api`:
+
+| Request | What it does |
+|---|---|
+| `GET /api/post` | list posts: `{"data": [...], "meta": {"total", "page", "per_page"}}` |
+| `GET /api/post?q=rust&sort=-id&page=2&per_page=50` | search, sort (`-` for highest first), page (at most 100 per page) |
+| `GET /api/post?published=true&views__gte=100` | filter (see below) |
+| `POST /api/post` | create one; answers `201` with the new record |
+| `GET /api/post/1` | read one |
+| `PUT /api/post/1` | replace one: every required field must be sent |
+| `PATCH /api/post/1` | change only the fields sent |
+| `DELETE /api/post/1` | delete one; answers `204` |
+
+**Filtering** works on any visible column: `?published=true&author_id=3`; comparisons with
+`__gt`, `__gte`, `__lt` and `__lte` (`?views__gte=100`, `?created_at__gte=2026-01-01`);
+`__isnull=true` or `false`; and for dates `__range=today`, `7d`, `30d`, `month` or `year`
+(UTC). An unknown column, or a value the column cannot hold, is refused with `422`. A column
+named `page`, `per_page`, `q` or `sort` cannot be filtered on.
+
+**Errors** come back as JSON, `{"error": {"code", "message", "field"}}`, with a status such
+as `401` (not logged in), `403` (not allowed), `404` (not found), `409` (conflicts with other
+data, e.g. a duplicate), `422` (invalid field) or `429` (too many attempts). Fields that are
+unknown, hidden or read-only are refused rather than silently ignored.
+
+Every request needs a login token or an API key; see
+[People log in, programs use keys](#people-log-in-programs-use-keys). The API follows the
+same permissions as the admin. Its interactive documentation is at `/api/docs`
+([more](#api-documentation)).
+
+### Migrations
+
+The database's tables must match your models. *Migrations* are the steps that get them there,
+saved as files so every copy of the project (your laptop, a colleague's, the server) goes
+through the same steps. They work as in Django:
+
+```sh
+cargo run -- makemigrations   # compares the models with the migrations so far, writes the difference
+cargo run -- migrate          # applies the migrations this database has not had yet
+```
+
+A migration is a short Rust file you can read and edit:
+
+```rust
+pub fn migration() -> Migration {
+    Migration::new("0002_post_changes")
+        .rename_column("post", "body", "content")
+        .add_column("post", Column::new("status", Type::String(None)).default("draft"))
+        .drop_column("post", Column::new("views", Type::Integer))
+}
+```
+
+- **One file, every database:** the same migration runs on SQLite, PostgreSQL and MySQL;
+  `migrate` turns it into the right SQL for each.
+- **Safe:** each migration runs as one transaction, so a failure leaves the database as it
+  was (MySQL is the exception: it saves table changes as it goes).
+- **History:** applied migrations are recorded in the `hera_migration` table, and
+  `showmigrations` lists them.
+- **Undo:** `cargo run -- migrate 0001` rolls back everything after `0001`.
+- **Renames:** `makemigrations` asks whether a column was renamed or replaced, so data is not
+  lost by accident. Mark the field `#[sea_orm(renamed_from = "body")]` to say so up front.
+
+The details, including data changes and rollbacks, are under
+[Migrations in detail](#migrations-in-detail).
+
+### Accounts and permissions
+
+Accounts work as in Django. Each account has three switches:
+
+| Switch | Meaning |
+|---|---|
+| Active | Can log in. Untick to lock someone out without deleting the account. |
+| Staff | Can use the admin and the API. |
+| Superuser | Can do everything, including managing accounts. |
+
+Staff who are not superusers can only do what they were given: for each model, any of
+**view**, **add**, **change** and **delete**. Permissions are given to an account directly or
+to a **group** of accounts (such as "Editors"); an account has both. Whoever may change a
+model may also view it, and file uploads count as a model named `files`.
+
+Superusers manage accounts and groups in the admin, under **Users** and **Groups**. The same
+rules apply in the admin and the API, and the admin hides links and buttons an account cannot
+use.
+
+- Changes apply at once: permissions are checked on every request, so deactivating an account
+  locks it out immediately, even if it is logged in.
+- Nobody can remove their own access or delete their own account, so a superuser always
+  remains. If you are locked out anyway, `cargo run -- promote --username U` makes an
+  account superuser again.
+- Accounts also have an e-mail address (unique; it can be used to log in), first and last
+  name and phone, and record when they joined and last logged in. For fields of your own, add
+  a model linked to `heraapi::user::Entity` (one profile row per account).
+- Passwords are stored as Argon2id hashes, never in plain text.
+
+### People log in, programs use keys
+
+There are two kinds of visitors, and each gets its own way in.
+
+**People** log in with a username (or e-mail address) and password, or another
+[login method](#login-methods) such as Google, plus their two-factor code if they turned it
+on. In the admin this happens on the login page. An app that people use, such as a mobile
+app, does the same through the API:
+
+```sh
+curl -X POST http://localhost:3000/api/auth/token \
+     -H "Content-Type: application/json" \
+     -d '{"username": "admin", "password": "...", "totp": "123456"}'
+# → {"access_token": "eyJ...", ...}
+
+curl -H "Authorization: Bearer eyJ..." http://localhost:3000/api/post
+```
+
+The token (a JWT) lasts an hour (`auth.token_lifetime`), after which the person logs in
+again.
+
+**Programs** running on their own have nobody to type a password or a phone code: a nightly
+import script, another company's server, a website's backend fetching posts to show. They
+use an **API key** instead: a long random string, made once and pasted into the program's
+configuration.
+
+```sh
+curl -H "Authorization: Bearer hera_..." https://example.com/api/post
+curl -H "X-API-Key: hera_..." https://example.com/api/post     # the same
+```
+
+| | Login token | API key |
+|---|---|---|
+| For | a person, in an app | a program running on its own |
+| Made by | logging in with password (and two-factor code) | once, on the account's API keys page |
+| Lasts | an hour | until revoked, or 30 days / 90 days / a year / never |
+| If it leaks | change the password | revoke that one key; nothing else changes |
+| Can be limited | no | read-only |
+
+How keys work:
+
+- **Making one:** each account has an **API keys** page (the key icon under its name in the
+  admin's menu), or run `cargo run -- apikey --username U --name "import script"`. The key is
+  shown once; only a fingerprint (SHA-256 hash) of it is stored.
+- **What it can do:** act as its account, with the account's permissions, through the API
+  only (never the admin pages). A **read-only** key can view but not add, change or delete.
+- **When it stops:** when revoked, when it expires, or when the account is deactivated or
+  deleted. The page shows when each key was last used.
+- **Safety:** making a key needs a login in the last 15 minutes or the password, so someone
+  who steals a logged-in browser session cannot quietly make one. Superusers see every
+  account's keys on its user page and can revoke them.
+- **Not needed?** If only people use your API, leave keys unused, or turn them off with
+  `auth.api_keys: false`.
+
+The admin itself keeps the login in an `HttpOnly`, `SameSite=Strict` cookie, and every form
+carries a CSRF token. The API never accepts that cookie, only a token or a key.
+
+### Settings
 
 Like Django's `settings.py`, a project is configured in one file, `src/settings.rs`. It is
-plain Rust, so the compiler catches a misspelt setting and your editor completes the names
+plain Rust, so the compiler catches a misspelt setting, and your editor completes the names
 and shows what each one does. Anything left out keeps its default:
 
 ```rust
@@ -90,8 +417,8 @@ pub fn settings() -> Result<Settings, AdminError> {
             ..Default::default()
         },
         auth: AuthSettings {
-            cookie_secure: !debug,
-            totp_required: true,
+            cookie_secure: !debug,     // the login cookie needs HTTPS, except on your machine
+            totp_required: true,       // everyone must use two-factor login
             ..Default::default()
         },
         admin: AdminSettings {
@@ -99,234 +426,247 @@ pub fn settings() -> Result<Settings, AdminError> {
             accent_color: "#0a7f5a".into(),
             ..Default::default()
         },
-        docs: DocsSettings {
-            username: Some("docs".into()),
-            password: Some(env("DOCS_PASSWORD")?),
-            ..Default::default()
-        },
         ..Default::default()
     })
 }
 ```
 
-**Secrets stay in the environment.** The database URL, the signing key and passwords are read
-with `env("NAME")?` from `.env` on your machine (loaded automatically) or the host's variables
-in production, so they never land in git. `env_or("NAME", default)?` reads an optional value
-of any type (`bool` accepts `true/false`, `1/0`, `yes/no`), and `env_opt("NAME")` gives an
-`Option<String>`. A missing or malformed variable stops start-up with its name.
+- **Secrets stay out of the code.** The database address, the secret key and passwords are
+  read with `env("NAME")?`: from `.env` on your machine (loaded automatically), from the
+  server's environment variables in production. `env_or("NAME", default)?` reads an optional
+  value of any type (`true/false`, `1/0`, `yes/no` for yes-or-no), and `env_opt("NAME")` an
+  optional text. A missing or malformed variable stops start-up and names it.
+- **Checked at start-up:** a mistake stops the server with the setting it is about, e.g.
+  ``admin.accent_color: accent colour must be #rgb or #rrggbb, got `red` ``.
+  `cargo run -- check` runs the same checks without starting the server.
+- Values that differ per machine are ordinary code: `if debug { ... }`, or
+  `bind: env_or("APP_BIND", "127.0.0.1:3000".to_owned())?`.
 
-**Values are checked at start-up**, before connecting to the database: a mistake stops the
-server with the setting it is about, e.g. `admin.accent_color: accent colour must be #rgb or
-#rrggbb, got `red``. `cargo run -- check` runs the same checks without serving.
+Every setting is listed under [All settings](#all-settings).
 
-| Section | What it holds |
-|---|---|
-| `secret_key` | Signs login tokens; at least 32 bytes (`hera secret` prints one) |
-| `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
-| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
-| `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min) |
-| `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
-| `api` | `path` (`/api`) |
-| `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
-| `home` | `enabled`, `title`, `tagline` |
-| `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
-| `mail` | `url` (SMTP; unset writes messages to the log), `from` |
-| `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
+## Guides
 
-Durations are written `Duration::from_secs(600)`. Different values per machine are ordinary
-code: `bind: env_or("APP_BIND", "127.0.0.1:3000".to_owned())?`, or `if debug { … }`.
+### Relations
 
-What a settings value cannot hold (your own routes added to the API documentation, a custom
-account store) is set on the `App` after it is built, e.g.
-`App::from_settings(settings()?).await?.docs(DocsConfig::new().extend(...))`.
-
-## The admin
-
-`/admin` is a responsive, mobile-friendly panel with light and dark themes (following the
-system, with a toggle). It shows each account exactly what it may do:
-
-- **Dashboard:** every model the account can view, with its row count and the account's
-  permissions on it (view, add, change, delete), each spelled out rather than shown by colour
-  alone. Superusers also see account totals; everyone sees whether their two-factor
-  authentication is on.
-- **Navigation:** only the models the account can view; view-only models are marked. Users and
-  Groups appear for superusers only.
-- **Lists:** search, sorting by clicking a column heading, pagination. On phones each row
-  becomes a card.
-- **Forms:** buttons appear only for allowed actions, a record the account cannot change opens
-  read-only, deleting asks for confirmation, and saving confirms with a short notice.
-- **Keyboard:** <kbd>/</kbd> jumps to the search box, and every control is reachable by
-  keyboard with a visible focus ring.
-
-The pages load the Fira Sans typeface from Google Fonts; set `admin.web_fonts: false` to use
-the system typeface and make no request to another site. The colour, logo, theme and the rest
-of the look are set in the `admin` section of [Settings](#settings).
-
-## Home page
-
-`/` is a public status page: the service's name, whether it is operational, whether the
-database answers and how fast, and the uptime. It refreshes itself every 30 seconds, and it
-links nowhere, so it does not point visitors at the admin or the API documentation.
-
-- **For monitors:** the same URL with `Accept: application/json` returns
-  `{"status", "database": {"status", "latency_ms"}, "uptime_secs", "checked_at"}`. Both forms
-  answer `503` when the database is unreachable, so a load balancer can use it as a health
-  check.
-- **API URLs opened in a browser** (typed into the address bar, or followed as a link) are
-  sent to `/`. Programs are unaffected: requests with a token, from scripts (`fetch`) and from
-  tools like `curl` reach the API as usual. The documentation pages under `/api` are
-  exempt.
-- **Your own page:** a `/` route in `src/routes.rs` takes precedence automatically. To turn the
-  home page off entirely, set `home.enabled: false`; do that too if your routes set their
-  own `Router::fallback`.
-- `home.title` (default: the site title) and `home.tagline` set what it says.
-
-## Relations
-
-A foreign key is a `references` field. Generate the model it points to first:
+A link from one model to another (a foreign key) is a `references` field. Generate the model
+being pointed to first:
 
 ```sh
 hera generate model Author name:string email:string
 hera generate model Post title:string author:references editor:references=author?
 ```
 
-`author:references` adds an `author_id` column pointing at `author`. `editor:references=author?`
-adds an optional `editor_id` that also points at `author`. A model can point to itself
-(`parent:references=category?` on `Category`). Migrations create the foreign-key constraints.
+`author:references` adds an `author_id` column pointing at `author`.
+`editor:references=author?` adds an optional `editor_id` that also points at `author`. A model
+can point to itself (`parent:references=category?` on `Category`). Migrations create the
+database constraint that keeps the links valid.
 
-In the admin, such a field is a dropdown of the related rows on forms, and lists show the
-related row's name, linked to it, instead of its number.
+In the admin, such a field is a dropdown of the related records on forms, and lists show the
+related record's name, linked to it, instead of its number.
 
-- **Which name:** a row is named by its first text column (`name`, `title`, ...). Choose
+- **Which name:** a record is named by its first text field (`name`, `title`, ...). Choose
   another with `ModelOptions::new().display_field("email")`.
-- **Long lists:** above 200 related rows there is no dropdown; the form takes the id and says
-  which row it currently points to.
-- **Permissions:** names are shown only to accounts that may view the related model. Others
+- **Long lists:** above 200 related records there is no dropdown; the form takes the id and
+  says which record it currently points to.
+- **Permissions:** names are shown only to accounts that may view the related model; others
   see and edit the plain number.
-- **Deleting:** a row that others still point to cannot be deleted (`409`).
-- **Hand-written entities:** any `belongs_to` relation in an entity's `Relation` enum is
-  picked up the same way; there is nothing to configure.
+- **Deleting:** a record that others still point to cannot be deleted (`409`).
+- **Hand-written entities:** any `belongs_to` relation in an entity is picked up the same way.
 
-The REST API is unchanged: it reads and writes the id (`author_id`).
+The API reads and writes the id itself (`author_id`).
 
-## Management commands
+### Login methods
 
-| Command | What it does |
-|---|---|
-| `serve [--bind addr]` | Start the server (graceful shutdown on Ctrl-C) |
-| `makemigrations [--name N] [--empty] [--check] [--no-input]` | Write a migration for the model changes into `src/migrations` |
-| `migrate [target] [--fake]` | Apply new migrations, or roll back to `target` (a name, a number such as `0002`, or `zero`) |
-| `showmigrations` | List migrations and whether the database has had each |
-| `sqlmigrate NAME [--backwards]` | Print the SQL a migration runs on this database |
-| `createsuperuser --username U [--email E] [--password-stdin]` | Create a superuser |
-| `promote --username U` | Make an existing account an active superuser |
-| `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
-| `changepassword --username U [--password-stdin]` | Change a password |
-| `apikey --username U --name N [--days D] [--read-only]` | Make an API key (90 days by default; `--days 0` for never) |
-| `openapi` | Print the OpenAPI document as JSON |
-| `routes` | List generated URLs |
-| `check` | Validate configuration without serving |
-
-## Migrations
-
-Migrations work as in Django. Change a model, then:
-
-```sh
-cargo run -- makemigrations   # writes src/migrations/m0002_post_slug.rs
-cargo run -- migrate          # applies the migrations this database has not had
-```
-
-`makemigrations` compares the models with the tables the existing migrations build, and writes
-the difference as a Rust file:
+Each project chooses how people log in. The login page shows the chosen methods, in order:
 
 ```rust
-pub fn migration() -> Migration {
-    Migration::new("0002_post_slug")
-        .rename_column("post", "body", "content")
-        .add_column_filled("post", Column::new("slug", Type::String(Some(200))), "")
-        .drop_column("post", Column::new("views", Type::Integer))
-}
+// Password, or Facebook
+auth: AuthSettings {
+    methods: vec![
+        AuthMethod::Password,
+        AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
+    ],
+    ..Default::default()
+},
+
+// Google only, and anyone at acme.com gets an account on first login
+auth: AuthSettings {
+    methods: vec![AuthMethod::Google(OAuthClient::from_env("GOOGLE")?)],
+    signup: Signup::Domains(vec!["acme.com".into()]),
+    signup_groups: vec!["Staff".into()],
+    ..Default::default()
+},
 ```
 
-The same file works on SQLite, PostgreSQL and MySQL; `migrate` turns each step into SQL for the
-database it runs on (`sqlmigrate 0002` prints it). Each migration runs in a transaction and is
-recorded in the `hera_migration` table. MySQL is the exception: it commits each change to a
-table's structure as it goes, so a migration that fails there can leave its earlier steps done.
-
-- **Renames:** a column marked `#[sea_orm(renamed_from = "body")]` is renamed. Otherwise, in a
-  terminal, `makemigrations` asks whether a dropped and a new column (or table) of the same
-  shape are a rename. Without a terminal (`--no-input`), nothing counts as a rename.
-- **New required columns:** rows already in the table need a value. Give the field a default,
-  or type a value when asked; it is saved as `add_column_filled`.
-- **Editing:** a migration can be changed until it has been applied somewhere. Add data
-  changes with `.sql_reversible(up, down)` or `.run(|db| Box::pin(async move { ... }))`;
-  `makemigrations --empty` writes a migration with no changes to start from.
-- **Rolling back:** `migrate 0001` undoes the migrations after `0001`; `migrate zero` undoes all.
-  A dropped column comes back empty (`0`, `''`, ...). SQL or code without a reverse cannot be
-  rolled back; `--fake` forgets such a migration without running anything.
-- **SQLite** cannot change or drop most columns in place, so for those steps the table is
-  rebuilt: created anew, rows copied, the old one dropped. Foreign keys are checked afterwards.
-- **CI:** `makemigrations --check` fails if a model changed without a migration, and `migrate`
-  warns about such changes.
-- **Not handled:** database enums and array columns, changing a primary key, and changing the
-  type of a column on PostgreSQL when the values cannot be cast (write that step with `.sql`).
-
-**Projects made before migrations** have `src/migrations` once they run `makemigrations`. Add
-`mod migrations;` to `main.rs` and `.migrations(migrations::all())` to the `App`. The first
-migration's tables already exist, so `migrate` just records it as applied. A project without
-`.migrations(...)` keeps the old behaviour: `migrate` adds missing tables and columns to match
-the models, and never drops or renames anything.
-
-The built-in tables (accounts, uploads) have migrations of their own, applied first.
-Databases from before migrations get their built-in tables brought up to date once, the first
-time `migrate` runs.
-
-## REST API
-
-For every model, under `/api`:
-
-| Request | Result |
+| Method | What it needs |
 |---|---|
-| `GET /api/{model}?page=&per_page=&q=&sort=` | `{"data": [...], "meta": {"total", "page", "per_page"}}` (`per_page` ≤ 100; `sort=title` or `sort=-title` for highest first) |
-| `POST /api/{model}` | `201`, `Location`, the created row |
-| `GET /api/{model}/{id}` | the row |
-| `PUT /api/{model}/{id}` | replace: every required field must be present |
-| `PATCH /api/{model}/{id}` | change only the fields sent |
-| `DELETE /api/{model}/{id}` | `204` |
+| `AuthMethod::Password` | nothing; leave it out to turn passwords off everywhere, the API's token endpoint included |
+| `AuthMethod::MagicLink` | [e-mail](#e-mail); people type their address and get a login link |
+| `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
+| `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
+| `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
+| `AuthMethod::Facebook(client)` | an app at developers.facebook.com with Facebook Login |
+| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
 
-**Filtering** works on any visible column, with the same parameters as the admin's filters:
-`?published=true&author_id=3`, comparisons with `__gt`, `__gte`, `__lt` and `__lte`
-(`?views__gte=100`, `?created_at__gte=2026-01-01`), `__isnull=true|false`, and for dates
-`__range=today|7d|30d|month|year` (UTC). An unknown column or a value the column cannot hold
-is a `422`. A column named like a list parameter (`page`, `per_page`, `q`, `sort`) cannot be
-filtered on.
+`OAuthClient::from_env("GOOGLE")` reads `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` from
+`.env`. Set `server.public_url` to the site's address (`PUBLIC_URL` in a generated project)
+and give each provider this *redirect URI*: `<public_url>/admin/auth/<name>/callback`, e.g.
+`https://shop.example.com/admin/auth/google/callback`.
 
-Errors are JSON: `{"error": {"code", "message", "field"}}` with `400`, `401`, `403`, `404`,
-`409` (unique/foreign-key conflict), `413`, `422` or `429` (too many login attempts). Unknown, hidden and read-only fields in a
-body are rejected rather than ignored.
+**Who gets in.** A login through another site is matched to the account with the e-mail
+address that site vouches for, and the two are then linked, so later logins work even if the
+address changes. Addresses the site has not verified are never used. Nobody else gets in
+unless `signup` allows it: `Signup::Domains(vec!["acme.com".into()])` or `Signup::Open`
+create an account at the first login, as staff with no permissions of their own, in the
+`signup_groups`. Each account's page lists its links, and a superuser can remove one.
 
-## API documentation
+- Accounts with two-factor login enter their code after coming back from the other site, and
+  `totp_required` applies as for passwords. Inactive accounts cannot log in.
+- To start a project without passwords, run
+  `createsuperuser --username you --email you@example.com`: it asks for no password, and the
+  account logs in through the provider.
+- Microsoft's shared directories (`common`, `organizations`, `consumers`) let people choose any
+  address, so their addresses only count if the app sends the optional `xms_edov` claim. With
+  your own directory's ID as `tenant`, its addresses are trusted.
+- GitHub uses the account's primary verified address. For an OpenID Connect provider that does
+  not say whether addresses are verified, `trust_email: true` trusts them; only do that when
+  users cannot pick their own address.
+- These logins are for the admin. Programs use an [API key](#people-log-in-programs-use-keys).
+
+### E-mail
+
+Login links, password resets and invitations are sent by e-mail. Until `mail.url` is set,
+messages are written to the server's log instead, so on your own machine you copy the link
+from the terminal:
+
+```rust
+mail: MailSettings {
+    url: env_opt("MAIL_URL"),   // smtps://user:password@smtp.example.com
+    from: Some("Acme <noreply@acme.com>".into()),
+},
+```
+
+`smtps://` (TLS, port 465) and `smtp://...?tls=required` (STARTTLS, port 587) work with any
+provider's SMTP service. Unencrypted `smtp://` is accepted only to this machine, e.g. a test
+inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
+implement `heraapi::Mailer` (one `send` method) and pass it to `App::mailer`.
+
+- **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
+  link that works once, within 15 minutes. Opening it shows a button rather than logging in
+  straight away, because mail scanners open links to check them.
+- **Forgot your password?** appears under the password field when passwords are on and
+  `server.public_url` is set. The link works for an hour.
+- **Changing your own password:** the lock button next to your name in the admin.
+- **Invitations:** on the new-account form, "Send an invitation instead" e-mails a link, valid
+  once for 7 days, where the person chooses their password. The account's page can send it
+  again.
+- The answer to "send me a link" is the same whether or not the address has an account, and
+  mail is sent in the background, so nobody can find out who is registered. Requests are
+  limited like login attempts.
+
+### Two-factor authentication
+
+Two-factor login asks for a code from an app on your phone (Google Authenticator, 1Password,
+Aegis, ...) as well as the password, so a stolen password alone is not enough.
+
+Each person turns it on for themselves: click your name in the admin menu, scan the QR code,
+and confirm with a code. From then on logging in needs the current code: in the login form, or
+as `"totp"` in an API token request.
+
+- Each code works once, so an intercepted code cannot be reused.
+- **Recovery codes:** turning it on shows ten codes, once. Each logs in a single time in place
+  of a phone code, for when the phone is lost. The two-factor page shows how many are left and
+  makes a new set. Only a fingerprint of each code is stored.
+- Turning it off asks for a current code (or a recovery code). Turning it on needs the
+  password too, if the login is more than 15 minutes old.
+- **Lost phone, no recovery codes:** a superuser ticks "Turn it off" on the person's account
+  page, or run `cargo run -- totp --username U --disable`.
+- **Making it compulsory:** `auth.totp_required: true`. Nobody can then log in without it, so
+  set up the first account from the terminal: `cargo run -- totp --username U` prints the QR
+  code and the recovery codes.
+
+### Login attempt limits
+
+To stop password guessing: after 5 failed attempts on one account within 5 minutes, further
+attempts on that account are refused (`429 Too Many Requests`, with a `Retry-After` header)
+until the 5 minutes are over. A successful login clears the count. One client address gets
+four times as many attempts across all accounts. Change the numbers with
+`auth.login_max_attempts` (`0` turns the limit off) and `auth.login_lockout`.
+
+- **Behind a reverse proxy** (nginx, a load balancer), every request seems to come from the
+  proxy. Set `server.client_ip_header` to the header the proxy sets (e.g. `X-Forwarded-For`),
+  but only if it always sets it; otherwise clients could pretend to be anyone.
+- Counts are kept in memory, per running copy of the server: several copies each count
+  separately, and a restart clears them.
+- Someone who knows a username can keep that account locked by guessing. That is the usual
+  trade-off of per-account limits; shorten `auth.login_lockout` if it becomes a problem.
+
+### File uploads
+
+Set `uploads.storage_url` to turn uploads on. The address chooses where files are kept:
+
+| Address | Where | Cargo feature |
+|---|---|---|
+| `file:///absolute/path` | a folder on the server | built in |
+| `s3://bucket/prefix` | Amazon S3 and compatible services | `s3` |
+| `az://container/prefix` | Azure Blob Storage | `azure` |
+| `gs://bucket/prefix` | Google Cloud Storage | `gcs` |
+
+Cloud credentials are read from the usual environment variables (`AWS_ACCESS_KEY_ID`,
+`AWS_REGION`, `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, ...).
+
+**On admin forms:** a field generated as `photo:file` (or an integer column listed in
+`ModelOptions::file_fields(["photo"])`) holds a file. Its form field is a file picker that
+shows the current file, a preview for PNG, JPEG, GIF, WebP and AVIF images, and "Remove the
+file" when the field is optional. Lists show the file's name, linked to it. Anyone who may view
+the record may download its file. Files from a form that is then rejected are removed.
+
+**Through the API:**
+
+| Request | What it does |
+|---|---|
+| `POST /api/files` (multipart form, field `file`) | uploads a file; answers `201` with its record, whose `id` goes in file fields |
+| `GET /api/files`, `GET /api/files/{id}` | file details |
+| `GET /api/files/{id}/content` | downloads the file |
+| `DELETE /api/files/{id}` | deletes it |
+
+**Large files** can be sent in pieces, and the upload resumes after a dropped connection:
+
+1. `POST /api/uploads` with `{"filename", "size", "content_type"}` gives an upload `id`.
+2. `PATCH /api/uploads/{id}` with the header `Upload-Offset: N` and the next bytes, in order. A
+   wrong offset gets `409` with the right one.
+3. `GET /api/uploads/{id}` tells how much has arrived: that is where a client resumes.
+4. The piece that completes the file answers `201` with the file's record.
+5. `DELETE /api/uploads/{id}` cancels.
+
+Uploads survive server restarts and can continue on another server. Stored names are chosen by
+the server; the original file name is kept only as a label. Files sent through an admin form
+must finish within `server.request_timeout` (30 seconds by default), so very large files
+should go through the API. Replacing or removing a file on a form leaves the old one stored
+(it is still listed at `/api/files`).
+
+In your own code, `Storage` (`put`, `get`, `delete`, `sink`) and `Uploads` are available.
+
+### API documentation
 
 Every project documents its own API, as FastAPI does:
 
-| URL | What it is |
+| Address | What it is |
 |---|---|
 | `/api/docs` | Swagger UI: browse the endpoints and try them out |
-| `/api/redoc` | ReDoc: the same as a reference page |
-| `/api/openapi.json` | The OpenAPI 3.0 document, for generating clients |
+| `/api/redoc` | ReDoc: the same, as a reference page |
+| `/api/openapi.json` | the OpenAPI 3.0 description, for generating client code |
 
-The document is generated from the registered models: every endpoint, the fields that are
-returned, the fields that may be sent and which of them are required, the permission each
-operation needs, and file uploads if they are enabled. Hidden fields do not appear, and
-read-only fields appear only in what is returned.
+It is generated from the models: every endpoint, the fields returned, the fields that may be
+sent and which are required, the permission each needs, and file uploads when enabled. Hidden
+fields never appear, and read-only fields appear only in what is returned.
 
-To call the API from Swagger UI, press **Authorize** and log in with an account's username
-and password, or paste an [API key](#api-keys) under `apiKey`. Accounts with two-factor
-authentication can also get a token from `POST /api/auth/token` and paste it under `bearer`.
+To try requests in Swagger UI, press **Authorize** and log in with a username and password, or
+paste an API key under `apiKey`.
 
-**Protecting it.** The documentation is public by default; it reveals model and field names,
-never data. To ask for a username and password first (the browser's own prompt), set both in
-`src/settings.rs`, with the password in `.env`:
+**Protecting it.** The documentation is public by default; it shows model and field names,
+never data. To ask for a username and password first (the browser's own prompt), set both,
+with the password in `.env`:
 
 ```rust
 docs: DocsSettings {
@@ -336,33 +676,55 @@ docs: DocsSettings {
 },
 ```
 
-These only open the documentation; they are not an account and cannot call the API. Guesses
-are limited like logins. `enabled: false` removes the documentation entirely.
+These only open the documentation; they are not an account. `enabled: false` removes the
+documentation entirely.
 
-- **Without the server:** `cargo run -- openapi > openapi.json` prints the document.
-- **Your own routes** are not discovered. Add them with
+- `cargo run -- openapi > openapi.json` writes the description without starting the server.
+- Your own routes are not discovered; add them with
   `app.docs(DocsConfig::new().extend(|doc| { doc["paths"]["/health"] = json!({...}); }))`.
-- **Title and version:** `docs.title`, `docs.version`, `docs.description` (Markdown).
-- **The viewers load from a CDN** (jsDelivr, pinned versions), so the two pages need internet
+- `docs.title`, `docs.version` and `docs.description` (Markdown) set the heading.
+- The viewers load from a CDN (jsDelivr, pinned versions), so the two pages need internet
   access in the browser. To host them yourself, set `docs.swagger_js_url`,
-  `docs.swagger_css_url` and `docs.redoc_js_url`. `openapi.json` needs nothing external.
+  `docs.swagger_css_url` and `docs.redoc_js_url`.
 
-## Errors
+### Databases
 
-Every failure is an `AdminError`, and one layer decides how it is shown:
+The address in `database.url` chooses the database, as `DATABASES` does in Django. Every
+driver is built in, so switching is a change to `.env`, not to the code:
 
-| Where the request went | An error looks like |
+| Database | `DATABASE_URL` |
 |---|---|
-| under `/api` | JSON, `{"error": {"code", "message", "field"}}` |
-| under `/admin` | a page in the admin layout (`error.html`, overridable like the other templates) |
-| anywhere else | plain text, or whatever your handler returned |
+| SQLite | `sqlite://db.sqlite3?mode=rwc` (`mode=rwc` creates the file) |
+| PostgreSQL | `postgres://user:password@host:5432/name` |
+| MySQL and MariaDB | `mysql://user:password@host:3306/name` |
 
-This includes unknown URLs, wrong methods (`405`) and panics, which become a `500` instead of a
-dropped connection. Internal details (SQL, file paths, panic messages) are logged and never
-sent to the client.
+Oracle and SQL Server are not supported: SeaORM, the database layer, has no open-source driver
+for them.
 
-In your own handlers, return `ApiResult<T>` for JSON errors. Database, storage and I/O errors
-convert with `?`, and `AdminError::custom` gives an error your own status and code:
+The API behaves the same on all three: true and false are JSON booleans, dates and times are
+ISO 8601 (`2026-03-04T05:06:07`), JSON fields come back as JSON, and `?q=` search ignores
+case.
+
+**Smaller builds:** a project that only uses one database can leave the other drivers out, to
+compile faster: `heraapi = { ..., default-features = false, features = ["postgres"] }` (the
+features are `sqlite`, `postgres` and `mysql`).
+
+### Errors and your own code
+
+`src/routes.rs` holds your own axum routes, served next to the generated ones. Every failure
+in heraapi is an `AdminError`, shown in the right form for where the request went:
+
+| Request to | An error looks like |
+|---|---|
+| `/api/...` | JSON: `{"error": {"code", "message", "field"}}` |
+| `/admin/...` | a page in the admin's style (`error.html`, which you can override) |
+| anything else | plain text, or whatever your handler returns |
+
+Unknown addresses, wrong methods (`405`) and crashes in a handler become proper error responses
+too. Internal details (SQL, file paths, crash messages) are logged, never sent to the visitor.
+
+In your own handlers, return `ApiResult<T>` to get JSON errors. Database, storage and I/O
+errors convert with `?`, and `AdminError::custom` makes an error with your own status and code:
 
 ```rust
 async fn buy(State(db): State<DatabaseConnection>) -> ApiResult<Json<Receipt>> {
@@ -375,311 +737,159 @@ async fn buy(State(db): State<DatabaseConnection>) -> ApiResult<Json<Receipt>> {
 }
 ```
 
-Log messages go to standard error; `LOG_LEVEL` sets the detail. If your `main` installs its own
-`tracing` subscriber before `run()`, that one is used instead.
+Log messages go to the terminal (standard error); `log_level` in the settings, or the
+`LOG_LEVEL` variable, sets how much. `debug` also shows every SQL statement.
 
-## Authentication
+### Home page
 
-Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); implement
-`UserStore` to use your own.
+`/` is a public status page: the service's name, whether it is up, whether the database
+answers and how fast, and how long it has been running. It refreshes every 30 seconds and
+links nowhere, so it does not lead visitors to the admin.
 
-- Username or e-mail address + password (Argon2id, verified off the async executor). What an
-  account may do once logged in is described under [Permissions](#permissions).
-- Accounts have optional details: e-mail (unique, stored in lower case), first and last name
-  and phone, plus when they joined and last logged in. Superusers edit them on the Users page;
-  `createsuperuser --email` sets the address of the first account. For fields of your own,
-  add a model with a `belongs_to` relation to `heraapi::user::Entity` (one profile row per
-  account).
-- Optional two-factor authentication with any authenticator app (TOTP);
-  `auth.totp_required: true` makes it mandatory. See below.
-- `POST /api/auth/token` with `{"username", "password", "totp"}` (JSON or a form) returns a
-  JWT as `access_token`.
-- The API accepts only `Authorization: Bearer <token>`, or an [API key](#api-keys). The admin
-  uses the same JWT in an `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries
-  a CSRF token.
+- **For monitoring:** the same address with `Accept: application/json` returns
+  `{"status", "database": {"status", "latency_ms"}, "uptime_secs", "checked_at"}`. Both answer
+  `503` when the database is down, so a load balancer can use it as a health check.
+- API addresses typed into a browser's address bar are sent to `/`. Programs, scripts and tools
+  like `curl` reach the API as usual, and the documentation pages are not affected.
+- **Your own page:** a `/` route in `src/routes.rs` replaces it automatically. To turn it off,
+  set `home.enabled: false` (do that too if your routes set their own `Router::fallback`).
+  `home.title` and `home.tagline` set what it says.
 
-### API keys
-
-For programs that call the REST API: scripts, other services, CI. Each account makes its own
-on its **API keys** page (the key icon under its name in the admin), or with
-`cargo run -- apikey --username U --name "deploy script"`. Send the key with each request:
-
-```sh
-curl -H "Authorization: Bearer hera_..." https://example.com/api/post
-curl -H "X-API-Key: hera_..." https://example.com/api/post
-```
-
-- **What it can do:** a key acts as its account, with the account's permissions. A
-  **read-only** key can only view. Keys work for the REST API only, never the admin pages.
-- **How long:** until revoked, until it expires (30 days, 90 days, a year, or never), or
-  until the account is deactivated or deleted. Each key's page shows when it was last used.
-- **Stored safely:** a key is shown once, when it is made; only a SHA-256 digest is kept.
-  Making one needs a login in the last 15 minutes or the password, as turning on two-factor
-  authentication does, so a stolen session cookie alone cannot make one.
-- **Superusers** see each account's keys on its Users page, and can revoke them.
-- **Turning them off:** `auth.api_keys: false` in the settings. Existing keys then stop
-  working, and the page is hidden.
-
-Your own `UserStore` can accept keys too, by implementing `UserStore::api_key`.
-
-### Login methods
-
-Each project picks how people log in, in `src/settings.rs`. The login page shows the
-methods in the order given, and only those:
-
-```rust
-// Project A: password, or Facebook
-auth: AuthSettings {
-    methods: vec![
-        AuthMethod::Password,
-        AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
-    ],
-    ..Default::default()
-},
-
-// Project B: Google only, and anyone at acme.com gets an account
-auth: AuthSettings {
-    methods: vec![AuthMethod::Google(OAuthClient::from_env("GOOGLE")?)],
-    signup: Signup::Domains(vec!["acme.com".into()]),
-    signup_groups: vec!["Staff".into()],
-    ..Default::default()
-},
-```
-
-| Method | What it needs |
-|---|---|
-| `AuthMethod::Password` | nothing; leave it out to turn password login off everywhere, the API's token endpoint included |
-| `AuthMethod::MagicLink` | [e-mail](#e-mail); people type their address and get a login link |
-| `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
-| `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
-| `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
-| `AuthMethod::Facebook(client)` | an app at developers.facebook.com with Facebook Login |
-| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, … |
-
-`OAuthClient::from_env("GOOGLE")` reads `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` from
-`.env`. Set `server.public_url` to where people reach the site (`PUBLIC_URL` in a generated
-project) and register this *redirect URI* with each provider:
-`<public_url>/admin/auth/<name>/callback`, e.g.
-`https://shop.example.com/admin/auth/google/callback`.
-
-**Who gets in.** A login through another site is matched to the account with the e-mail
-address that site vouches for, and the two are linked, so later logins work even if the
-address changes. Addresses the site has not verified are never used. Nobody else gets in,
-unless `signup` allows it: `Signup::Domains(vec!["acme.com".into()])` or `Signup::Open`
-create an account at the first login, as staff without permissions of their own, in
-`signup_groups`. The user page lists each account's links, and a superuser can remove one.
-
-- Accounts with two-factor authentication enter their code after coming back, and
-  `totp_required` applies as it does to passwords. Inactive accounts cannot log in.
-- To start a project without passwords, run `createsuperuser --username you --email
-  you@example.com`; it asks for no password and the account logs in through the provider.
-- Microsoft's shared directories (`common`, `organizations`, `consumers`) let people choose
-  any address, so their addresses only count if the app sends the optional `xms_edov`
-  claim. With your own directory's ID as `tenant`, its addresses are trusted.
-- GitHub uses the account's primary verified address. For an OpenID Connect provider that
-  does not say whether addresses are verified, `trust_email: true` trusts them; only do that
-  for a directory whose users cannot pick their own address.
-- These logins are for the admin. API clients use an [API key](#api-keys), or a token from
-  `POST /api/auth/token`.
-
-### E-mail
-
-Login links and password resets are sent by e-mail. Until `mail.url` is set, messages are
-written to the server's log instead, so on your own machine you copy the link from the
-terminal:
-
-```rust
-mail: MailSettings {
-    url: env_opt("MAIL_URL"),   // smtps://user:password@smtp.example.com
-    from: Some("Acme <noreply@acme.com>".into()),
-},
-```
-
-`smtps://` (TLS, port 465) and `smtp://…?tls=required` (STARTTLS, port 587) work with any
-provider's SMTP service. Unencrypted `smtp://` is accepted only for this machine, e.g. a test
-inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
-implement `heraapi::Mailer` (one `send` method) and pass it to `App::mailer`.
-
-- **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
-  link that works once, within 15 minutes; any other login retires it too. Opening the link
-  shows a button rather than logging in at once, because mail scanners open links to check
-  them. Two-factor accounts then enter their code. `signup` applies as for other sites.
-- **Forgot your password?** appears under the password field when passwords are on and
-  `server.public_url` is set. The link works for an hour, until the password is changed.
-- **Your own password:** the lock button next to your name opens the page to change it.
-- **Invitations:** on the new-account form, "Send an invitation instead" leaves the password
-  out and e-mails a link, valid once for 7 days, where the person chooses their password and
-  is logged in (on sites without passwords, the link just logs them in). The account's page
-  has "Send invitation" to send one again.
-- The reply to "send me a link" is the same whether or not the address has an account, and
-  messages are sent in the background, so neither the answer nor its timing reveals who is
-  registered. Requests are limited like login attempts.
-
-### Two-factor authentication
-
-Each user turns it on for themselves: click your name in the admin header, scan the QR code
-with an authenticator app, and confirm with your password and a code. From then on, logging
-in (the form's code field, or `"totp"` in the token request) needs the current code.
-
-- Each code works once, so a code that was seen or intercepted cannot be reused.
-- Turning it off asks for a current code from the app (or a recovery code). Turning it on
-  needs the code from the new app, plus the password if the login is more than 15 minutes
-  old; accounts without a password log in again instead.
-- **Recovery codes:** turning it on shows ten codes, once. Each logs in a single time in
-  place of an authenticator code (anywhere a code is asked for, the API included), for when
-  the phone is lost. The two-factor page shows how many are left and makes a new set, which
-  replaces the old one, after a current code from the app. Only a digest of each code is
-  stored.
-- Lost device and no recovery codes: a superuser ticks "Turn it off" on the user's page, or
-  run `cargo run -- totp --username U --disable`.
-- With `auth.totp_required: true` nobody can log in without it, so set up the first account
-  from the terminal: `cargo run -- totp --username U` prints the QR code and the recovery
-  codes. Users then cannot turn it off themselves.
-
-### Login attempt limits
-
-After 5 login attempts on one account within 5 minutes, further attempts on that account get
-`429 Too Many Requests` with a `Retry-After` header until the 5 minutes are over, whether or
-not the password is right. A successful login clears the count. One client address gets four
-times as many attempts across all accounts. Change the numbers with
-`auth.login_max_attempts` (`0` turns the limit off) and `auth.login_lockout`.
-
-- **Behind a reverse proxy**, every request appears to come from the proxy. Set
-  `server.client_ip_header` to the header your proxy sets (e.g. `X-Forwarded-For`), but only
-  if the proxy always sets it; otherwise clients could choose their own address.
-- The counts are kept in memory, per process: several instances each count separately, and a
-  restart clears them.
-- Someone who knows a username can keep that account locked by guessing. That is the usual
-  trade-off of per-account limits; shorten `auth.login_lockout` if it becomes a problem.
-
-## Deploying
+### Deploying
 
 A generated project is ready to run behind HTTPS as it is:
 
-- **Time limit:** a request that takes longer than 30 seconds gets `503` (code `timeout`) and
-  is abandoned. Change it with `server.request_timeout` (`None` for no limit). File uploads and
-  downloads are exempt, and streamed responses are not cut short.
-- **Request log:** one line per request with method, path, status and duration, at `info`
-  level. The query string is not logged.
-- **Protective headers** on every admin and API response: no framing by other sites
-  (clickjacking), no content-type guessing, no caching of pages that needed a login, and
-  admin URLs are not sent as referrer to other sites.
-- **Cross-origin access (CORS)** is off by default. To let a browser app on another origin
-  call the API, set `server.cors_origins: vec!["https://app.example.com".into()]` (or `"*"`).
-  Such clients use the bearer token; cookies are never accepted across origins.
+- **Time limit:** a request that takes longer than 30 seconds gets `503` and is stopped
+  (`server.request_timeout`; `None` for no limit). Uploads and downloads are exempt.
+- **Request log:** one line per request with method, address, status and duration (the query
+  string is left out).
+- **Protective headers** on every admin and API response: no embedding in other sites, no
+  content-type guessing, no caching of pages that needed a login.
+- **Cross-origin access (CORS)** is off. To let a browser app on another domain call the API,
+  set `server.cors_origins: vec!["https://app.example.com".into()]` (or `"*"`). Such apps use
+  a token or key; the login cookie is never accepted from another domain.
 - **Graceful shutdown** on Ctrl-C.
 
-Before going live, check these:
+Before going live:
 
-1. Serve over HTTPS and leave `DEBUG` unset in production: the generated settings turn
-   `auth.cookie_secure` off only when `DEBUG=true`.
+1. Serve over HTTPS, and leave `DEBUG` unset in production: the generated settings only allow
+   the login cookie over plain HTTP when `DEBUG=true`.
 2. Behind a reverse proxy, set `server.client_ip_header` (see
-   [Login attempt limits](#login-attempt-limits)), and `server.bind` to `0.0.0.0:3000` if
-   the proxy runs on another machine or container.
-3. Set `DATABASE_URL` and `SECRET_KEY` on the host, keep `.env` out of version control, and
-   use a different `SECRET_KEY` per environment.
+   [Login attempt limits](#login-attempt-limits)), and `server.bind` to `0.0.0.0:3000` if the
+   proxy runs on another machine or container.
+3. Set `DATABASE_URL` and `SECRET_KEY` on the server, keep `.env` out of git, and use a
+   different `SECRET_KEY` for each environment (`hera secret` prints a new one).
+4. Run `cargo run --release -- migrate` as part of each deployment, before starting the new
+   version.
 
-Responses are not compressed, on purpose: admin pages contain a CSRF token next to text the
-visitor controls (the search box), which is the situation the BREACH attack on compressed
-HTTPS responses needs.
+Responses are not compressed, on purpose: admin pages contain a security token next to text
+the visitor controls (the search box), which is what the BREACH attack on compressed HTTPS
+needs.
 
-## Permissions
+## Reference
 
-Accounts work as in Django:
+### Management commands
 
-| Flag | Meaning |
+Run as `cargo run -- <command>` (or `./target/release/<project> <command>` for a built
+program).
+
+| Command | What it does |
 |---|---|
-| Active | Can log in. Untick to lock an account out without deleting it. |
-| Staff | Can use the admin and the API. |
-| Superuser | Can do everything, including managing accounts. |
+| `serve [--bind addr]` | start the server |
+| `makemigrations [--name N] [--empty] [--check] [--no-input]` | write a migration for the model changes into `src/migrations` |
+| `migrate [target] [--fake]` | apply new migrations, or roll back to `target` (a name, a number such as `0002`, or `zero`) |
+| `showmigrations` | list migrations and whether this database has had each |
+| `sqlmigrate NAME [--backwards]` | print the SQL a migration runs on this database |
+| `createsuperuser --username U [--email E] [--password-stdin]` | create a superuser |
+| `changepassword --username U [--password-stdin]` | change a password |
+| `promote --username U` | make an existing account an active superuser |
+| `totp --username U [--disable]` | turn two-factor login on (prints a QR code) or off |
+| `apikey --username U --name N [--days D] [--read-only]` | make an API key (90 days by default; `--days 0` for never) |
+| `openapi` | print the API description as JSON |
+| `routes` | list the generated addresses |
+| `check` | check the configuration without starting the server |
 
-Staff who are not superusers can do only what they were given: for each model, any of
-**view**, **add**, **change** and **delete**. Permissions are given to an account directly, or
-to a **group** that accounts are put in; an account has the sum of both. Whoever may change a
-model may also view it. File uploads count as a model named `files`.
+And the `hera` command:
 
-Superusers manage all of this in the admin under **Users** and **Groups**. The same rules
-apply to the admin and the REST API (`403` with code `forbidden`), and the admin hides the
-links and buttons an account cannot use.
-
-- Permissions are read on every request, so a change applies at once, even to tokens already
-  issued. Deactivating or deleting an account locks it out immediately.
-- Nobody can remove their own access or delete their own account, so there is always a
-  superuser left. If you do get locked out, `cargo run -- promote --username U` is the way
-  back in.
-- Upgrading from a version without superusers: run `migrate`, then `promote` your account.
-- With your own `UserStore`, every account is a superuser unless you implement
-  `UserStore::access`, and the Users and Groups pages are not shown.
-
-## File uploads
-
-Set `uploads.storage_url` to turn them on. The backend is chosen by URL:
-
-| URL | Backend | Cargo feature |
-|---|---|---|
-| `file:///absolute/path` | local directory | built in |
-| `s3://bucket/prefix` | Amazon S3 and compatibles | `s3` |
-| `az://container/prefix` | Azure Blob Storage | `azure` |
-| `gs://bucket/prefix` | Google Cloud Storage | `gcs` |
-
-Backend credentials are read from the environment, under the usual names (`AWS_ACCESS_KEY_ID`, `AWS_REGION`,
-`AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, …).
-
-| Request | Result |
+| Command | What it does |
 |---|---|
-| `POST /api/files` (multipart, field `file`) | streamed to storage; `201` with the file record |
-| `GET /api/files`, `GET /api/files/{id}` | metadata |
-| `GET /api/files/{id}/content` | streamed download (always as an attachment) |
-| `DELETE /api/files/{id}` | `204` |
+| `hera new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project |
+| `hera generate model NAME field:type ...` | add a model to the project in the current folder |
+| `hera secret` | print a new secret key |
 
-Resumable chunked uploads:
+### All settings
 
-1. `POST /api/uploads` with `{"filename", "size", "content_type"}` → session `id`.
-2. `PATCH /api/uploads/{id}` with header `Upload-Offset: N` and raw bytes, in order. A wrong
-   offset gets `409` and the expected offset.
-3. `GET /api/uploads/{id}` returns the current offset: this is how a client resumes.
-4. The chunk that reaches `size` returns `201` with the file record.
-5. `DELETE /api/uploads/{id}` cancels.
+| Section | Settings (defaults in brackets) |
+|---|---|
+| `secret_key` | signs login tokens; at least 32 bytes (`hera secret` prints one) |
+| `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
+| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
+| `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min), `api_keys` (`true`) |
+| `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
+| `api` | `path` (`/api`) |
+| `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
+| `home` | `enabled`, `title`, `tagline` |
+| `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
+| `mail` | `url` (SMTP; unset writes messages to the log), `from` |
+| `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
 
-Session state is in the database and chunks are in the storage backend, so an upload survives
-restarts and can continue on another instance. Storage keys are generated by the server; the
-client's filename is kept only as metadata.
+Durations are written `Duration::from_secs(600)`. Things a setting cannot hold (your own
+routes in the API documentation, your own account store) are set on the `App` after it is
+built, e.g. `App::from_settings(settings()?).await?.docs(DocsConfig::new().extend(...))`.
 
-**Files on admin forms.** An integer column listed in `ModelOptions::file_fields(["photo"])`
-(or generated as `photo:file`) holds a file's id. Its form field is a file picker that shows
-the current file, a preview for PNG, JPEG, GIF, WebP and AVIF images, and "Remove the file"
-when the column is nullable; the list shows the file's name, linking to it. Anyone who may
-view the row may download its file. Files of a form that is then rejected are removed.
-API clients upload to `/api/files` and send the returned id. Large files are better sent
-through the API's resumable uploads: a form must finish within `server.request_timeout`.
-Replacing or removing a file leaves the old one stored (it is still in `/api/files`).
+### Migrations in detail
 
-In code, `Storage` (`put`, `get`, `delete`, `sink`) and `Uploads` are available for your own
-handlers.
+- **Renames:** a field marked `#[sea_orm(renamed_from = "body")]` is renamed. Otherwise, in a
+  terminal, `makemigrations` asks whether a dropped and a new column (or table) of the same
+  shape are a rename. With `--no-input`, or without a terminal, nothing counts as a rename.
+- **New required fields:** rows already in the table need a value. Give the field a default
+  (`#[sea_orm(default_value = "draft")]`), or type a value when asked; it is saved in the
+  migration as `add_column_filled`.
+- **Editing a migration:** allowed until it has been applied somewhere. Add data changes with
+  `.sql_reversible("UPDATE ...", "UPDATE ...")` or with Rust code,
+  `.run(|db| Box::pin(async move { ... }))`. `makemigrations --empty` writes an empty one to
+  start from.
+- **Rolling back:** `migrate 0001` undoes the migrations after `0001`; `migrate zero` undoes
+  all. A dropped column comes back empty (`0`, `''`, ...). SQL or code without a reverse cannot
+  be rolled back; `--fake` forgets such a migration without running anything.
+- **SQLite** cannot change or drop most columns in place, so for those steps the table is
+  rebuilt: created anew, rows copied, the old one dropped. Links between tables are checked
+  afterwards.
+- **In CI:** `makemigrations --check` fails if a model changed without a migration, and
+  `migrate` warns about such changes.
+- **Not handled:** database enums and array columns, changing a primary key, and changing a
+  column's type on PostgreSQL when the values cannot be converted (write that step with
+  `.sql(...)`).
+- **Built-in tables** (accounts, uploads) have migrations of their own, applied before yours.
 
-## Configuration from the environment only
-
-Projects made before `src/settings.rs` start with `App::from_env()`, which reads everything
-from environment variables. It still works; to move to settings, run `hera new` for a fresh
-`src/settings.rs`, copy it in, and replace `App::from_env()` with
-`App::from_settings(settings::settings()?)`. Rename `ADMIN_JWT_SECRET` to `SECRET_KEY` in
-`.env` (or read the old name in settings.rs).
+**Projects made before migrations existed:** run `makemigrations`, then add `mod migrations;`
+to `main.rs` and `.migrations(migrations::all())` to the `App`, as the command explains. The
+tables already exist, so `migrate` just records the first migration as applied. Until then,
+`migrate` keeps the old behaviour: it adds missing tables and columns, and never drops or
+renames anything. Databases from before migrations get their built-in tables brought up to
+date the first time `migrate` runs.
 
 <details>
-<summary>The variables <code>App::from_env</code> reads</summary>
+<summary>Projects configured from environment variables only (<code>App::from_env</code>)</summary>
+
+Projects made before `src/settings.rs` existed start with `App::from_env()`, which reads
+everything from environment variables. It still works. To move to settings, run `hera new`
+for a fresh `src/settings.rs`, copy it in, replace `App::from_env()` with
+`App::from_settings(settings::settings()?)`, and rename `ADMIN_JWT_SECRET` to `SECRET_KEY`
+in `.env`.
 
 | Variable | Meaning | Default |
 |---|---|---|
 | `DATABASE_URL` | **Required** | — |
-| `ADMIN_JWT_SECRET` | **Required.** Signing secret, ≥ 32 bytes (`hera secret`) | — |
+| `ADMIN_JWT_SECRET` | **Required.** Signing secret, at least 32 bytes | — |
 | `APP_BIND` | Listen address | `127.0.0.1:3000` |
 | `REQUEST_TIMEOUT_SECS` | Longest a request may take; `0` for no limit | `30` |
 | `CORS_ALLOWED_ORIGINS` | Origins allowed to call the app from a browser | none |
 | `LOG_LEVEL` | `error`, `warn`, `info`, `debug` (adds SQL statements) or `trace` | `info` |
-| `ADMIN_BASE_PATH`, `API_BASE_PATH` | URL prefixes | `/admin`, `/api` |
+| `ADMIN_BASE_PATH`, `API_BASE_PATH` | Address prefixes | `/admin`, `/api` |
 | `DB_MAX_CONNECTIONS`, `DB_MIN_CONNECTIONS`, `DB_ACQUIRE_TIMEOUT_SECS` | Connection pool | driver defaults |
 | `ADMIN_JWT_TTL_SECS` | Token lifetime | `3600` |
-| `ADMIN_TOTP_REQUIRED` | Refuse accounts without TOTP | `false` |
+| `ADMIN_TOTP_REQUIRED` | Refuse accounts without two-factor login | `false` |
 | `ADMIN_LOGIN_MAX_ATTEMPTS` | Login attempts per account per lockout period; `0` disables | `5` |
 | `ADMIN_LOGIN_LOCKOUT_SECS` | Length of the lockout period | `300` |
 | `ADMIN_CLIENT_IP_HEADER` | Header carrying the client address behind a proxy | connection address |
@@ -687,76 +897,63 @@ from environment variables. It still works; to move to settings, run `hera new` 
 | `STORAGE_URL` | Enables uploads | off |
 | `DOCS_ENABLED` | Serve the API documentation | `true` |
 | `DOCS_USERNAME`, `DOCS_PASSWORD` | Ask for these before showing the documentation | open |
-| `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` | What the documentation is headed with | site title + "API", `0.1.0` |
-| `DOCS_SWAGGER_JS_URL`, `DOCS_SWAGGER_CSS_URL`, `DOCS_REDOC_JS_URL` | Where the documentation pages load their viewer from | jsDelivr |
+| `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` | Documentation heading | site title + "API", `0.1.0` |
+| `DOCS_SWAGGER_JS_URL`, `DOCS_SWAGGER_CSS_URL`, `DOCS_REDOC_JS_URL` | Where the documentation viewers load from | jsDelivr |
 | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits | 1 GiB, 8 MiB |
-| `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR`, `ADMIN_WEB_FONTS` | Admin look and feel | see `UiSettings::from_env` |
+| `ADMIN_SITE_TITLE`, `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`, `ADMIN_THEME`, `ADMIN_CUSTOM_CSS_URL`, `ADMIN_FOOTER_TEXT`, `ADMIN_PAGE_SIZE`, `ADMIN_NAV_LINKS`, `ADMIN_TEMPLATE_DIR`, `ADMIN_WEB_FONTS` | Admin look | see `UiSettings::from_env` |
 | `HOME_PAGE_ENABLED` | Serve the status page at `/` | `true` |
 | `HOME_TITLE`, `HOME_TAGLINE` | What the status page says | site title, none |
 
 </details>
 
-## Databases
+**Your own account store:** accounts live in the `auth_user` table (`DbUserStore`). To use
+accounts kept elsewhere, implement the `UserStore` trait. Every account is then a superuser
+unless you implement `UserStore::access`, API keys work only if you implement
+`UserStore::api_key`, and the Users and Groups pages are not shown.
 
-The address in `database.url` chooses the database, as `DATABASES` does in Django. Every
-driver is built in, so switching is a settings change: no code or `Cargo.toml` edit.
+## Not done yet
 
-| Database | `database.url` |
-|---|---|
-| SQLite | `sqlite://db.sqlite3?mode=rwc` (`mode=rwc` creates the file) |
-| PostgreSQL | `postgres://user:password@host:5432/name` |
-| MySQL and MariaDB | `mysql://user:password@host:3306/name` |
+- **Accounts:** no passkeys yet. API keys cannot be limited to some models (only read-only).
+  Logins through other sites are for the admin, and an account is linked to another site by
+  e-mail address only (there is no "connect" button). No per-record permissions. Login
+  attempt limits are per server process. Accounts and groups are managed in the admin only;
+  there is no API for them.
+- **Admin:** no page listing all uploaded files, and a replaced file is not deleted. No
+  many-to-many widget, no list of the records that point to a record, and no search-as-you-type
+  for long lists of related records.
+- **Models:** single-column primary keys only; UUID, decimal, enum and array fields are
+  read-only.
+- **Uploads:** completing a resumable upload copies the pieces once inside the storage
+  (no direct-to-S3 multipart yet), and abandoned uploads are not cleaned up automatically.
+- **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;
+  add them with your own `tower` layers.
+- **API documentation:** your own routes are not discovered automatically, and the viewers
+  load from a CDN rather than being bundled.
+- **Untested services:** S3, Azure and Google Cloud Storage compile but have not been run
+  against the real services.
 
-Oracle and SQL Server are not supported: open-source SeaORM, the database layer, has no
-driver for them.
+## Working on heraapi
 
-**Smaller builds.** A project that only ever uses one database can leave the other drivers out
-to compile faster: `heraapi = { ..., default-features = false, features = ["postgres"] }`
-(the features are `sqlite`, `postgres` and `mysql`). An address for a driver left out then
-stops start-up with the feature to turn back on.
+To use a local copy of heraapi in a project: `cargo install --path cli`, then
+`hera new blog --framework-path /path/to/heraapi`.
 
-The API behaves the same on SQLite, PostgreSQL and MySQL: true and false are JSON booleans,
-date-times are ISO 8601
-(`2026-03-04T05:06:07`), JSON columns are returned as JSON, and `?q=` search ignores case and
-treats `%` and `_` as ordinary characters.
-
-## Running the tests
+Running the tests:
 
 ```sh
 cargo test                       # SQLite, in memory
 
-# the same tests against PostgreSQL (each test uses its own schema)
+# the same tests on PostgreSQL (each test gets its own schema)
 docker run -d --rm -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:17-alpine
 TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres cargo test
 
-# or MySQL (each test uses its own database)
+# or on MySQL (each test gets its own database)
 docker run -d --rm -e MYSQL_ROOT_PASSWORD=test -p 3306:3306 mysql:8.4
 TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 ```
 
-## Not done yet
-
-- **Auth:** passkeys are planned as a further login method. API keys have no scopes beyond
-  read-only (a key cannot be limited to some models).
-  Logins through other sites are for the admin only (API clients use keys or tokens), and
-  linking another site to an account goes by e-mail address only (no "connect" button).
-  Also missing: per-record (row-level) permissions. Login limits are per process, not shared between instances. Accounts and groups are managed in
-  the admin only; there is no REST API for them.
-- **Admin:** no page listing all uploaded files; a replaced file is not deleted. Relations: no many-to-many widget, no list of the rows
-  that point to a record, and no search-as-you-type for long lists of related rows.
-- **Models:** single-column primary keys only; UUID, decimal, enum and array columns are
-  read-only.
-- **Uploads:** completing a resumable upload copies the chunks once inside the storage backend
-  (no direct-to-S3 multipart yet); abandoned sessions are not cleaned up automatically.
-- **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;
-  add them with your own `tower` layers.
-- **API documentation:** your own routes are not discovered automatically, and the viewers are
-  loaded from a CDN rather than bundled.
-- **Verification:** S3, Azure and GCS compile but have not been run against real services.
-
 ## License
 
-[MIT](LICENSE). Free to use and modify, commercially or otherwise. Copies must keep the
+[MIT](LICENSE). Free to use and change, commercially or otherwise. Copies must keep the
 copyright notice; beyond that, a link back to
 [this repository](https://github.com/arnabgupta-dev/heraapi) wherever you use it is
 appreciated.
