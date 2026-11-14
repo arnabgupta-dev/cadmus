@@ -51,6 +51,15 @@ pub enum FieldKind {
     Time,
     /// JSON document.
     Json,
+    /// A universally unique id; a new one is made when a primary key is left empty.
+    Uuid,
+    /// An exact decimal number, such as a price.
+    Decimal,
+    /// One of a fixed list of values ([`Field::choices`]): a database enum, or a column
+    /// given [`ModelOptions::choices`].
+    Choice,
+    /// A list of values (a PostgreSQL array), entered one per line.
+    List,
     /// A type the admin can display but not edit.
     Other,
 }
@@ -76,6 +85,8 @@ pub struct Field {
     pub has_default: bool,
     /// The row of another model this column points to, if it is a foreign key.
     pub reference: Option<Reference>,
+    /// The values a [`FieldKind::Choice`] field may hold, in order.
+    pub choices: Vec<String>,
 }
 
 /// What a foreign-key column points to.
@@ -130,6 +141,38 @@ pub struct ModelOptions {
     pub(crate) list_filter: Vec<String>,
     pub(crate) actions: Vec<BulkAction>,
     pub(crate) file_fields: Vec<String>,
+    pub(crate) choices: Vec<(String, Vec<String>)>,
+    pub(crate) many_to_many: Vec<ManyToMany>,
+    pub(crate) owner_field: Option<String>,
+}
+
+/// A many-to-many field, added with [`ModelOptions::many_to_many`].
+#[derive(Clone)]
+pub(crate) struct ManyToMany {
+    /// Field name in forms, filters and API bodies, e.g. `tags`.
+    pub(crate) name: String,
+    pub(crate) label: String,
+    pub(crate) link: Arc<dyn crate::seaorm::LinkTable>,
+}
+
+impl std::fmt::Debug for ManyToMany {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManyToMany")
+            .field("name", &self.name)
+            .field("target", &self.link.target())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A many-to-many field as the admin and the API see it.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkField {
+    /// Field name, e.g. `tags`.
+    pub name: String,
+    /// Label shown in the UI.
+    pub label: String,
+    /// URL name ([`Resource::slug`]) of the model linked to.
+    pub model: String,
 }
 
 impl ModelOptions {
@@ -287,6 +330,29 @@ impl ModelOptions {
         self
     }
 
+    /// Offers a dropdown of these values for a text or number column, and refuses others:
+    /// `choices("status", ["draft", "published"])`. Database enums get theirs automatically.
+    #[must_use]
+    pub fn choices<I, S>(mut self, column: impl Into<String>, values: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.choices
+            .push((column.into(), values.into_iter().map(Into::into).collect()));
+        self
+    }
+
+    /// Makes each row belong to the account named in `column` (a text column holding a
+    /// username). Accounts that are not superusers then see, change and delete only their
+    /// own rows, and new rows are given to the account that adds them. Superusers see every
+    /// row and can choose the owner.
+    #[must_use]
+    pub fn owned_by(mut self, column: impl Into<String>) -> Self {
+        self.owner_field = Some(column.into());
+        self
+    }
+
     /// Rows per list page for this model (overrides the global setting).
     #[must_use]
     pub fn per_page(mut self, per_page: u64) -> Self {
@@ -407,6 +473,14 @@ pub trait Resource: Send + Sync {
     async fn update(&self, id: &str, input: &Input, mode: WriteMode) -> Result<(), AdminError>;
     /// Deletes the row with primary key `id`.
     async fn delete(&self, id: &str) -> Result<(), AdminError>;
+
+    /// The many-to-many fields. Rows from [`Resource::list`] and [`Resource::get`] hold each
+    /// as a list of ids, and [`Input`] sets one with a JSON array of ids.
+    ///
+    /// The default has none.
+    fn links(&self) -> Vec<LinkField> {
+        Vec::new()
+    }
 }
 
 /// Turns `created_at` into `Created at`.

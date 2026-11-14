@@ -86,7 +86,7 @@ tr.picked td { background: var(--accent-soft); }
     <thead><tr>
       {% if actions %}<th scope="col" class="pick"><input type="checkbox" data-pick-all aria-label="Select every row on this page"></th>{% endif %}
       {% for c in columns %}
-      <th scope="col"{% if c.active == "asc" %} aria-sort="ascending"{% elif c.active == "desc" %} aria-sort="descending"{% endif %}><a href="{{ base }}/{{ model.slug }}{{ query(sort_to=c.next) }}" title="Sort by {{ c.label|lower }}"><span>{{ c.label }}</span><svg class="i" aria-hidden="true"><use href="#i-{% if c.active == "asc" %}up{% elif c.active == "desc" %}down{% else %}sort{% endif %}"/></svg></a></th>
+      <th scope="col"{% if c.active == "asc" %} aria-sort="ascending"{% elif c.active == "desc" %} aria-sort="descending"{% endif %}>{% if c.sortable %}<a href="{{ base }}/{{ model.slug }}{{ query(sort_to=c.next) }}" title="Sort by {{ c.label|lower }}"><span>{{ c.label }}</span><svg class="i" aria-hidden="true"><use href="#i-{% if c.active == "asc" %}up{% elif c.active == "desc" %}down{% else %}sort{% endif %}"/></svg></a>{% else %}<span>{{ c.label }}</span>{% endif %}</th>
       {% endfor %}
       <th scope="col"><span class="sr-only">Actions</span></th>
     </tr></thead>

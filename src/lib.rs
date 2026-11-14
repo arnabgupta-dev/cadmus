@@ -52,10 +52,10 @@ pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
 pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
 pub use resource::{
-    Field, FieldKind, Filter, FilterOp, Input, ListQuery, ModelOptions, Page, Reference, Resource,
-    Row, WriteMode,
+    Field, FieldKind, Filter, FilterOp, Input, LinkField, ListQuery, ModelOptions, Page, Reference,
+    Resource, Row, WriteMode,
 };
-pub use seaorm::SeaOrmResource;
+pub use seaorm::{SeaOrmResource, invalid};
 pub use settings::{NavLink, Settings, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};

@@ -18,7 +18,9 @@ use crate::AdminState;
 use crate::access::Action;
 use crate::auth::{self, Credentials, Session};
 use crate::error::{AdminError, ApiError, ApiResult};
-use crate::handlers::{ListParams, list_query, parse_sort, sortable};
+use crate::handlers::{
+    ListParams, list_query, owned_row, owner_filter, parse_sort, sortable, stamp_owner,
+};
 use crate::resource::{Input, Resource, Row, WriteMode};
 
 type Shared = State<Arc<AdminState>>;
@@ -57,6 +59,7 @@ fn json_input(resource: &dyn Resource, body: &Bytes, creating: bool) -> ApiResul
     let object: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(body)
         .map_err(|_| bad_request("the request body must be a JSON object"))?;
     let options = resource.options();
+    let links = resource.links();
     let mut input = Input::new();
     for (name, value) in object {
         let bad = |message: &str| {
@@ -65,6 +68,15 @@ fn json_input(resource: &dyn Resource, body: &Bytes, creating: bool) -> ApiResul
                 message: message.to_owned(),
             })
         };
+        if links.iter().any(|l| l.name == name) {
+            let text = match value {
+                serde_json::Value::Null => None,
+                serde_json::Value::Array(_) => Some(value.to_string()),
+                _ => return Err(bad("must be a list of ids")),
+            };
+            input.insert(name, text);
+            continue;
+        }
         let field = resource
             .fields()
             .iter()
@@ -151,6 +163,7 @@ async fn list(
     }
     let mut query = list_query(&state, resource, &params);
     query.filters = crate::handlers::parse_filters(resource, &raw, true)?;
+    query.filters.extend(owner_filter(resource, &session));
     if let Some(per_page) = params.per_page {
         query.per_page = per_page.clamp(1, MAX_PER_PAGE);
     }
@@ -183,7 +196,8 @@ async fn create(
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
-    let input = json_input(resource, &body, true)?;
+    let mut input = json_input(resource, &body, true)?;
+    stamp_owner(resource, &session, &mut input, true);
     let Some(row) = resource.create(&input).await? else {
         return Ok(StatusCode::CREATED.into_response());
     };
@@ -213,7 +227,10 @@ async fn read(
     session.require_bearer()?;
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::View)?;
-    fetch(resource, &model, &id).await
+    Ok(Json(strip_hidden(
+        resource,
+        owned_row(resource, &session, &id).await?,
+    )))
 }
 
 async fn write(
@@ -227,7 +244,20 @@ async fn write(
     session.require_bearer()?;
     let resource = state.resource(model)?.as_ref();
     session.require(model, Action::Change)?;
-    let input = json_input(resource, body, false)?;
+    owned_row(resource, session, id).await?;
+    let mut input = json_input(resource, body, false)?;
+    // A PATCH that leaves the owner out keeps it.
+    if mode == WriteMode::Replace
+        || input.contains_key(
+            resource
+                .options()
+                .owner_field
+                .as_deref()
+                .unwrap_or_default(),
+        )
+    {
+        stamp_owner(resource, session, &mut input, false);
+    }
     resource.update(id, &input, mode).await?;
     fetch(resource, model, id).await
 }
@@ -256,8 +286,9 @@ async fn delete(
     Path((model, id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
-    let resource = state.resource(&model)?;
+    let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Delete)?;
+    owned_row(resource, &session, &id).await?;
     resource.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

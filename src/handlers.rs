@@ -21,7 +21,8 @@ use crate::access::Action;
 use crate::auth::{self, COOKIE, Session};
 use crate::error::AdminError;
 use crate::resource::{
-    Field, FieldKind, Filter, FilterOp, FormData, Input, ListQuery, Resource, Row, WriteMode,
+    Field, FieldKind, Filter, FilterOp, FormData, Input, LinkField, ListQuery, Reference, Resource,
+    Row, WriteMode,
 };
 
 type Shared = State<Arc<AdminState>>;
@@ -166,6 +167,62 @@ fn pk_name(resource: &dyn Resource) -> Option<&str> {
         (Some(only), None) => Some(only.name.as_str()),
         _ => None,
     }
+}
+
+// ---- ownership ---------------------------------------------------------------------------
+
+/// The condition that limits `resource` to this account's own rows: for a model with
+/// `owned_by`, when the account is not a superuser.
+pub(crate) fn owner_filter(resource: &dyn Resource, session: &Session) -> Option<Filter> {
+    let field = resource.options().owner_field.as_ref()?;
+    (!session.access.is_superuser()).then(|| Filter {
+        field: field.clone(),
+        op: FilterOp::Equal,
+        value: session.username.clone(),
+    })
+}
+
+/// The row with this id if this account may reach it. Other accounts' rows are "not found",
+/// so their ids are not confirmed.
+pub(crate) async fn owned_row(
+    resource: &dyn Resource,
+    session: &Session,
+    id: &str,
+) -> Result<Row, AdminError> {
+    let missing = || AdminError::NotFound(format!("{} `{id}`", resource.slug()));
+    let row = resource.get(id).await?.ok_or_else(missing)?;
+    if let Some(filter) = owner_filter(resource, session)
+        && display(row.get(&filter.field)) != filter.value
+    {
+        return Err(missing());
+    }
+    Ok(row)
+}
+
+/// Writes the owner of a row being saved: always this account for one that is not a
+/// superuser; for a superuser, this account when adding a row without choosing one.
+pub(crate) fn stamp_owner(
+    resource: &dyn Resource,
+    session: &Session,
+    input: &mut Input,
+    creating: bool,
+) {
+    let Some(field) = &resource.options().owner_field else {
+        return;
+    };
+    let chosen = input
+        .get(field)
+        .and_then(|v| v.as_deref())
+        .is_some_and(|v| !v.trim().is_empty());
+    if !session.access.is_superuser() || (creating && !chosen) {
+        input.insert(field.clone(), Some(session.username.clone()));
+    }
+}
+
+/// A list query with this account's ownership condition added.
+fn scoped(mut query: ListQuery, resource: &dyn Resource, session: &Session) -> ListQuery {
+    query.filters.extend(owner_filter(resource, session));
+    query
 }
 
 // ---- login -------------------------------------------------------------------------------
@@ -351,7 +408,7 @@ async fn index(State(state): Shared, session: Session) -> Result<Html<String>, A
         }
         // One broken model should not take the whole dashboard down with it.
         let count = resource
-            .list(&ListQuery::first(1))
+            .list(&scoped(ListQuery::first(1), resource.as_ref(), &session))
             .await
             .ok()
             .map(|p| p.total);
@@ -523,6 +580,14 @@ pub(crate) fn parse_filters(
             field: key.clone(),
             message,
         };
+        if suffix.is_empty() && resource.links().iter().any(|l| l.name == name) {
+            filters.push(Filter {
+                field: name.to_owned(),
+                op: FilterOp::Equal,
+                value: value.to_owned(),
+            });
+            continue;
+        }
         let Some(field) = visible_fields(resource).find(|f| f.name == name && filterable(f)) else {
             if strict {
                 return Err(wrong(format!(
@@ -639,6 +704,16 @@ struct ColumnHead {
     active: Option<&'static str>,
     /// The `sort` parameter of the heading's link.
     next: String,
+    /// Whether the list can be ordered by this column.
+    sortable: bool,
+}
+
+/// The ids in a cell: one for a foreign key, several for a many-to-many field.
+fn cell_ids(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::Array(items)) => items.iter().map(|v| display(Some(v))).collect(),
+        other => vec![display(other)],
+    }
 }
 
 #[derive(Serialize)]
@@ -665,16 +740,42 @@ fn related<'a>(
     usable.then_some(target)
 }
 
+/// The model a many-to-many field links to, if it is registered and this account may view it.
+fn link_target<'a>(
+    state: &'a AdminState,
+    session: &Session,
+    link: &LinkField,
+) -> Option<&'a dyn Resource> {
+    let target = state.resource(&link.model).ok()?.as_ref();
+    (pk_name(target).is_some() && session.can(target.slug(), Action::View)).then_some(target)
+}
+
 /// The name of a row where another model points to it: its display field (by default the
-/// first text column), or `#id` if that is empty or there is none.
+/// first text column, or else the start of the first long text), or `#id` if that is empty
+/// or there is none.
 fn row_label(resource: &dyn Resource, row: &Row) -> String {
     let chosen = resource.options().display_field.as_deref();
-    let field = visible_fields(resource).find(|f| match chosen {
-        Some(name) => f.name == name,
-        None => f.kind == FieldKind::Text && f.reference.is_none(),
-    });
+    let field = visible_fields(resource)
+        .find(|f| match chosen {
+            Some(name) => f.name == name,
+            None => f.kind == FieldKind::Text && f.reference.is_none(),
+        })
+        .or_else(|| {
+            chosen
+                .is_none()
+                .then(|| visible_fields(resource).find(|f| f.kind == FieldKind::LongText))
+                .flatten()
+        });
     field
-        .map(|f| display(row.get(&f.name)))
+        .map(|f| {
+            let text = display(row.get(&f.name));
+            let line = text.lines().next().unwrap_or_default().trim().to_owned();
+            if line.chars().count() > 60 || text.trim() != line {
+                format!("{}…", line.chars().take(60).collect::<String>())
+            } else {
+                line
+            }
+        })
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| {
             let id = pk_name(resource).map(|pk| display(row.get(pk)));
@@ -721,7 +822,29 @@ async fn filter_views(
     raw: &HashMap<String, String>,
 ) -> Result<Vec<FilterView>, AdminError> {
     let mut views = Vec::new();
+    let owner = resource.options().owner_field.as_ref();
     for name in &resource.options().list_filter {
+        if let Some(link) = resource.links().into_iter().find(|l| &l.name == name) {
+            let Some(target) = link_target(state, session, &link) else {
+                continue;
+            };
+            let Some(choices) = reference_input(target, session, "").await?.0 else {
+                continue;
+            };
+            let mut options = vec![(String::new(), "All".to_owned())];
+            options.extend(choices.into_iter().map(|c| (c.value, c.label)));
+            views.push(FilterView {
+                selected: raw.get(name).cloned().unwrap_or_default(),
+                label: link.label.clone(),
+                param: name.clone(),
+                options,
+            });
+            continue;
+        }
+        // Listing the owners would show other accounts' names to those limited to their own.
+        if owner == Some(name) && !session.access.is_superuser() {
+            continue;
+        }
         let Some(field) = visible_fields(resource).find(|f| &f.name == name && filterable(f))
         else {
             continue;
@@ -729,7 +852,7 @@ async fn filter_views(
         let mut param = field.name.clone();
         let mut options = vec![(String::new(), "All".to_owned())];
         if let Some(target) = related(state, session, field) {
-            let (choices, _) = reference_input(target, "").await?;
+            let (choices, _) = reference_input(target, session, "").await?;
             match choices {
                 Some(choices) => options.extend(choices.into_iter().map(|c| (c.value, c.label))),
                 // Too many rows to list.
@@ -787,6 +910,7 @@ async fn list(
     session.require(&model, Action::View)?;
     let mut query = list_query(&state, resource, &params);
     query.filters = parse_filters(resource, &raw, false)?;
+    query.filters.extend(owner_filter(resource, &session));
     let filters = filter_views(&state, &session, resource, &raw).await?;
     let actions = bulk_choices(resource, &session);
     let (filter_qs, filter_pairs) = filter_query(&raw);
@@ -801,15 +925,44 @@ async fn list(
     };
 
     let chosen = &resource.options().list_display;
+    // Many-to-many fields as columns: like foreign keys, but holding several ids.
+    let links = resource.links();
+    let link_columns: Vec<Field> = links
+        .iter()
+        .filter(|l| chosen.contains(&l.name))
+        .filter_map(|l| {
+            let target = link_target(&state, &session, l)?;
+            Some(Field {
+                name: l.name.clone(),
+                label: l.label.clone(),
+                kind: FieldKind::Other,
+                nullable: true,
+                primary_key: false,
+                auto: false,
+                editable: false,
+                has_default: false,
+                reference: Some(Reference {
+                    model: target.slug().to_owned(),
+                    column: pk_name(target)?.to_owned(),
+                }),
+                choices: Vec::new(),
+            })
+        })
+        .collect();
     let columns: Vec<&Field> = if chosen.is_empty() {
         visible_fields(resource).collect()
     } else {
         // Keep the configured order; silently skip names that are hidden or unknown.
         chosen
             .iter()
-            .filter_map(|name| visible_fields(resource).find(|f| &f.name == name))
+            .filter_map(|name| {
+                visible_fields(resource)
+                    .find(|f| &f.name == name)
+                    .or_else(|| link_columns.iter().find(|f| &f.name == name))
+            })
             .collect()
     };
+    let is_link = |f: &Field| links.iter().any(|l| l.name == f.name);
     // For each foreign-key column, the names of the rows this page points to: one query per
     // such column, however many rows are shown.
     let mut names: Vec<Option<RelatedNames<'_>>> = Vec::new();
@@ -819,7 +972,7 @@ async fn list(
                 let ids = page
                     .rows
                     .iter()
-                    .map(|row| display(row.get(&field.name)))
+                    .flat_map(|row| cell_ids(row.get(&field.name)))
                     .filter(|id| !id.is_empty())
                     .collect();
                 Some((target, related_labels(target, ids).await?))
@@ -874,6 +1027,23 @@ async fn list(
                             }),
                         };
                     }
+                    if is_link(f) {
+                        let labels: Vec<String> = cell_ids(row.get(&f.name))
+                            .iter()
+                            .map(|id| {
+                                names
+                                    .as_ref()
+                                    .and_then(|(_, labels)| labels.get(id).cloned())
+                                    .unwrap_or_else(|| format!("#{id}"))
+                            })
+                            .collect();
+                        return ListCell {
+                            text: truncate(labels.join(", ")),
+                            link: None,
+                            flag: None,
+                            href: None,
+                        };
+                    }
                     let named = names
                         .as_ref()
                         .and_then(|(target, labels)| Some((target, labels.get(&value)?)));
@@ -914,6 +1084,7 @@ async fn list(
                 label: f.label.clone(),
                 active,
                 next,
+                sortable: !is_link(f),
             }
         })
         .collect();
@@ -997,12 +1168,15 @@ struct Choice {
 /// many to list, the plain input with a hint naming the row it currently points to.
 async fn reference_input(
     target: &dyn Resource,
+    session: &Session,
     current: &str,
 ) -> Result<(Option<Vec<Choice>>, Option<String>), AdminError> {
     let Some(pk) = pk_name(target) else {
         return Ok((None, None));
     };
-    let page = target.list(&ListQuery::first(MAX_CHOICES)).await?;
+    let page = target
+        .list(&scoped(ListQuery::first(MAX_CHOICES), target, session))
+        .await?;
     if page.total > MAX_CHOICES {
         let labels = related_labels(target, vec![current.to_owned()]).await?;
         let pointing = labels
@@ -1042,6 +1216,15 @@ async fn reference_input(
 fn input_value(field: &Field, value: Option<&serde_json::Value>) -> String {
     let text = display(value);
     match field.kind {
+        // One item per line.
+        FieldKind::List => match value {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| display(Some(item)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => text,
+        },
         // `datetime-local` wants `YYYY-MM-DDTHH:MM:SS`; databases usually print a space.
         FieldKind::DateTime => text.replacen(' ', "T", 1).chars().take(19).collect(),
         FieldKind::Json => value
@@ -1058,24 +1241,62 @@ async fn form_fields<'a>(
     session: &Session,
     resource: &'a dyn Resource,
     row: Option<&Row>,
+    creating: bool,
 ) -> Result<Vec<FormField<'a>>, AdminError> {
-    let creating = row.is_none();
     let readonly_names = &resource.options().readonly_fields;
+    // Only superusers may choose whose a row is.
+    let owner_locked = resource
+        .options()
+        .owner_field
+        .as_ref()
+        .filter(|_| !session.access.is_superuser());
     let mut fields = Vec::new();
     // A database-generated key has nothing to show before the row exists.
     for f in visible_fields(resource).filter(|f| !(creating && f.auto)) {
+        let owned = owner_locked == Some(&f.name);
         let readonly = !f.editable
             || f.auto
             || (f.primary_key && !creating)
-            || readonly_names.contains(&f.name);
-        let value = row
+            || readonly_names.contains(&f.name)
+            || owned;
+        let mut value = row
             .map(|r| input_value(f, r.get(&f.name)))
             .unwrap_or_default();
+        if owned && creating {
+            value.clone_from(&session.username);
+        }
         let file_field = resource.options().file_fields.contains(&f.name);
-        let (choices, hint) = match related(state, session, f) {
-            Some(target) if !file_field => reference_input(target, &value).await?,
+        let made_up = creating && f.primary_key && f.kind == FieldKind::Uuid;
+        let (choices, mut hint) = match related(state, session, f) {
+            Some(target) if !file_field => reference_input(target, session, &value).await?,
+            _ if f.kind == FieldKind::Choice => {
+                let mut choices: Vec<Choice> = f
+                    .choices
+                    .iter()
+                    .map(|c| Choice {
+                        selected: *c == value,
+                        label: c.clone(),
+                        value: c.clone(),
+                    })
+                    .collect();
+                if !value.is_empty() && !choices.iter().any(|c| c.selected) {
+                    choices.push(Choice {
+                        label: format!("{value} (not a choice)"),
+                        value: value.clone(),
+                        selected: true,
+                    });
+                }
+                (Some(choices), None)
+            }
             _ => (None, None),
         };
+        if made_up {
+            hint = Some("Leave empty to have one made up.".into());
+        } else if f.kind == FieldKind::List && !readonly {
+            hint = Some("One item per line.".into());
+        } else if owned {
+            hint = Some("Rows belong to the account that adds them.".into());
+        }
         let file = match (file_field, value.parse::<i32>(), &state.uploads, row) {
             (true, Ok(file_id), Some(uploads), Some(row)) => {
                 let row_id = pk_name(resource).map(|pk| display(row.get(pk)));
@@ -1107,9 +1328,10 @@ async fn form_fields<'a>(
             value,
             required: !f.nullable
                 && !readonly
+                && !made_up
                 && !matches!(
                     f.kind,
-                    FieldKind::Boolean | FieldKind::Text | FieldKind::LongText
+                    FieldKind::Boolean | FieldKind::Text | FieldKind::LongText | FieldKind::List
                 ),
             readonly,
             choices,
@@ -1121,6 +1343,148 @@ async fn form_fields<'a>(
     Ok(fields)
 }
 
+/// A many-to-many field on a form: checkboxes of the rows it can link to, or, if there are
+/// too many to list, their ids separated by commas.
+#[derive(Serialize)]
+struct LinkInput {
+    name: String,
+    label: String,
+    choices: Option<Vec<Choice>>,
+    /// The linked ids, for the plain input.
+    value: String,
+    hint: Option<String>,
+}
+
+async fn link_inputs(
+    state: &AdminState,
+    session: &Session,
+    resource: &dyn Resource,
+    row: Option<&Row>,
+) -> Result<Vec<LinkInput>, AdminError> {
+    let mut inputs = Vec::new();
+    for link in resource.links() {
+        let selected: Vec<String> = match row.and_then(|r| r.get(&link.name)) {
+            Some(serde_json::Value::Array(items)) => {
+                items.iter().map(|v| display(Some(v))).collect()
+            }
+            Some(serde_json::Value::String(text)) => text
+                .split(',')
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let value = selected.join(", ");
+        let (choices, hint) = match link_target(state, session, &link) {
+            Some(target) => match reference_input(target, session, "").await? {
+                (Some(mut choices), _) => {
+                    for choice in &mut choices {
+                        choice.selected = selected.contains(&choice.value);
+                    }
+                    (Some(choices), None)
+                }
+                (None, _) => (
+                    None,
+                    Some(format!(
+                        "There are too many {} to list here; enter their ids, separated by commas.",
+                        target.label()
+                    )),
+                ),
+            },
+            None => (None, Some("Ids, separated by commas.".to_owned())),
+        };
+        inputs.push(LinkInput {
+            name: link.name,
+            label: link.label,
+            choices,
+            value,
+            hint,
+        });
+    }
+    Ok(inputs)
+}
+
+/// Rows of another model that point to a record, shown under its form.
+#[derive(Serialize)]
+struct RelatedList {
+    /// URL name of the model the rows belong to.
+    model: String,
+    label: String,
+    total: u64,
+    /// `(id, name)` of the first few.
+    rows: Vec<(String, String)>,
+    /// The query string that picks these rows, and starts a new one pointing here.
+    query: String,
+    /// Whether this account may add rows to the other model.
+    can_add: bool,
+}
+
+/// How many pointing rows each related list shows.
+const RELATED_ROWS: u64 = 5;
+
+async fn related_lists(
+    state: &AdminState,
+    session: &Session,
+    resource: &dyn Resource,
+    id: &str,
+) -> Result<Vec<RelatedList>, AdminError> {
+    let mut lists = Vec::new();
+    if pk_name(resource).is_none() {
+        return Ok(lists);
+    }
+    for other in &state.resources {
+        let other = other.as_ref();
+        if !session.can(other.slug(), Action::View) || pk_name(other).is_none() {
+            continue;
+        }
+        for field in visible_fields(other) {
+            let points_here = field.reference.as_ref().is_some_and(|r| {
+                r.model == resource.slug() && Some(r.column.as_str()) == pk_name(resource)
+            });
+            if !points_here {
+                continue;
+            }
+            let mut query = ListQuery::first(RELATED_ROWS);
+            query.filters.push(Filter {
+                field: field.name.clone(),
+                op: FilterOp::Equal,
+                value: id.to_owned(),
+            });
+            let page = other.list(&scoped(query, other, session)).await?;
+            let pk = pk_name(other).unwrap_or_default();
+            let encode =
+                |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+            // "Books" for one key; "Posts (editor)" when another key points here too.
+            let several = visible_fields(other)
+                .filter(|f| {
+                    f.reference
+                        .as_ref()
+                        .is_some_and(|r| r.model == resource.slug())
+                })
+                .count()
+                > 1;
+            let label = if several {
+                format!("{} ({})", other.label(), field.label.to_lowercase())
+            } else {
+                other.label().to_owned()
+            };
+            lists.push(RelatedList {
+                model: other.slug().to_owned(),
+                label,
+                total: page.total,
+                rows: page
+                    .rows
+                    .iter()
+                    .map(|row| (display(row.get(pk)), row_label(other, row)))
+                    .collect(),
+                query: format!("{}={}", encode(&field.name), encode(id)),
+                can_add: session.can(other.slug(), Action::Add),
+            });
+        }
+    }
+    Ok(lists)
+}
+
 async fn render_form(
     state: &AdminState,
     session: &Session,
@@ -1129,7 +1493,12 @@ async fn render_form(
     row: Option<&Row>,
     error: Option<String>,
 ) -> Result<Html<String>, AdminError> {
-    let fields = form_fields(state, session, resource, row).await?;
+    let fields = form_fields(state, session, resource, row, id.is_none()).await?;
+    let links = link_inputs(state, session, resource, row).await?;
+    let related = match id {
+        Some(id) => related_lists(state, session, resource, id).await?,
+        None => Vec::new(),
+    };
     render(
         state,
         "form.html",
@@ -1138,6 +1507,8 @@ async fn render_form(
             section => resource.slug(),
             model => Value::from(Serde(NavModel::new(resource, session))),
             fields => Value::from(Serde(fields)),
+            links => Value::from(Serde(links)),
+            related => Value::from(Serde(related)),
             id => id,
             error => error,
             // A new record can always be saved here: the page itself required `add`.
@@ -1165,25 +1536,61 @@ fn form_input(resource: &dyn Resource, form: &FormData) -> Input {
             .entry(field.name.clone())
             .or_insert_with(|| Some("false".to_owned()));
     }
+    for (name, ids) in checked_links(resource, form) {
+        input.insert(name, Some(serde_json::Value::from(ids).to_string()));
+    }
     input
 }
 
-/// Turns submitted text back into a row so a rejected form can be shown again as typed.
-fn echo_row(form: &FormData) -> Row {
-    form.iter()
-        .filter(|(name, _)| name.as_str() != CSRF_FIELD)
-        .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+/// The ids ticked for each many-to-many field shown as checkboxes, which are named
+/// `<field>__link__<id>`; `<field>__links` marks that the boxes were on the form.
+fn checked_links(resource: &dyn Resource, form: &FormData) -> Vec<(String, Vec<String>)> {
+    resource
+        .links()
+        .into_iter()
+        .filter(|link| form.contains_key(&format!("{}__links", link.name)))
+        .map(|link| {
+            let prefix = format!("{}__link__", link.name);
+            let mut ids: Vec<String> = form
+                .keys()
+                .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
+                .collect();
+            ids.sort();
+            (link.name, ids)
+        })
         .collect()
+}
+
+/// Turns submitted text back into a row so a rejected form can be shown again as typed.
+fn echo_row(resource: &dyn Resource, form: &FormData) -> Row {
+    let mut row: Row = form
+        .iter()
+        .filter(|(name, _)| name.as_str() != CSRF_FIELD && !name.contains("__link"))
+        .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+        .collect();
+    for (name, ids) in checked_links(resource, form) {
+        row.insert(name, serde_json::Value::from(ids));
+    }
+    row
 }
 
 async fn new_form(
     State(state): Shared,
     session: Session,
     Path(model): Path<String>,
+    Query(raw): Query<HashMap<String, String>>,
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
-    render_form(&state, &session, resource, None, None, None).await
+    // Values to start from, as the "Add" link of a related list gives: `?author_id=3`.
+    let start: Row = visible_fields(resource)
+        .filter_map(|f| {
+            let value = raw.get(&f.name)?;
+            Some((f.name.clone(), serde_json::Value::String(value.clone())))
+        })
+        .collect();
+    let row = (!start.is_empty()).then_some(&start);
+    render_form(&state, &session, resource, None, row, None).await
 }
 
 /// Re-renders the form for errors the user can fix; passes everything else up.
@@ -1203,7 +1610,7 @@ async fn form_error(
         }
         _ => return Err(error),
     };
-    let mut row = echo_row(form);
+    let mut row = echo_row(resource, form);
     if let (Some(id), Some(pk)) = (id, pk_name(resource)) {
         row.insert(pk.to_owned(), serde_json::Value::String(id.to_owned()));
     }
@@ -1220,7 +1627,9 @@ async fn create(
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
     let (form, stored) = read_form(&state, &session, resource, request).await?;
-    match resource.create(&form_input(resource, &form)).await {
+    let mut input = form_input(resource, &form);
+    stamp_owner(resource, &session, &mut input, true);
+    match resource.create(&input).await {
         Ok(_) => {
             Ok(Redirect::to(&format!("{}/{model}?notice=created", state.base)).into_response())
         }
@@ -1345,10 +1754,7 @@ async fn file_content(
         .uploads
         .as_ref()
         .ok_or_else(|| AdminError::NotFound("file uploads are off".into()))?;
-    let row = resource
-        .get(&id)
-        .await?
-        .ok_or_else(|| AdminError::NotFound(format!("{model} `{id}`")))?;
+    let row = owned_row(resource, &session, &id).await?;
     let file_id = display(row.get(&field))
         .parse::<i32>()
         .map_err(|_| AdminError::NotFound("no file".into()))?;
@@ -1367,10 +1773,7 @@ async fn edit_form(
 ) -> Result<Html<String>, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::View)?;
-    let row = resource
-        .get(&id)
-        .await?
-        .ok_or_else(|| AdminError::NotFound(format!("{model} `{id}`")))?;
+    let row = owned_row(resource, &session, &id).await?;
     render_form(&state, &session, resource, Some(&id), Some(&row), None).await
 }
 
@@ -1382,11 +1785,11 @@ async fn update(
 ) -> Result<Response, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Change)?;
+    owned_row(resource, &session, &id).await?;
     let (form, stored) = read_form(&state, &session, resource, request).await?;
-    match resource
-        .update(&id, &form_input(resource, &form), WriteMode::Replace)
-        .await
-    {
+    let mut input = form_input(resource, &form);
+    stamp_owner(resource, &session, &mut input, false);
+    match resource.update(&id, &input, WriteMode::Replace).await {
         Ok(()) => Ok(Redirect::to(&format!("{}/{model}?notice=saved", state.base)).into_response()),
         Err(error) => {
             forget_files(&state, &stored).await;
@@ -1402,8 +1805,9 @@ async fn delete(
     Form(form): Form<FormData>,
 ) -> Result<Redirect, AdminError> {
     session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
-    let resource = state.resource(&model)?;
+    let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Delete)?;
+    owned_row(resource, &session, &id).await?;
     resource.delete(&id).await?;
     Ok(Redirect::to(&format!(
         "{}/{model}?notice=deleted",
@@ -1527,6 +1931,18 @@ async fn bulk(
     }
 
     let (mut done, mut failed) = (0_u64, 0_u64);
+    // Rows of other accounts are left out, as if they had not been picked.
+    if owner_filter(resource, &session).is_some() {
+        let mut own = Vec::new();
+        for id in ids {
+            if owned_row(resource, &session, &id).await.is_ok() {
+                own.push(id);
+            } else {
+                failed += 1;
+            }
+        }
+        ids = own;
+    }
     if name == "delete" {
         session.require(&model, Action::Delete)?;
         for id in &ids {

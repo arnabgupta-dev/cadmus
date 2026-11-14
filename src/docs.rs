@@ -409,6 +409,14 @@ fn field_schema(field: &Field) -> Value {
         FieldKind::Date => json!({ "type": "string", "format": "date" }),
         FieldKind::Time => json!({ "type": "string", "example": "05:06:07" }),
         FieldKind::Json => json!({ "description": "Any JSON value" }),
+        FieldKind::Uuid => json!({ "type": "string", "format": "uuid" }),
+        FieldKind::Decimal => json!({
+            "type": "string",
+            "description": "An exact decimal number, as text",
+            "example": "19.99",
+        }),
+        FieldKind::Choice => json!({ "type": "string", "enum": field.choices }),
+        FieldKind::List => json!({ "type": "array", "items": {} }),
         FieldKind::Other => json!({ "description": "A value the API returns but cannot change" }),
     };
     if field.nullable {
@@ -452,7 +460,19 @@ fn write_schema(
     if !needed.is_empty() {
         schema["required"] = Value::Array(needed);
     }
+    for link in resource.links() {
+        schema["properties"][&link.name] = link_schema(&link);
+    }
     schema
+}
+
+/// A many-to-many field: the ids of the linked rows.
+fn link_schema(link: &crate::resource::LinkField) -> Value {
+    json!({
+        "type": "array",
+        "items": {},
+        "description": format!("The ids of the linked `{}` rows", link.model),
+    })
 }
 
 fn needs(resource: &dyn Resource, action: Action) -> String {
@@ -491,13 +511,19 @@ fn describe_model(
     {
         properties.insert(field.name.clone(), field_schema(field));
     }
+    for link in resource.links() {
+        properties.insert(link.name.clone(), link_schema(&link));
+    }
     schemas.insert(
         name.clone(),
         json!({ "type": "object", "properties": properties }),
     );
 
     // `POST` may leave out what the database fills in; `PUT` replaces the whole record.
-    let create = write_schema(resource, true, |f| !f.nullable && !f.has_default);
+    // A UUID key left out is made up.
+    let create = write_schema(resource, true, |f| {
+        !f.nullable && !f.has_default && !(f.primary_key && f.kind == FieldKind::Uuid)
+    });
     let replace = write_schema(resource, false, |f| !f.nullable);
     let (create_name, replace_name) = if create == replace {
         (format!("{name}Input"), format!("{name}Input"))

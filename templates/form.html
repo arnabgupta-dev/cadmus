@@ -7,6 +7,17 @@
 .file-current div { min-width: 0; overflow-wrap: anywhere; }
 input[type=file] { padding: 8px; min-height: 44px; }
 .file-clear { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-weight: 400; }
+.links { margin: 0; padding: 0; border: 0; min-width: 0; }
+.links legend { padding: 0; margin-bottom: 8px; font-weight: 600; }
+.link-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 14px; max-height: 260px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--sunken); }
+.link-choices label { display: flex; align-items: center; gap: 8px; font-weight: 400; min-width: 0; overflow-wrap: anywhere; }
+.related { margin-top: 20px; padding: 18px 20px; }
+.related h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 1.05rem; }
+.related h2 .num { font-weight: 500; }
+.related ul { margin: 0 0 12px; padding: 0; list-style: none; }
+.related li { padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.related li:first-child { border-top: 0; }
+.related .row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 </style>
 {% endblock %}
 {% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/{{ model.slug }}">{{ model.label }}</a><span class="sep">/</span><span class="here">{% if id is none %}New{% else %}#{{ id }}{% endif %}</span>{% endblock %}
@@ -27,7 +38,7 @@ input[type=file] { padding: 8px; min-height: 44px; }
   <div class="fields">
   {% for f in fields %}
     {% set ro = f.readonly or locked %}
-    <div class="field{% if f.kind == "long_text" or f.kind == "json" %} wide{% endif %}">
+    <div class="field{% if f.kind == "long_text" or f.kind == "json" or f.kind == "list" %} wide{% endif %}">
     {% if f.kind == "boolean" and f.choices is none %}
       <div class="check-field">
         <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if ro %} disabled{% endif %}>
@@ -53,18 +64,36 @@ input[type=file] { padding: 8px; min-height: 44px; }
           <option value="">{% if f.required %}Choose…{% else %}— none —{% endif %}</option>
           {% for c in f.choices %}<option value="{{ c.value }}"{% if c.selected %} selected{% endif %}>{{ c.label }}</option>{% endfor %}
         </select>
-      {% elif f.kind == "long_text" or f.kind == "json" %}
-        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="{% if f.kind == "json" %}8{% else %}6{% endif %}"{% if f.kind == "json" %} class="code" spellcheck="false"{% endif %}{% if f.required %} required{% endif %}{% if ro %} readonly{% endif %}>{{ f.value }}</textarea>
+      {% elif f.kind == "long_text" or f.kind == "json" or f.kind == "list" %}
+        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="{% if f.kind == "json" %}8{% elif f.kind == "list" %}4{% else %}6{% endif %}"{% if f.kind == "json" or f.kind == "list" %} class="code" spellcheck="false"{% endif %}{% if f.required %} required{% endif %}{% if ro %} readonly{% endif %}>{{ f.value }}</textarea>
       {% else %}
         <input id="f-{{ f.name }}" name="{{ f.name }}" value="{{ f.value }}"
           type="{% if f.kind == "integer" or f.kind == "float" %}number{% elif f.kind == "date_time" %}datetime-local{% elif f.kind == "date" %}date{% elif f.kind == "time" %}time{% else %}text{% endif %}"
-          {% if f.kind == "float" %}step="any" inputmode="decimal"{% elif f.kind == "integer" %}inputmode="numeric"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% endif %}
+          {% if f.kind == "float" %}step="any" inputmode="decimal"{% elif f.kind == "decimal" %}inputmode="decimal" pattern="-?[0-9]*[.,]?[0-9]*"{% elif f.kind == "integer" %}inputmode="numeric"{% elif f.kind == "date_time" or f.kind == "time" %}step="1"{% elif f.kind == "uuid" %}spellcheck="false" autocomplete="off" class="code"{% endif %}
           {% if f.required %}required{% endif %}{% if ro %} readonly{% endif %}>
       {% endif %}
       {% if f.kind == "json" and not ro %}<p class="muted">Any JSON value, e.g. <code>{"tags": ["a"]}</code>.</p>{% endif %}
     {% endif %}
       {% if f.hint %}<p class="muted">{{ f.hint }}</p>{% endif %}
       {% if f.readonly and not locked and id is not none %}<p class="muted">Set by the system; it cannot be changed here.</p>{% endif %}
+    </div>
+  {% endfor %}
+  {% for l in links %}
+    <div class="field wide">
+      <fieldset class="links">
+        <legend>{{ l.label }}</legend>
+        {% if l.choices is not none %}
+        <input type="hidden" name="{{ l.name }}__links" value="1">
+        {% if l.choices %}
+        <div class="link-choices">
+          {% for c in l.choices %}<label><input type="checkbox" name="{{ l.name }}__link__{{ c.value }}" value="on"{% if c.selected %} checked{% endif %}{% if locked %} disabled{% endif %}>{{ c.label }}</label>{% endfor %}
+        </div>
+        {% else %}<p class="muted">Nothing to choose from yet.</p>{% endif %}
+        {% else %}
+        <input id="f-{{ l.name }}" name="{{ l.name }}" value="{{ l.value }}" type="text" autocomplete="off"{% if locked %} readonly{% endif %}>
+        {% endif %}
+        {% if l.hint %}<p class="muted">{{ l.hint }}</p>{% endif %}
+      </fieldset>
     </div>
   {% endfor %}
   </div>
@@ -75,6 +104,19 @@ input[type=file] { padding: 8px; min-height: 44px; }
     {% if id is not none and can_delete %}<button class="btn danger" type="submit" form="delete-form" data-confirm="confirm-delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>{% endif %}
   </div>
 </form>
+
+{% for r in related %}
+<section class="panel related" aria-labelledby="related-{{ loop.index }}">
+  <h2 id="related-{{ loop.index }}">{{ r.label }} <span class="num muted">{{ r.total }}</span></h2>
+  {% if r.rows %}
+  <ul>{% for row in r.rows %}<li><a href="{{ base }}/{{ r.model }}/{{ row[0]|urlencode }}">{{ row[1] }}</a></li>{% endfor %}</ul>
+  {% else %}<p class="muted">None yet.</p>{% endif %}
+  <div class="row-actions">
+    {% if r.total > r.rows|length %}<a class="btn ghost" href="{{ base }}/{{ r.model }}?{{ r.query }}">See all {{ r.total }}</a>{% elif r.rows %}<a class="btn ghost" href="{{ base }}/{{ r.model }}?{{ r.query }}">Open the list</a>{% endif %}
+    {% if r.can_add %}<a class="btn ghost" href="{{ base }}/{{ r.model }}/new?{{ r.query }}"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>Add</a>{% endif %}
+  </div>
+</section>
+{% endfor %}
 
 {% if id is not none and can_delete %}
 <form id="delete-form" method="post" action="{{ base }}/{{ model.slug }}/{{ id|urlencode }}/delete">

@@ -1,23 +1,71 @@
 //! [`Resource`] for any SeaORM entity, built from the entity's own column metadata.
 
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::marker::PhantomData;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use sea_orm::sea_query::{Alias, ColumnType, Expr, Func, SimpleExpr};
+use sea_orm::prelude::{Decimal, Uuid};
+use sea_orm::schema::SchemaBuilder;
+use sea_orm::sea_query::{
+    Alias, ArrayType, ColumnType, Expr, Func, Query, SelectStatement, SimpleExpr,
+};
 use sea_orm::{
-    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbBackend,
-    DbErr, EntityTrait, IdenStatic, Identity, IntoActiveModel, Iterable, ModelTrait,
-    PaginatorTrait, PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter, QueryOrder, QuerySelect,
-    RelationTrait, Value,
+    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait,
+    DatabaseConnection, DatabaseTransaction, DbBackend, DbErr, EntityTrait, IdenStatic, Identity,
+    IntoActiveModel, Iterable, ModelTrait, PaginatorTrait, PrimaryKeyToColumn, PrimaryKeyTrait,
+    QueryFilter, QueryOrder, QuerySelect, RelationTrait, TransactionTrait, Value,
 };
 
 use crate::error::AdminError;
+use crate::migrations::EntityTable;
 use crate::resource::{
-    Field, FieldKind, Filter, FilterOp, Input, ListQuery, ModelOptions, Page, Reference, Resource,
-    Row, WriteMode, humanize,
+    Field, FieldKind, Filter, FilterOp, Input, LinkField, ListQuery, ManyToMany, ModelOptions,
+    Page, Reference, Resource, Row, WriteMode, humanize,
 };
+
+/// Marks a [`DbErr`] made by [`invalid`].
+const INVALID: &str = "cadmus:invalid\u{0}";
+
+/// An error for a save hook to return when a value is not acceptable. The admin shows the
+/// message next to the form, and the API answers `422` with it.
+///
+/// ```ignore
+/// #[async_trait::async_trait]
+/// impl ActiveModelBehavior for ActiveModel {
+///     async fn before_save<C: ConnectionTrait>(self, _db: &C, _insert: bool) -> Result<Self, DbErr> {
+///         if matches!(self.price, Set(p) if p < 0.0) {
+///             return Err(cadmus::invalid("price", "must not be negative"));
+///         }
+///         Ok(self)
+///     }
+/// }
+/// ```
+#[must_use]
+pub fn invalid(field: impl AsRef<str>, message: impl AsRef<str>) -> DbErr {
+    DbErr::Custom(format!(
+        "{INVALID}{}\u{0}{}",
+        field.as_ref(),
+        message.as_ref()
+    ))
+}
+
+/// A database error as the caller should see it: a hook's [`invalid`] becomes a field error.
+fn db_error(error: DbErr) -> AdminError {
+    if let DbErr::Custom(text) = &error
+        && let Some(rest) = text.strip_prefix(INVALID)
+    {
+        let (field, message) = rest.split_once('\u{0}').unwrap_or(("", rest));
+        return AdminError::BadInput {
+            field: field.to_owned(),
+            message: message.to_owned(),
+        };
+    }
+    error.into()
+}
 
 /// Admin resource backed by a SeaORM entity.
 ///
@@ -83,6 +131,12 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 editable: kind != FieldKind::Other,
                 has_default: def.get_column_default().is_some(),
                 reference,
+                choices: match &ty {
+                    ColumnType::Enum { variants, .. } => {
+                        variants.iter().map(|v| v.to_string()).collect()
+                    }
+                    _ => Vec::new(),
+                },
             });
             columns.push(column);
             types.push(ty);
@@ -111,12 +165,87 @@ impl<E: EntityTrait> SeaOrmResource<E> {
         if let Some(label) = &options.label {
             self.label.clone_from(label);
         }
+        for (column, values) in &options.choices {
+            if let Some(field) = self.fields.iter_mut().find(|f| &f.name == column) {
+                field.kind = FieldKind::Choice;
+                field.choices.clone_from(values);
+            }
+        }
         self.options = options;
         self
     }
 
+    fn link(&self, name: &str) -> Option<&ManyToMany> {
+        self.options.many_to_many.iter().find(|m| m.name == name)
+    }
+
+    /// Adds each many-to-many field to these rows, as a list of ids.
+    async fn with_links(&self, mut rows: Vec<Row>) -> Result<Vec<Row>, AdminError> {
+        let (Some(pk), false) = (self.pk, self.options.many_to_many.is_empty()) else {
+            return Ok(rows);
+        };
+        let pk = &self.fields[pk].name;
+        let ids: Vec<String> = rows.iter().map(|row| text_of(row.get(pk))).collect();
+        for many in &self.options.many_to_many {
+            let mut linked: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+            for (owner, value) in many.link.pairs(&self.db, &ids).await? {
+                linked.entry(owner).or_default().push(value);
+            }
+            for row in &mut rows {
+                let found = linked.remove(&text_of(row.get(pk))).unwrap_or_default();
+                row.insert(many.name.clone(), serde_json::Value::Array(found));
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The many-to-many values in `input`, checked: each field's ids, all existing.
+    async fn link_input(
+        &self,
+        txn: &DatabaseTransaction,
+        input: &Input,
+    ) -> Result<Vec<(&ManyToMany, Vec<String>)>, AdminError> {
+        let mut out = Vec::new();
+        for many in &self.options.many_to_many {
+            let Some(raw) = input.get(&many.name) else {
+                continue;
+            };
+            let bad = |message: String| AdminError::BadInput {
+                field: many.name.clone(),
+                message,
+            };
+            let ids = match raw.as_deref().map(str::trim) {
+                None | Some("") => Vec::new(),
+                Some(text) => parse_ids(text).map_err(bad)?,
+            };
+            let missing = many.link.missing(txn, &ids).await?;
+            if !missing.is_empty() {
+                return Err(bad(format!(
+                    "there is no row with the id {}",
+                    missing.join(", ")
+                )));
+            }
+            out.push((many, ids));
+        }
+        Ok(out)
+    }
+
     /// The SQL condition for one list filter.
     fn condition(&self, filter: &Filter) -> Result<SimpleExpr, AdminError> {
+        if let Some(many) = self.link(&filter.field) {
+            // Rows linked to the given row of the other model.
+            let pk = self.pk_index()?;
+            let linked = many.link.owners_linked_to(&filter.value)?;
+            return Ok(match filter.op {
+                FilterOp::Equal => self.columns[pk].in_subquery(linked),
+                _ => {
+                    return Err(AdminError::BadInput {
+                        field: filter.field.clone(),
+                        message: "only `=` works for a many-to-many field".into(),
+                    });
+                }
+            });
+        }
         let i = self
             .fields
             .iter()
@@ -196,10 +325,27 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 *value = serde_json::Value::Bool(n.as_i64() != Some(0));
                 continue;
             }
+            // Decimals are exact text everywhere, whatever the driver returned.
+            if field.kind == FieldKind::Decimal {
+                if let serde_json::Value::Number(n) = value {
+                    *value = serde_json::Value::String(n.to_string());
+                }
+                continue;
+            }
             let serde_json::Value::String(text) = value else {
                 continue;
             };
             match field.kind {
+                // Read as text on SQLite; see `reader`.
+                FieldKind::Float => {
+                    if let Some(n) = text
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(serde_json::Number::from_f64)
+                    {
+                        *value = serde_json::Value::Number(n);
+                    }
+                }
                 FieldKind::DateTime => {
                     if let Some(iso) = iso_datetime(ty, text) {
                         *text = iso;
@@ -215,6 +361,33 @@ impl<E: EntityTrait> SeaOrmResource<E> {
             }
         }
         row
+    }
+
+    /// The rows of `E`, ready to be read as JSON.
+    ///
+    /// On SQLite, floating-point and decimal columns are read as text: the driver's JSON
+    /// conversion would otherwise take every `REAL` for a 32-bit float and lose digits
+    /// (`9.95` read back as `9.949999809265137`). [`Self::normalise`] turns them back.
+    fn reader(&self) -> sea_orm::Select<E> {
+        let lossy = |kind: FieldKind| matches!(kind, FieldKind::Float | FieldKind::Decimal);
+        if self.db.get_database_backend() != DbBackend::Sqlite
+            || !self.fields.iter().any(|f| lossy(f.kind))
+        {
+            return E::find();
+        }
+        use sea_orm::sea_query::ExprTrait;
+        let mut select = E::find().select_only();
+        for (field, column) in self.fields.iter().zip(&self.columns) {
+            select = if lossy(field.kind) {
+                select.column_as(
+                    Expr::col((E::default(), *column)).cast_as(Alias::new("text")),
+                    column.as_str(),
+                )
+            } else {
+                select.column(*column)
+            };
+        }
+        select
     }
 
     fn pk_index(&self) -> Result<usize, AdminError> {
@@ -257,8 +430,25 @@ impl<E: EntityTrait> SeaOrmResource<E> {
             };
             let ty = &self.types[i];
             let is_text = matches!(field.kind, FieldKind::Text | FieldKind::LongText);
+            let generated;
             let provided = match input.get(&field.name) {
                 None if mode == WriteMode::Patch => continue,
+                // A new row with a UUID key and none given gets a fresh one.
+                None | Some(None)
+                    if creating && field.primary_key && field.kind == FieldKind::Uuid =>
+                {
+                    generated = Uuid::new_v4().to_string();
+                    Some(generated.as_str())
+                }
+                Some(Some(text))
+                    if creating
+                        && field.primary_key
+                        && field.kind == FieldKind::Uuid
+                        && text.trim().is_empty() =>
+                {
+                    generated = Uuid::new_v4().to_string();
+                    Some(generated.as_str())
+                }
                 // Let the database apply its declared default on insert.
                 None if creating && (field.nullable || self.has_default[i]) => continue,
                 None | Some(None) => None,
@@ -266,6 +456,12 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 Some(Some(text)) if text.is_empty() && !is_text => None,
                 Some(Some(text)) => Some(text.as_str()),
             };
+            if let Some(text) = provided
+                && !field.choices.is_empty()
+                && !field.choices.iter().any(|c| c == text)
+            {
+                return Err(bad(format!("must be one of: {}", field.choices.join(", "))));
+            }
             let value = match provided {
                 Some(text) => parse_value(ty, Some(text)).map_err(bad)?,
                 None if field.nullable => parse_value(ty, None).map_err(bad)?,
@@ -300,8 +496,22 @@ where
         &self.options
     }
 
+    fn links(&self) -> Vec<LinkField> {
+        self.options
+            .many_to_many
+            .iter()
+            .filter_map(|many| {
+                Some(LinkField {
+                    name: many.name.clone(),
+                    label: many.label.clone(),
+                    model: many.link.target()?.model.clone(),
+                })
+            })
+            .collect()
+    }
+
     async fn list(&self, query: &ListQuery) -> Result<Page, AdminError> {
-        let mut select = E::find();
+        let mut select = self.reader();
         if let Some(term) = query.search.as_deref().filter(|t| !t.is_empty()) {
             let mut any = Condition::any();
             let mut searchable = 0;
@@ -351,6 +561,7 @@ where
                 _ => None,
             })
             .collect();
+        let rows = self.with_links(rows).await?;
         Ok(Page { rows, total })
     }
 
@@ -360,15 +571,16 @@ where
             Err(AdminError::NotFound(_)) => return Ok(None),
             Err(other) => return Err(other),
         };
-        let row = E::find()
+        let row = self
+            .reader()
             .filter(column.eq(value))
             .into_json()
             .one(&self.db)
             .await?;
-        Ok(match row {
-            Some(serde_json::Value::Object(map)) => Some(self.normalise(map)),
-            _ => None,
-        })
+        let Some(serde_json::Value::Object(map)) = row else {
+            return Ok(None);
+        };
+        Ok(self.with_links(vec![self.normalise(map)]).await?.pop())
     }
 
     async fn get_many(&self, ids: &[String]) -> Result<Vec<Row>, AdminError> {
@@ -381,7 +593,8 @@ where
         if values.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = E::find()
+        let rows = self
+            .reader()
             .filter(self.columns[i].is_in(values))
             .into_json()
             .all(&self.db)
@@ -429,9 +642,18 @@ where
     async fn create(&self, input: &Input) -> Result<Option<Row>, AdminError> {
         let mut model = <E::ActiveModel as ActiveModelTrait>::default();
         self.apply_input(&mut model, input, true, WriteMode::Replace)?;
-        let saved = model.insert(&self.db).await?;
-        let Some(i) = self.pk else { return Ok(None) };
-        match id_text(&saved.get(self.columns[i])) {
+        // One transaction, so a row is never left without the links it was saved with.
+        let txn = self.db.begin().await?;
+        let links = self.link_input(&txn, input).await?;
+        let saved = model.insert(&txn).await.map_err(db_error)?;
+        let id = self.pk.and_then(|i| id_text(&saved.get(self.columns[i])));
+        if let Some(id) = &id {
+            for (many, targets) in &links {
+                many.link.replace(&txn, id, targets).await?;
+            }
+        }
+        txn.commit().await?;
+        match id {
             Some(id) => self.get(&id).await,
             None => Ok(None),
         }
@@ -439,27 +661,44 @@ where
 
     async fn update(&self, id: &str, input: &Input, mode: WriteMode) -> Result<(), AdminError> {
         let (column, value) = self.pk_value(id)?;
-        let mut model = <E::ActiveModel as ActiveModelTrait>::default();
-        model.try_set(column, value)?;
+        let txn = self.db.begin().await?;
+        // The whole record, so save hooks see every value, not only the changed ones.
+        let current = E::find()
+            .filter(column.eq(value))
+            .one(&txn)
+            .await?
+            .ok_or_else(|| AdminError::NotFound(format!("{} `{id}`", self.slug)))?;
+        let mut model = current.into_active_model();
         self.apply_input(&mut model, input, false, mode)?;
-        match model.update(&self.db).await {
-            Ok(_) => Ok(()),
-            Err(DbErr::RecordNotUpdated) => {
-                Err(AdminError::NotFound(format!("{} `{id}`", self.slug)))
-            }
-            Err(other) => Err(other.into()),
+        let links = self.link_input(&txn, input).await?;
+        if model.is_changed() {
+            model.update(&txn).await.map_err(db_error)?;
         }
+        for (many, targets) in &links {
+            many.link.replace(&txn, id, targets).await?;
+        }
+        txn.commit().await?;
+        Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), AdminError> {
         let (column, value) = self.pk_value(id)?;
-        let result = E::delete_many()
+        let txn = self.db.begin().await?;
+        let current = E::find()
             .filter(column.eq(value))
-            .exec(&self.db)
-            .await?;
-        if result.rows_affected == 0 {
-            return Err(AdminError::NotFound(format!("{} `{id}`", self.slug)));
+            .one(&txn)
+            .await?
+            .ok_or_else(|| AdminError::NotFound(format!("{} `{id}`", self.slug)))?;
+        for many in &self.options.many_to_many {
+            many.link.clear(&txn, id).await?;
         }
+        // Through the model, so its delete hooks run.
+        current
+            .into_active_model()
+            .delete(&txn)
+            .await
+            .map_err(db_error)?;
+        txn.commit().await?;
         Ok(())
     }
 }
@@ -522,6 +761,7 @@ fn id_text(value: &Value) -> Option<String> {
         Value::Unsigned(Some(n)) => Some(n.to_string()),
         Value::BigUnsigned(Some(n)) => Some(n.to_string()),
         Value::String(Some(text)) => Some(text.clone()),
+        Value::Uuid(Some(id)) => Some(id.to_string()),
         _ => None,
     }
 }
@@ -554,7 +794,74 @@ fn kind_of(ty: &ColumnType) -> FieldKind {
         ColumnType::Date => FieldKind::Date,
         ColumnType::Time => FieldKind::Time,
         ColumnType::Json | ColumnType::JsonBinary => FieldKind::Json,
+        ColumnType::Uuid => FieldKind::Uuid,
+        ColumnType::Decimal(_) | ColumnType::Money(_) => FieldKind::Decimal,
+        ColumnType::Enum { .. } => FieldKind::Choice,
+        ColumnType::Array(inner) if array_type(inner).is_some() => FieldKind::List,
         _ => FieldKind::Other,
+    }
+}
+
+/// The element type of an editable array column.
+fn array_type(inner: &ColumnType) -> Option<ArrayType> {
+    Some(match inner {
+        ColumnType::Char(_) | ColumnType::String(_) | ColumnType::Text => ArrayType::String,
+        ColumnType::SmallInteger => ArrayType::SmallInt,
+        ColumnType::Integer => ArrayType::Int,
+        ColumnType::BigInteger => ArrayType::BigInt,
+        ColumnType::Float => ArrayType::Float,
+        ColumnType::Double => ArrayType::Double,
+        ColumnType::Boolean => ArrayType::Bool,
+        ColumnType::Uuid => ArrayType::Uuid,
+        ColumnType::Date => ArrayType::ChronoDate,
+        _ => return None,
+    })
+}
+
+/// A list typed into a form or sent to the API: a JSON array, or one value per line.
+fn list_items(text: &str) -> Result<Vec<String>, String> {
+    let text = text.trim();
+    if text.starts_with('[') {
+        let items: Vec<serde_json::Value> =
+            serde_json::from_str(text).map_err(|e| format!("not a JSON list: {e}"))?;
+        return Ok(items
+            .into_iter()
+            .map(|item| match item {
+                serde_json::Value::String(text) => text,
+                other => other.to_string(),
+            })
+            .collect());
+    }
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Ids sent for a many-to-many field: a JSON array, or a comma-separated list.
+fn parse_ids(text: &str) -> Result<Vec<String>, String> {
+    let mut ids = if text.starts_with('[') {
+        list_items(text)?
+    } else {
+        text.split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// A JSON value as the text used for ids in URLs and forms.
+fn text_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
     }
 }
 
@@ -644,6 +951,254 @@ fn parse_value(ty: &ColumnType, raw: Option<&str>) -> Result<Value, String> {
             })
             .transpose()?,
         ),
+        ColumnType::Uuid => Value::Uuid(
+            raw.map(|t| {
+                Uuid::parse_str(t.trim()).map_err(|_| format!("`{}` is not a UUID", t.trim()))
+            })
+            .transpose()?,
+        ),
+        ColumnType::Decimal(_) | ColumnType::Money(_) => Value::Decimal(
+            raw.map(|t| {
+                Decimal::from_str(t.trim()).map_err(|_| format!("`{}` is not a number", t.trim()))
+            })
+            .transpose()?,
+        ),
+        // The model's own enum type turns the text into its value, refusing unknown ones.
+        ColumnType::Enum { .. } => Value::String(raw.map(str::to_owned)),
+        ColumnType::Array(inner) => {
+            let element =
+                array_type(inner).ok_or_else(|| format!("lists of {inner:?} are not editable"))?;
+            let items = raw
+                .map(|text| {
+                    list_items(text)?
+                        .iter()
+                        .map(|item| parse_value(inner, Some(item)))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            Value::Array(element, items.map(Box::new))
+        }
         other => return Err(format!("column type {other:?} is not editable")),
     })
+}
+
+// ---- many-to-many --------------------------------------------------------------------------
+
+/// The table that links two models, behind a many-to-many field.
+#[async_trait]
+pub(crate) trait LinkTable: Send + Sync {
+    /// What the link points to: the other model and its key column.
+    fn target(&self) -> Option<&Reference>;
+    /// The link table, for migrations.
+    fn table(&self) -> Result<EntityTable, String>;
+    /// Adds the link table to a schema sync.
+    fn register(&self, builder: SchemaBuilder) -> SchemaBuilder;
+    /// `(owner id, target id)` for every link of these owners.
+    async fn pairs(
+        &self,
+        db: &DatabaseConnection,
+        owners: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, AdminError>;
+    /// Makes `targets` the only links of `owner`.
+    async fn replace(
+        &self,
+        txn: &DatabaseTransaction,
+        owner: &str,
+        targets: &[String],
+    ) -> Result<(), AdminError>;
+    /// Removes every link of `owner`.
+    async fn clear(&self, txn: &DatabaseTransaction, owner: &str) -> Result<(), AdminError>;
+    /// Those of `targets` that do not exist.
+    async fn missing(
+        &self,
+        txn: &DatabaseTransaction,
+        targets: &[String],
+    ) -> Result<Vec<String>, AdminError>;
+    /// A query for the owners linked to `target`.
+    fn owners_linked_to(&self, target: &str) -> Result<SelectStatement, AdminError>;
+}
+
+struct Junction<J: EntityTrait> {
+    from: J::Column,
+    to: J::Column,
+    from_type: ColumnType,
+    to_type: ColumnType,
+    target: Option<Reference>,
+    entity: PhantomData<fn() -> J>,
+}
+
+impl<J: EntityTrait> Junction<J> {
+    fn values(&self, ty: &ColumnType, ids: &[String]) -> Vec<Value> {
+        // An id that does not parse names nothing.
+        ids.iter()
+            .filter_map(|id| parse_value(ty, Some(id)).ok())
+            .collect()
+    }
+
+    fn owner(&self, owner: &str) -> Result<Value, AdminError> {
+        parse_value(&self.from_type, Some(owner))
+            .map_err(|_| AdminError::NotFound(format!("`{owner}`")))
+    }
+}
+
+#[async_trait]
+impl<J> LinkTable for Junction<J>
+where
+    J: EntityTrait + Default,
+    J::ActiveModel: ActiveModelBehavior + Send,
+{
+    fn target(&self) -> Option<&Reference> {
+        self.target.as_ref()
+    }
+
+    fn table(&self) -> Result<EntityTable, String> {
+        crate::migrations::table_of::<J>()
+    }
+
+    fn register(&self, builder: SchemaBuilder) -> SchemaBuilder {
+        builder.register(J::default())
+    }
+
+    async fn pairs(
+        &self,
+        db: &DatabaseConnection,
+        owners: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, AdminError> {
+        let values = self.values(&self.from_type, owners);
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = J::find()
+            .filter(self.from.is_in(values))
+            .order_by_asc(self.to)
+            .into_json()
+            .all(db)
+            .await?;
+        let (from, to) = (self.from.as_str(), self.to.as_str());
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let owner = text_of(row.get(from));
+                let target = row.get(to)?.clone();
+                Some((owner, target))
+            })
+            .collect())
+    }
+
+    async fn replace(
+        &self,
+        txn: &DatabaseTransaction,
+        owner: &str,
+        targets: &[String],
+    ) -> Result<(), AdminError> {
+        self.clear(txn, owner).await?;
+        let owner = self.owner(owner)?;
+        let mut models = Vec::new();
+        for target in self.values(&self.to_type, targets) {
+            let mut model = <J::ActiveModel as ActiveModelTrait>::default();
+            model.try_set(self.from, owner.clone())?;
+            model.try_set(self.to, target)?;
+            models.push(model);
+        }
+        if !models.is_empty() {
+            J::insert_many(models).exec(txn).await?;
+        }
+        Ok(())
+    }
+
+    async fn clear(&self, txn: &DatabaseTransaction, owner: &str) -> Result<(), AdminError> {
+        J::delete_many()
+            .filter(self.from.eq(self.owner(owner)?))
+            .exec(txn)
+            .await?;
+        Ok(())
+    }
+
+    async fn missing(
+        &self,
+        txn: &DatabaseTransaction,
+        targets: &[String],
+    ) -> Result<Vec<String>, AdminError> {
+        let Some(target) = &self.target else {
+            return Ok(Vec::new());
+        };
+        use sea_orm::sea_query::ExprTrait;
+        let mut missing = Vec::new();
+        for id in targets {
+            let Ok(value) = parse_value(&self.to_type, Some(id)) else {
+                missing.push(id.clone());
+                continue;
+            };
+            let query = Query::select()
+                .expr(Expr::val(1))
+                .from(Alias::new(&target.model))
+                .and_where(Expr::col(Alias::new(&target.column)).eq(value))
+                .limit(1)
+                .to_owned();
+            let backend = txn.get_database_backend();
+            if txn.query_one_raw(backend.build(&query)).await?.is_none() {
+                missing.push(id.clone());
+            }
+        }
+        Ok(missing)
+    }
+
+    fn owners_linked_to(&self, target: &str) -> Result<SelectStatement, AdminError> {
+        use sea_orm::sea_query::ExprTrait;
+        let value =
+            parse_value(&self.to_type, Some(target)).map_err(|message| AdminError::BadInput {
+                field: self.to.as_str().to_owned(),
+                message,
+            })?;
+        Ok(Query::select()
+            .column(self.from)
+            .from(J::default())
+            .and_where(Expr::col(self.to).eq(value))
+            .to_owned())
+    }
+}
+
+impl ModelOptions {
+    /// A many-to-many field, kept in the link table `J`: `from` is its column pointing to
+    /// this model, `to` its column pointing to the other one (each with a `belongs_to`
+    /// relation in `J`). The admin offers checkboxes of the other model's rows, the list can
+    /// show and filter by it, and the API reads and writes it as a list of ids:
+    ///
+    /// ```ignore
+    /// ModelOptions::new().many_to_many::<post_tag::Entity>("tags", post_tag::Column::PostId, post_tag::Column::TagId)
+    /// ```
+    ///
+    /// The link table's own table is created by migrations with this model's.
+    #[must_use]
+    pub fn many_to_many<J>(
+        mut self,
+        name: impl Into<String>,
+        from: J::Column,
+        to: J::Column,
+    ) -> Self
+    where
+        J: EntityTrait + Default,
+        J::ActiveModel: ActiveModelBehavior + Send,
+    {
+        let table = J::default().table_name().to_owned();
+        let target = references::<J>(&table)
+            .into_iter()
+            .find(|(column, _)| column == to.as_str())
+            .map(|(_, reference)| reference);
+        let name = name.into();
+        let link = Junction::<J> {
+            from,
+            to,
+            from_type: from.def().get_column_type().clone(),
+            to_type: to.def().get_column_type().clone(),
+            target,
+            entity: PhantomData,
+        };
+        self.many_to_many.push(ManyToMany {
+            label: humanize(&name),
+            name,
+            link: Arc::new(link),
+        });
+        self
+    }
 }

@@ -103,8 +103,10 @@ enum Generate {
         /// Model name in PascalCase, e.g. `BlogPost`.
         name: String,
         /// Fields as `name:type`, with `?` for nullable. Types: string, text, int, bigint,
-        /// float, bool, datetime, date, json, and `references` for a foreign key to another
-        /// model (`author:references`, or `editor:references=author` to name it differently).
+        /// float, bool, datetime, date, json, decimal, uuid, file, `references` for a foreign
+        /// key to another model (`author:references`, or `editor:references=author`), `many`
+        /// for a many-to-many field (`tags:many`, or `readers:many=user`), and `owner` for the
+        /// account a row belongs to.
         fields: Vec<String>,
     },
 }
@@ -366,8 +368,11 @@ gets a database table, admin pages and REST API endpoints.
 
 1. Add a model: `cadmus generate model Book title:string isbn:string? author:references`
    (generate a referenced model before the models that point to it). Field types: string,
-   text, int, bigint, float, bool, datetime, date, json, file, references; `?` makes a field
-   optional.
+   text, int, bigint, float, bool, datetime, date, json, decimal, uuid, file, references,
+   many (`tags:many`, many-to-many), owner (`owner:owner`, rows belong to accounts); `?` makes
+   a field optional.
+   Checks on save go in the model's `ActiveModelBehavior` (`before_save`), returning
+   `cadmus::invalid("field", "message")` to refuse a value.
 2. Or edit a model file by hand. Mark a renamed field `#[sea_orm(renamed_from = "old_name")]`
    so its data is kept. To remove a model, `cadmus delete model Book --yes` (models that
    reference it first); the next migration drops its table and rows.
@@ -504,6 +509,11 @@ struct FieldSpec {
     references: Option<String>,
     /// Holds an uploaded file's id, shown as a file picker in the admin.
     file: bool,
+    /// Holds the username of the account the row belongs to (`ModelOptions::owned_by`).
+    owner: bool,
+    /// A many-to-many field: the module of the model it links to. Not a column; it gets a
+    /// link table of its own.
+    many: Option<String>,
 }
 
 /// `blog_post` -> `BlogPost`.
@@ -574,6 +584,50 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             nullable,
             references: Some(target.to_owned()),
             file: false,
+            owner: false,
+            many: None,
+        });
+    }
+    // `tags:many` links to the model `tag`; `readers:many=user` names it.
+    let many = match kind.split_once('=') {
+        Some(("many", target)) => Some(target.to_owned()),
+        None if kind == "many" => Some(name.strip_suffix('s').unwrap_or(name).to_owned()),
+        _ => None,
+    };
+    if let Some(target) = many {
+        let valid_target = target
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+            && target
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !valid_target || nullable {
+            return Err(format!(
+                "`{spec}`: name the model to link to in snake_case, e.g. tags:many or readers:many=user"
+            ));
+        }
+        return Ok(FieldSpec {
+            name: name.to_owned(),
+            rust_type: "",
+            attribute: None,
+            nullable: false,
+            references: None,
+            file: false,
+            owner: false,
+            many: Some(target),
+        });
+    }
+    if kind == "owner" {
+        return Ok(FieldSpec {
+            name: name.to_owned(),
+            rust_type: "String",
+            attribute: None,
+            nullable: false,
+            references: None,
+            file: false,
+            owner: true,
+            many: None,
         });
     }
     // An uploaded file: its id, always optional, so rows can exist before a file is picked.
@@ -585,6 +639,8 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             nullable: true,
             references: None,
             file: true,
+            owner: false,
+            many: None,
         });
     }
     let (rust_type, attribute) = match kind {
@@ -597,9 +653,14 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         "datetime" => ("DateTime", None),
         "date" => ("Date", None),
         "json" => ("Json", None),
+        "decimal" => (
+            "Decimal",
+            Some("#[sea_orm(column_type = \"Decimal(Some((12, 2)))\")]"),
+        ),
+        "uuid" => ("Uuid", None),
         other => {
             return Err(format!(
-                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, file, references)"
+                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, decimal, uuid, file, references, many, owner)"
             ));
         }
     };
@@ -610,6 +671,8 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         nullable,
         references: None,
         file: false,
+        owner: false,
+        many: None,
     })
 }
 
@@ -663,7 +726,7 @@ fn render_model(table: &str, fields: &[FieldSpec]) -> String {
         ", Eq"
     };
     let mut body = String::new();
-    for field in fields {
+    for field in fields.iter().filter(|f| f.many.is_none()) {
         if let Some(attribute) = field.attribute {
             let _ = writeln!(body, "    {attribute}");
         }
@@ -712,6 +775,49 @@ pub struct Model {{
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {relations}
 
+// Checks and changes made on every save or delete (`before_save`, `before_delete`...) go
+// here; see "Checks and hooks" in the Models guide.
+impl ActiveModelBehavior for ActiveModel {{}}
+"#
+    )
+}
+
+/// The table behind a many-to-many field: one row per link, removed with either side.
+fn render_link_table(table: &str, from: &str, to_column: &str, target: &str) -> String {
+    let from_col = pascal_case(&format!("{from}_id"));
+    let to_col = pascal_case(to_column);
+    format!(
+        r#"//! Links for a many-to-many field: one row per pair. Managed by the admin and the API.
+
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[sea_orm(table_name = "{table}")]
+pub struct Model {{
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub {from}_id: i32,
+    pub {to_column}: i32,
+}}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {{
+    #[sea_orm(
+        belongs_to = "super::{from}::Entity",
+        from = "Column::{from_col}",
+        to = "super::{from}::Column::Id",
+        on_delete = "Cascade"
+    )]
+    From,
+    #[sea_orm(
+        belongs_to = "super::{target}::Entity",
+        from = "Column::{to_col}",
+        to = "super::{target}::Column::Id",
+        on_delete = "Cascade"
+    )]
+    To,
+}}
+
 impl ActiveModelBehavior for ActiveModel {{}}
 "#
     )
@@ -757,21 +863,60 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<Strin
             ));
         }
     }
+    // Each many-to-many field gets a link table, `<model>_<field>`.
+    let mut link_tables = Vec::new();
+    for field in &parsed {
+        let Some(target) = &field.many else {
+            continue;
+        };
+        if *target != module && !project.join(format!("src/models/{target}.rs")).is_file() {
+            return Err(format!(
+                "there is no model `{target}` to link to: generate it first (src/models/{target}.rs)"
+            ));
+        }
+        let table = format!("{module}_{}", field.name);
+        let path = project.join(format!("src/models/{table}.rs"));
+        if path.exists() || existing.contains(&format!("pub mod {table};")) {
+            return Err(format!("{} already exists", path.display()));
+        }
+        // A model linking to itself needs two different column names.
+        let to_column = if *target == module {
+            format!("linked_{target}_id")
+        } else {
+            format!("{target}_id")
+        };
+        link_tables.push((field.name.clone(), table, path, to_column, target.clone()));
+    }
 
     let files: Vec<String> = parsed
         .iter()
         .filter(|f| f.file)
         .map(|f| format!("{:?}", f.name))
         .collect();
-    let file_option = if files.is_empty() {
+    let mut file_option = if files.is_empty() {
         String::new()
     } else {
         format!(".file_fields([{}])", files.join(", "))
     };
+    if let Some(owner) = parsed.iter().find(|f| f.owner) {
+        let _ = write!(file_option, ".owned_by({:?})", owner.name);
+    }
+    for (field, table, _, to_column, _) in &link_tables {
+        let _ = write!(
+            file_option,
+            ".many_to_many::<{table}::Entity>({field:?}, {table}::Column::{}, {table}::Column::{})",
+            pascal_case(&format!("{module}_id")),
+            pascal_case(to_column)
+        );
+    }
+    let link_modules: String = link_tables
+        .iter()
+        .map(|(_, table, ..)| format!("pub mod {table};\n"))
+        .collect();
     let updated = existing
         .replace(
             MODULES_MARKER,
-            &format!("pub mod {module};\n{MODULES_MARKER}"),
+            &format!("pub mod {module};\n{link_modules}{MODULES_MARKER}"),
         )
         .replace(
             MODELS_MARKER,
@@ -781,12 +926,16 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<Strin
             ),
         );
     write_new(&file, &render_model(&module, &parsed))?;
+    for (_, table, path, to_column, target) in &link_tables {
+        write_new(path, &render_link_table(table, &module, to_column, target))?;
+    }
     std::fs::write(&index, updated).map_err(|e| format!("{}: {e}", index.display()))?;
 
-    let mut report = format!(
-        "created {}\nregistered {name} in src/models/mod.rs\n",
-        file.display()
-    );
+    let mut report = format!("created {}\n", file.display());
+    for (field, _, path, ..) in &link_tables {
+        let _ = writeln!(report, "created {} for the field `{field}`", path.display());
+    }
+    let _ = writeln!(report, "registered {name} in src/models/mod.rs");
     if !files.is_empty() {
         report.push_str("file fields need uploads: set uploads.storage_url in src/settings.rs\n");
     }
@@ -805,6 +954,8 @@ struct ModelDeletion {
     updated_index: String,
     /// The registration listed file fields, whose uploads stay in storage.
     had_files: bool,
+    /// Link tables of the model's many-to-many fields, deleted with it.
+    link_files: Vec<PathBuf>,
 }
 
 /// Checks that a model can be removed cleanly: its file exists, both its entries in
@@ -826,12 +977,28 @@ fn plan_model_deletion(project: &Path, name: &str) -> Result<ModelDeletion, Stri
             "there is no model `{name}`: src/models/{module}.rs does not exist"
         ));
     }
-    let (updated_index, registration) = unregister(&existing, &module).ok_or_else(|| {
+    let (mut updated_index, registration) = unregister(&existing, &module).ok_or_else(|| {
         format!(
             "src/models/mod.rs: could not find both `pub mod {module};` and \
              `.model::<{module}::Entity>(...)`; remove them and src/models/{module}.rs by hand"
         )
     })?;
+    // The link tables of its many-to-many fields go with it.
+    let mut link_files = Vec::new();
+    for (at, pattern) in registration.match_indices(".many_to_many::<") {
+        let rest = &registration[at + pattern.len()..];
+        let Some((link, _)) = rest.split_once("::Entity>") else {
+            continue;
+        };
+        let link = link.trim();
+        if let Some((start, end)) = declaration(&updated_index, link) {
+            updated_index = cut(&updated_index, start, end);
+        }
+        let path = project.join(format!("src/models/{link}.rs"));
+        if path.is_file() {
+            link_files.push(path);
+        }
+    }
 
     // Anything still naming the module would stop the project from compiling.
     let mut uses = Vec::new();
@@ -844,7 +1011,11 @@ fn plan_model_deletion(project: &Path, name: &str) -> Result<ModelDeletion, Stri
     files.sort();
     for path in files {
         // Migrations describe tables on their own and never name a model.
-        if path == file || path == index || path.starts_with(src.join("migrations")) {
+        if path == file
+            || path == index
+            || link_files.contains(&path)
+            || path.starts_with(src.join("migrations"))
+        {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -865,6 +1036,7 @@ fn plan_model_deletion(project: &Path, name: &str) -> Result<ModelDeletion, Stri
     Ok(ModelDeletion {
         name: name.to_owned(),
         had_files: registration.contains(".file_fields("),
+        link_files,
         module,
         file,
         index,
@@ -879,11 +1051,12 @@ fn delete_model(plan: &ModelDeletion) -> Result<String, String> {
     std::fs::write(&plan.index, &plan.updated_index)
         .map_err(|e| format!("{}: {e}", plan.index.display()))?;
     std::fs::remove_file(&plan.file).map_err(|e| format!("{}: {e}", plan.file.display()))?;
-    let mut report = format!(
-        "deleted {}\nremoved {} from src/models/mod.rs\n",
-        plan.file.display(),
-        plan.name
-    );
+    let mut report = format!("deleted {}\n", plan.file.display());
+    for link in &plan.link_files {
+        std::fs::remove_file(link).map_err(|e| format!("{}: {e}", link.display()))?;
+        let _ = writeln!(report, "deleted {}", link.display());
+    }
+    let _ = writeln!(report, "removed {} from src/models/mod.rs", plan.name);
     if plan.had_files {
         report.push_str("files uploaded to it stay in storage\n");
     }
@@ -893,23 +1066,16 @@ fn delete_model(plan: &ModelDeletion) -> Result<String, String> {
          the migration drops the table `{}` and every row in it",
         plan.module
     );
+    if !plan.link_files.is_empty() {
+        report.push_str(", with its many-to-many links");
+    }
     Ok(report)
 }
 
 /// `src/models/mod.rs` without `pub mod <module>;` and `.model::<<module>::Entity>(...)`,
 /// with the removed registration; `None` if either is missing.
 fn unregister(source: &str, module: &str) -> Option<(String, String)> {
-    let declaration = format!("pub mod {module};");
-    let mut offset = 0;
-    let mut declared = None;
-    for line in source.split_inclusive('\n') {
-        if line.trim() == declaration {
-            let start = offset + (line.len() - line.trim_start().len());
-            declared = Some((start, start + declaration.len()));
-        }
-        offset += line.len();
-    }
-    let declared = declared?;
+    let declared = declaration(source, module)?;
 
     let needle = format!(".model::<{module}::Entity>");
     let start = source.find(&needle)?;
@@ -959,6 +1125,21 @@ fn unregister(source: &str, module: &str) -> Option<(String, String)> {
     };
     let text = cut(source, second.0, second.1);
     Some((cut(&text, first.0, first.1), removed))
+}
+
+/// Where `pub mod <module>;` is in `source`.
+fn declaration(source: &str, module: &str) -> Option<(usize, usize)> {
+    let declaration = format!("pub mod {module};");
+    let mut offset = 0;
+    let mut declared = None;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == declaration {
+            let start = offset + (line.len() - line.trim_start().len());
+            declared = Some((start, start + declaration.len()));
+        }
+        offset += line.len();
+    }
+    declared
 }
 
 /// Removes `start..end`, and its whole line when nothing else is on it.
@@ -1036,6 +1217,8 @@ mod tests {
                 nullable: false,
                 references: None,
                 file: false,
+                owner: false,
+                many: None,
             }
         );
         // A file is an optional id, registered as a file field.
@@ -1298,6 +1481,61 @@ mod tests {
 
         // In the right order, everything comes back out: mod.rs is as `cadmus new` wrote it.
         delete_model(&plan_model_deletion(&root, "Author").unwrap()).unwrap();
+        assert_eq!(std::fs::read_to_string(&index_path).unwrap(), fresh);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn many_to_many_owner_decimal_and_uuid_fields() {
+        let dir = temp("many");
+        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
+        let root = dir.join("blog");
+        let index_path = root.join("src/models/mod.rs");
+        let fresh = std::fs::read_to_string(&index_path).unwrap();
+        generate_model(&root, "Tag", &["name:string".into()]).unwrap();
+        // The target must exist first.
+        assert!(generate_model(&root, "Post", &["labels:many=label".into()]).is_err());
+        let report = generate_model(
+            &root,
+            "Post",
+            &[
+                "title:string".into(),
+                "tags:many".into(),
+                "owner:owner".into(),
+                "price:decimal".into(),
+                "code:uuid?".into(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            report.contains("post_tags.rs for the field `tags`"),
+            "{report}"
+        );
+        let model = std::fs::read_to_string(root.join("src/models/post.rs")).unwrap();
+        assert!(model.contains("pub owner: String,"), "{model}");
+        assert!(model.contains("pub price: Decimal,"));
+        assert!(model.contains("pub code: Option<Uuid>,"));
+        assert!(
+            !model.contains("tags"),
+            "a many-to-many field is not a column"
+        );
+        let link = std::fs::read_to_string(root.join("src/models/post_tags.rs")).unwrap();
+        assert!(link.contains("pub post_id: i32,") && link.contains("pub tag_id: i32,"));
+        assert!(link.contains("belongs_to = \"super::tag::Entity\""));
+        let index = std::fs::read_to_string(&index_path).unwrap();
+        assert!(index.contains("pub mod post_tags;"));
+        assert!(index.contains(".owned_by(\"owner\")"), "{index}");
+        assert!(index.contains(
+            ".many_to_many::<post_tags::Entity>(\"tags\", post_tags::Column::PostId, post_tags::Column::TagId)"
+        ));
+
+        // The tag is still linked to, so it stays; the post takes its link table with it.
+        let error = plan_model_deletion(&root, "Tag").err().unwrap();
+        assert!(error.contains("src/models/post_tags.rs"), "{error}");
+        let report = delete_model(&plan_model_deletion(&root, "Post").unwrap()).unwrap();
+        assert!(report.contains("post_tags.rs"), "{report}");
+        assert!(!root.join("src/models/post_tags.rs").exists());
+        delete_model(&plan_model_deletion(&root, "Tag").unwrap()).unwrap();
         assert_eq!(std::fs::read_to_string(&index_path).unwrap(), fresh);
         std::fs::remove_dir_all(&dir).unwrap();
     }

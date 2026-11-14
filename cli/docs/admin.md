@@ -74,7 +74,12 @@ Actions need the change permission, and at most 1000 rows are done at a time.
 - Buttons appear only for what the account may do; a record it cannot change opens
   read-only.
 - Deleting asks for confirmation; saving confirms with a short notice.
-- Links to other models are dropdowns of the related records (see [Relations](relations.md)).
+- Links to other models are dropdowns of the related records, and many-to-many fields
+  checkboxes (see [Relations](relations.md)).
+- A record's page lists the records of other models that point to it, with links to see
+  them all and to add one.
+- Fields with choices, and database enums, are dropdowns; lists (PostgreSQL arrays) take one
+  item per line; a UUID primary key left empty is made up.
 - File fields have a file picker, a preview for images, and "Remove the file" (see
   [File uploads](file-uploads.md)).
 - Invalid input is shown next to the field, and nothing is saved.

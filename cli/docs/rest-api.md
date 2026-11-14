@@ -65,7 +65,12 @@ curl -X POST http://localhost:3000/api/post \
 ```
 
 - Dates and times are ISO 8601: `"2026-03-04"`, `"2026-03-04T05:06:07"`.
-- Links to other models are sent as the id: `"author_id": 3`.
+- Links to other models are sent as the id: `"author_id": 3`; many-to-many fields as a list
+  of ids: `"tags": [1, 3]` (see [Relations](relations.md#many-to-many)).
+- Decimals are read and written as text, so no digit is lost: `"price": "19.99"`. UUIDs are
+  text too; a UUID primary key left out is made up.
+- Lists (PostgreSQL arrays) are JSON arrays: `"labels": ["red", "green"]`.
+- A field with choices refuses any other value.
 - Fields that are unknown, hidden or read-only are refused rather than silently ignored.
 - `PUT` needs every required field; `PATCH` changes only what is sent.
 

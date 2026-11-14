@@ -427,11 +427,23 @@ impl App {
         E::Model: IntoActiveModel<E::ActiveModel>,
         E::ActiveModel: ActiveModelBehavior + Send,
     {
+        // Link tables of many-to-many fields come after the model, as they point to it.
+        let links: Vec<_> = options
+            .many_to_many
+            .iter()
+            .map(|m| m.link.clone())
+            .collect();
         let resource = SeaOrmResource::<E>::new(self.db.clone()).options(options);
         self.resources.push(Arc::new(resource));
         self.schema
             .push(Box::new(|builder| builder.register(E::default())));
         self.tables.push(Box::new(table_of::<E>));
+        for link in links {
+            let schema_link = link.clone();
+            self.schema
+                .push(Box::new(move |builder| schema_link.register(builder)));
+            self.tables.push(Box::new(move || link.table()));
+        }
         self
     }
 

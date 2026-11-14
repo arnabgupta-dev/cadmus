@@ -94,8 +94,10 @@ cadmus generate model Post title:string body:text published:bool views:int
 ```
 
 This writes `src/models/post.rs` and registers it. The field types are `string`, `text`,
-`int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`, `file` (an uploaded file) and
-`references` (a link to another model, see [Relations](#relations)). Add `?` to make a field
+`int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`, `decimal` (an exact number such
+as a price), `uuid`, `file` (an uploaded file), `references` (a link to another model, see
+[Relations](#relations)), `many` (links to any number of rows of another model, as in
+`tags:many`) and `owner` (rows belong to the account that adds them). Add `?` to make a field
 optional, as in `rating:float?`.
 
 **4. Create the table:**
@@ -325,6 +327,9 @@ Superusers manage accounts and groups in the admin, under **Users** and **Groups
 rules apply in the admin and the API, and the admin hides links and buttons an account cannot
 use.
 
+- **Own rows only:** give a model an `owner` field (`cadmus generate model Note text:text
+  owner:owner`) and accounts that are not superusers see, change and delete only the rows
+  they added; other rows answer "not found".
 - Changes apply at once: permissions are checked on every request, so deactivating an account
   locks it out immediately, even if it is logged in.
 - Nobody can remove their own access or delete their own account, so a superuser always
@@ -467,8 +472,18 @@ related record's name, linked to it, instead of its number.
   see and edit the plain number.
 - **Deleting:** a record that others still point to cannot be deleted (`409`).
 - **Hand-written entities:** any `belongs_to` relation in an entity is picked up the same way.
+- **What points here:** a record's page lists the records that point to it (an author's
+  posts), with links to see them all and to add one.
 
 The API reads and writes the id itself (`author_id`).
+
+**Many-to-many:** `cadmus generate model Post title:string tags:many` gives each post any
+number of tags, kept in a generated link table (`post_tags`). The admin shows a checkbox per
+tag, and the API a list of ids (`"tags": [1, 3]`, filter with `?tags=3`).
+
+**Checks on save:** SeaORM's `before_save` and `before_delete` hooks in a model file run for
+every change from the admin and the API. Return `cadmus::invalid("price", "must not be
+negative")` to refuse one; the message is shown on the form, or sent with a `422`.
 
 ### Login methods
 
@@ -937,14 +952,14 @@ unless you implement `UserStore::access`, API keys work only if you implement
 
 - **Accounts:** no passkeys yet. API keys cannot be limited to some models (only read-only).
   Logins through other sites are for the admin, and an account is linked to another site by
-  e-mail address only (there is no "connect" button). No per-record permissions. Login
-  attempt limits are per server process. Accounts and groups are managed in the admin only;
+  e-mail address only (there is no "connect" button). Per-record permissions are
+  ownership only (one owner per row). Login attempt limits are per server process. Accounts and groups are managed in the admin only;
   there is no API for them.
 - **Admin:** no page listing all uploaded files, and a replaced file is not deleted. No
-  many-to-many widget, no list of the records that point to a record, and no search-as-you-type
-  for long lists of related records.
-- **Models:** single-column primary keys only; UUID, decimal, enum and array fields are
-  read-only.
+  search-as-you-type for long lists of related records, and no editing of related records
+  inside another record's form.
+- **Models:** single-column primary keys only; binary fields are read-only. On SQLite,
+  decimals are exact to about 15 digits.
 - **Uploads:** completing a resumable upload copies the pieces once inside the storage
   (no direct-to-S3 multipart yet), and abandoned uploads are not cleaned up automatically.
 - **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;

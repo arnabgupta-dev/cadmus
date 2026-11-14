@@ -179,7 +179,7 @@ fn tools() -> Value {
         {
             "name": "generate_model",
             "title": "Generate a model",
-            "description": "Adds a model to a project: a file in src/models/ and a registration line in src/models/mod.rs. Field types: string, text, int, bigint, float, bool, datetime, date, json, file, and references (a foreign key: `author:references`, or `editor:references=author`). Add `?` to make a field optional, e.g. `rating:float?`. An `id` primary key is added automatically. Generate referenced models first. Afterwards, run makemigrations and migrate.",
+            "description": "Adds a model to a project: a file in src/models/ and a registration line in src/models/mod.rs. Field types: string, text, int, bigint, float, bool, datetime, date, json, decimal, uuid, file, references (a foreign key: `author:references`, or `editor:references=author`), many (a many-to-many field with its own link table: `tags:many`, or `readers:many=user`) and owner (`owner:owner`: rows belong to the account that adds them, and other accounts cannot see them). Add `?` to make a field optional, e.g. `rating:float?`. An `id` primary key is added automatically. Generate referenced models first. Afterwards, run makemigrations and migrate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

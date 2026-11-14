@@ -1,6 +1,6 @@
 [package]
 name = "cadmus"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "A batteries-included web framework for Rust: models, admin site, REST API, migrations and accounts, on axum and SeaORM"
 license = "MIT"
@@ -53,7 +53,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "f
 rpassword = "7.5.5"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "0.7.1"
-sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "schema-sync"] }
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "with-uuid", "with-rust_decimal", "postgres-array", "schema-sync"] }
+uuid = { version = "1", features = ["v4"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # `preserve_order` keeps columns and API operations in the order they are declared.
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

@@ -54,8 +54,12 @@ is named in snake_case (`blog_post`). An `id` primary key is always added.
 | `datetime` | `DateTime` | date and time, without a time zone |
 | `date` | `Date` | a date |
 | `json` | `Json` | a JSON document |
+| `decimal` | `Decimal` | an exact number, such as a price (12 digits, 2 after the point) |
+| `uuid` | `Uuid` | a universally unique id |
 | `file` | `Option<i32>` | an uploaded file (see [File uploads](file-uploads.md)) |
 | `references` | `i32` | a link to another model (see [Relations](relations.md)) |
+| `many` | (a link table) | links to any number of rows of another model: `tags:many` (see [Relations](relations.md#many-to-many)) |
+| `owner` | `String` | the account a row belongs to (see [Rows owned by accounts](accounts.md#rows-owned-by-accounts)) |
 
 Add `?` to make a field optional (`Option<...>` in Rust, `NULL` in the database):
 `summary:text?`. File fields are always optional.
@@ -79,6 +83,43 @@ Useful SeaORM attributes on a field:
 | `#[sea_orm(default_value = "draft")]` | the value new rows get; also fills existing rows when the field is added |
 | `#[sea_orm(column_type = "Text")]` | long text instead of `varchar` |
 | `#[sea_orm(renamed_from = "body")]` | tells `makemigrations` the field was renamed, so the data is kept |
+
+## Checks and hooks
+
+To check values or fill some in on every save, whether from the admin or the API, use
+SeaORM's hooks in the model file. Return `cadmus::invalid(field, message)` to refuse a save:
+the admin shows the message on the form and the API answers `422` with it.
+
+```rust
+use sea_orm::ActiveValue::{Set, Unchanged};
+
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C: ConnectionTrait>(mut self, _db: &C, _insert: bool) -> Result<Self, DbErr> {
+        if let Set(price) | Unchanged(price) = &self.price && price.is_sign_negative() {
+            return Err(cadmus::invalid("price", "must not be negative"));
+        }
+        // The slug follows the title.
+        if let Set(title) | Unchanged(title) = &self.title {
+            self.slug = Set(title.to_lowercase().replace(' ', "-"));
+        }
+        Ok(self)
+    }
+
+    async fn before_delete<C: ConnectionTrait>(self, _db: &C) -> Result<Self, DbErr> {
+        if matches!(&self.status, Unchanged(s) if s == "published") {
+            return Err(cadmus::invalid("status", "published posts cannot be deleted"));
+        }
+        Ok(self)
+    }
+}
+```
+
+The hook sees the whole record: when a record is edited, the values that did not change are
+`Unchanged`, and the new ones `Set`. `after_save` and `after_delete` run after the change,
+inside the same transaction, so an error there undoes it. Add `async-trait = "0.1"` to
+`Cargo.toml` to write them. Bulk actions that set a field run the hooks too; your own
+`action` code runs whatever it runs.
 
 ## Deleting a model
 
@@ -132,6 +173,9 @@ app.model::<post::Entity>(
 | `display_field("email")` | the field that names a record where other models link to it (default: the first text field) |
 | `per_page(n)` | rows per list page for this model |
 | `file_fields([...])` | integer fields that hold an uploaded file (set by `field:file`) |
+| `choices(field, [...])` | a dropdown of these values, and no others, for a text or number field; database enums get theirs automatically |
+| `many_to_many::<link::Entity>(name, from, to)` | a many-to-many field kept in a link table (set by `field:many`; see [Relations](relations.md#many-to-many)) |
+| `owned_by(field)` | rows belong to the account named in `field` (set by `field:owner`; see [Rows owned by accounts](accounts.md#rows-owned-by-accounts)) |
 | `set_action(name, label, field, value)` | a bulk action setting a field on the selected rows |
 | `action(name, label, \|ids\| async move { ... })` | a bulk action running your own code with the selected ids |
 

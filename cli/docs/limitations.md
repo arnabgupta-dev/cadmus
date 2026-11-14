@@ -13,21 +13,24 @@ Cadmus is at version 0.1. These are the gaps known today.
 - API keys cannot be limited to some models (only read-only).
 - Logins through other sites are for the admin; programs use API keys or tokens. An account
   is linked to another site by e-mail address only (there is no "connect" button).
-- No per-record permissions: permissions are per model.
+- Per-record permissions are ownership only: one owner per row (see
+  [Rows owned by accounts](accounts.md#rows-owned-by-accounts)), not sharing rules.
 - Login attempt limits are per server process, not shared between instances.
 - Accounts and groups are managed in the admin only; there is no API for them.
 
 ## Admin
 
 - No page listing all uploaded files, and a replaced file is not deleted.
-- No many-to-many widget, no list of the records that point to a record, and no
-  search-as-you-type for long lists of related records.
+- No search-as-you-type for long lists of related records: above 200, forms take ids.
+- No editing of related records inside another record's form (inlines).
 
 ## Models and migrations
 
 - Single-column primary keys only.
-- UUID, decimal, enum and array fields are read-only in the admin and the API.
-- Migrations do not handle database enums and array columns, or changing a primary key.
+- Binary fields are read-only in the admin and the API.
+- On SQLite, decimals are stored as floating-point numbers, exact to about 15 digits; use
+  PostgreSQL or MySQL for larger exact amounts.
+- Migrations do not handle database enums, or changing a primary key.
 
 ## Uploads
 

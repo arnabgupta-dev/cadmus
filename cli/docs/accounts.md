@@ -26,6 +26,25 @@ model may also view it, and file uploads count as a model named `files`.
 The same rules apply in the admin and the API (`403` with code `forbidden`), and the admin
 hides links and buttons an account cannot use.
 
+### Rows owned by accounts
+
+Permissions are per model. To let accounts see and change only **their own** rows, give the
+model an `owner` field:
+
+```sh
+cadmus generate model Note text:text owner:owner
+```
+
+This adds a text field holding a username and `ModelOptions::new().owned_by("owner")`. Then,
+for every account that is not a superuser, in the admin and the API:
+
+- new rows belong to the account that adds them, whatever it sends;
+- lists, counts, filters and dropdowns show only its own rows;
+- other accounts' rows answer "not found", and cannot be changed, deleted or taken over.
+
+Superusers see every row and can give a row to another account by changing its owner. The
+account still needs the model's permissions (view, add, change, delete) as usual.
+
 - Changes apply at once: permissions are checked on every request, so deactivating an
   account locks it out immediately, even if it is logged in.
 - Nobody can remove their own access or delete their own account, so a superuser always
