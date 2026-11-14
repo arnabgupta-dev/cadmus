@@ -114,6 +114,7 @@ pub(crate) fn render(
         // Whether accounts are the built-in ones, which have a page for the user's own settings.
         self_service => state.accounts.is_some() && session.is_some(),
         password_login => state.auth.methods.password,
+        api_keys_enabled => state.auth.api_keys,
         // Whether to link to the Users and Groups pages.
         manages_accounts => state.accounts.is_some()
             && session.is_some_and(|s| s.access.is_superuser()),
@@ -439,6 +440,7 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
         "group_deleted" => "Group deleted.",
         "two_factor_on" => "Two-factor authentication is on.",
         "two_factor_off" => "Two-factor authentication is off.",
+        "api_key_revoked" => "The key is revoked; it no longer works.",
         "password_changed" => "Your password is changed.",
         "user_invited" => "Account created and invitation sent.",
         "invitation_sent" => "Invitation sent.",

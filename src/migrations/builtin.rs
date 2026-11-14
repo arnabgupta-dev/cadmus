@@ -113,6 +113,24 @@ pub(crate) fn auth() -> Vec<Migration> {
                     .column(Column::new("action", Type::String(None)))
                     .index(Index::new("idx-auth_user_permission-user_id", ["user_id"])),
             ),
+        // Added in 0.1: API keys.
+        Migration::new("0002_api_keys").create_table(
+            Table::new("auth_api_key")
+                .column(
+                    Column::new("id", Type::Integer)
+                        .primary_key()
+                        .auto_increment(),
+                )
+                .column(Column::new("user_id", Type::Integer))
+                .column(Column::new("name", Type::String(None)))
+                .column(Column::new("prefix", Type::String(None)))
+                .column(Column::new("digest", Type::String(None)).unique())
+                .column(Column::new("read_only", Type::Boolean))
+                .column(Column::new("created", Type::TimestampTz))
+                .column(Column::new("last_used", Type::TimestampTz).null())
+                .column(Column::new("expires", Type::TimestampTz).null())
+                .index(Index::new("idx-auth_api_key-user_id", ["user_id"])),
+        ),
     ]
 }
 
@@ -149,7 +167,8 @@ pub(crate) fn uploads() -> Vec<Migration> {
 
 pub(crate) fn auth_tables() -> Result<Vec<EntityTable>, String> {
     use crate::users::{
-        group, group_permission, identity, membership, recovery_code, user, user_permission,
+        api_key, group, group_permission, identity, membership, recovery_code, user,
+        user_permission,
     };
     Ok(vec![
         table_of::<identity::Entity>()?,
@@ -159,6 +178,7 @@ pub(crate) fn auth_tables() -> Result<Vec<EntityTable>, String> {
         table_of::<membership::Entity>()?,
         table_of::<user_permission::Entity>()?,
         table_of::<group_permission::Entity>()?,
+        table_of::<api_key::Entity>()?,
     ])
 }
 

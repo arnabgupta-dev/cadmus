@@ -354,6 +354,8 @@ pub fn settings() -> Result<Settings, AdminError> {{
             cookie_secure: !debug,
             // Require two-factor authentication for every account:
             // totp_required: true,
+            // Accounts can make API keys for programs calling the REST API; to refuse them:
+            // api_keys: false,
             ..Default::default()
         }},
         admin: AdminSettings {{

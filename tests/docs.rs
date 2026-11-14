@@ -345,14 +345,14 @@ async fn the_document_describes_every_model_as_the_api_behaves() {
         "#/components/schemas/AuthorInput"
     );
 
-    // Logging in needs no token; everything else takes one, either way of supplying it.
+    // Logging in needs no token; everything else takes one, any way of supplying it.
     assert_eq!(
         doc["paths"]["/api/auth/token"]["post"]["security"],
         json!([])
     );
     assert_eq!(
         doc["security"],
-        json!([{ "password": [] }, { "bearer": [] }])
+        json!([{ "password": [] }, { "bearer": [] }, { "apiKey": [] }])
     );
     let schemes = &doc["components"]["securitySchemes"];
     assert_eq!(

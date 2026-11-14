@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}API keys · {{ site.site_title }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">API keys</span>{% endblock %}
+{% block head %}
+<style>
+.ak { max-width: 760px; display: grid; gap: 16px; }
+.ak form .field + .field, .ak form .option { margin-top: 14px; }
+.ak form .btn.primary { margin-top: 18px; }
+.secret { display: block; margin-top: 12px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--sunken); overflow-wrap: anywhere; user-select: all; font-size: .95rem; }
+.secret-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.keys { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.keys li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.keys li > span { min-width: 0; overflow-wrap: anywhere; }
+.keys code { font-size: .9rem; }
+.tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: .8rem; background: var(--sunken); color: var(--muted); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.usage { margin: 8px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunken); overflow-x: auto; font-size: .85rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>API keys</h1><p class="sub">For programs that call the REST API as {{ user }}, with your permissions.</p></div></div>
+<div class="ak">
+  {% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+  {% if new_key %}
+  <section class="panel panel-pad" aria-labelledby="h-new">
+    <h2 id="h-new">Copy your new key</h2>
+    <p class="muted" style="margin-top:4px">Anyone with it can use the API as you. Keep it somewhere safe, such as a password manager or your deployment's secrets. <strong>It is shown only now.</strong></p>
+    <code class="secret" data-secret>{{ new_key }}</code>
+    <div class="secret-actions">
+      <button class="btn" type="button" data-copy>Copy</button>
+      <a class="btn ghost" href="{{ base }}/auth/api-keys">I saved it</a>
+    </div>
+    <p class="muted" style="margin-top:14px">Send it with each request:</p>
+    <pre class="usage">curl -H "Authorization: Bearer {{ new_key }}" {{ api_url }}/</pre>
+  </section>
+  {% endif %}
+
+  <section class="panel panel-pad" aria-labelledby="h-keys">
+    <h2 id="h-keys">Your keys</h2>
+    {% if keys %}
+    <p class="muted" style="margin-top:4px">A key works until you revoke it or it expires, and stops at once if your account is deactivated.</p>
+    <ul class="keys">
+      {% for k in keys %}
+      <li><span><strong>{{ k.name }}</strong>{% if k.read_only %}<span class="tag">Read only</span>{% endif %}{% if k.expired %}<span class="tag warn">Expired</span>{% endif %}<br>
+        <code>{{ k.prefix }}…</code> <span class="muted">· made {{ k.created }}{% if k.expires %}{% if k.expired %} · expired {{ k.expires }}{% else %} · expires {{ k.expires }}{% endif %}{% endif %} · {% if k.last_used %}last used {{ k.last_used }}{% else %}never used{% endif %}</span></span>
+        <button class="btn ghost" type="submit" form="revoke-{{ k.id }}">Revoke</button></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted" style="margin-top:4px">You have no keys yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-pad" aria-labelledby="h-make">
+    <h2 id="h-make">Make a key</h2>
+    <form method="post" action="{{ base }}/auth/api-keys" data-busy style="max-width:440px">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="field"><label for="f-name" class="required">Name</label><input id="f-name" name="name" maxlength="100" required value="{{ name }}" placeholder="Deploy script"><p class="muted">What uses it, so you know which to revoke later.</p></div>
+      <div class="field"><label for="f-expires">Expires</label>
+        <select id="f-expires" name="expires">
+          {% for value, label in [("30", "In 30 days"), ("90", "In 90 days"), ("365", "In a year"), ("never", "Never")] %}<option value="{{ value }}"{% if value == expires %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select></div>
+      <label class="option"><input type="checkbox" name="read_only" value="true"{% if read_only %} checked{% endif %}><span><strong>Read only</strong><span>The key can view records but not add, change or delete them.</span></span></label>
+      {% if not fresh %}<div class="field"><label for="f-password" class="required">Password</label><input id="f-password" name="password" type="password" autocomplete="current-password" required><p class="muted">You logged in a while ago, so confirm it is you. No password? Log out and in again.</p></div>{% endif %}
+      <button class="btn primary" type="submit" data-busy-text="Making the key…">Make key</button>
+    </form>
+  </section>
+</div>
+{% for k in keys %}<form id="revoke-{{ k.id }}" method="post" action="{{ base }}/auth/api-keys/{{ k.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
+{% endblock %}
+{% block scripts %}<script>
+var e = document.querySelector("[data-focus]"); if (e) e.focus();
+document.querySelectorAll("[data-copy]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    navigator.clipboard.writeText(document.querySelector("[data-secret]").textContent).then(function () { b.textContent = "Copied"; });
+  });
+});
+</script>{% endblock %}

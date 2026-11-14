@@ -14,7 +14,7 @@ use sea_orm::{
 };
 
 use crate::access::{Access, Action};
-use crate::auth::{AdminUser, UserStore, hash_password_async};
+use crate::auth::{AdminUser, ApiKeyOwner, UserStore, hash_password_async};
 use crate::error::AdminError;
 
 /// Shortest password the built-in commands accept.
@@ -238,11 +238,44 @@ pub(crate) mod recovery_code {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// API keys: long-lived credentials for programs calling the REST API as an account.
+pub(crate) mod api_key {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "auth_api_key")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        #[sea_orm(indexed)]
+        pub user_id: i32,
+        /// What the owner called it, such as "deploy script".
+        pub name: String,
+        /// The start of the key, shown so its owner can tell keys apart.
+        pub prefix: String,
+        /// SHA-256 of the key; the key itself is shown once and never stored.
+        #[sea_orm(unique)]
+        pub digest: String,
+        /// Only reads: the key cannot add, change or delete anything.
+        pub read_only: bool,
+        pub created: DateTimeUtc,
+        pub last_used: Option<DateTimeUtc>,
+        /// After this the key stops working; `None` for never.
+        pub expires: Option<DateTimeUtc>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// Registers every account table with `migrate`.
 pub(crate) fn register_schema(builder: SchemaBuilder) -> SchemaBuilder {
     builder
         .register(identity::Entity)
         .register(recovery_code::Entity)
+        .register(api_key::Entity)
         .register(user::Entity)
         .register(group::Entity)
         .register(membership::Entity)
@@ -325,6 +358,38 @@ impl UserStore for DbUserStore {
             .exec(&self.db)
             .await?;
         Ok(used.rows_affected == 1)
+    }
+
+    async fn api_key(&self, digest: &str) -> Result<Option<ApiKeyOwner>, AdminError> {
+        let Some(key) = api_key::Entity::find()
+            .filter(api_key::Column::Digest.eq(digest))
+            .one(&self.db)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let now = chrono::Utc::now();
+        if key.expires.is_some_and(|expires| expires <= now) {
+            return Ok(None);
+        }
+        let Some(account) = user::Entity::find_by_id(key.user_id).one(&self.db).await? else {
+            return Ok(None);
+        };
+        // Recorded at most once a minute, so busy keys do not write on every request.
+        if key
+            .last_used
+            .is_none_or(|used| now - used > chrono::Duration::seconds(60))
+        {
+            api_key::Entity::update_many()
+                .col_expr(api_key::Column::LastUsed, Expr::value(now))
+                .filter(api_key::Column::Id.eq(key.id))
+                .exec(&self.db)
+                .await?;
+        }
+        Ok(Some(ApiKeyOwner {
+            username: account.username,
+            read_only: key.read_only,
+        }))
     }
 
     /// Read on every request, so a change to an account takes effect at once: a deactivated
@@ -725,8 +790,95 @@ pub(crate) async fn delete_user(db: &DatabaseConnection, id: i32) -> Result<(), 
         .filter(recovery_code::Column::UserId.eq(id))
         .exec(&txn)
         .await?;
+    api_key::Entity::delete_many()
+        .filter(api_key::Column::UserId.eq(id))
+        .exec(&txn)
+        .await?;
     txn.commit().await?;
     Ok(())
+}
+
+/// Most API keys one account may have.
+pub(crate) const MAX_API_KEYS: u64 = 50;
+
+/// Creates an API key for an account and returns it. It is shown once: only its digest is
+/// stored. The key acts as the account, with the account's permissions (only reading, if
+/// `read_only`), until it is revoked, `expires_in_days` pass, or the account is deactivated.
+/// What the `apikey` command does.
+///
+/// # Errors
+/// [`AdminError::NotFound`] if there is no such account, and [`AdminError::BadInput`] for an
+/// empty or overlong name or too many keys.
+pub async fn new_api_key(
+    db: &DatabaseConnection,
+    username: &str,
+    name: &str,
+    expires_in_days: Option<u32>,
+    read_only: bool,
+) -> Result<String, AdminError> {
+    use sea_orm::PaginatorTrait;
+    let account = find_account(db, username)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(AdminError::BadInput {
+            field: "name".into(),
+            message: "give the key a name of up to 100 characters".into(),
+        });
+    }
+    let existing = api_key::Entity::find()
+        .filter(api_key::Column::UserId.eq(account.id))
+        .count(db)
+        .await?;
+    if existing >= MAX_API_KEYS {
+        return Err(AdminError::BadInput {
+            field: "name".into(),
+            message: format!("an account can have at most {MAX_API_KEYS} keys; revoke one first"),
+        });
+    }
+    let (key, prefix) = crate::auth::new_api_key();
+    let now = chrono::Utc::now();
+    api_key::ActiveModel {
+        user_id: Set(account.id),
+        name: Set(name.to_owned()),
+        prefix: Set(prefix),
+        digest: Set(crate::auth::api_key_digest(&key).expect("generated keys are valid")),
+        read_only: Set(read_only),
+        created: Set(now),
+        last_used: Set(None),
+        expires: Set(expires_in_days.map(|days| now + chrono::Duration::days(days.into()))),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+    Ok(key)
+}
+
+/// An account's API keys, newest first.
+pub(crate) async fn api_keys(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<Vec<api_key::Model>, AdminError> {
+    Ok(api_key::Entity::find()
+        .filter(api_key::Column::UserId.eq(user_id))
+        .order_by_desc(api_key::Column::Id)
+        .all(db)
+        .await?)
+}
+
+/// Revokes one of an account's API keys; `false` if it has no such key.
+pub(crate) async fn revoke_api_key(
+    db: &DatabaseConnection,
+    user_id: i32,
+    key_id: i32,
+) -> Result<bool, AdminError> {
+    let deleted = api_key::Entity::delete_many()
+        .filter(api_key::Column::Id.eq(key_id))
+        .filter(api_key::Column::UserId.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(deleted.rows_affected == 1)
 }
 
 /// The other sites an account logs in through, oldest link first.

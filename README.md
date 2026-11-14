@@ -6,7 +6,7 @@ A Django-style framework for [axum](https://docs.rs/axum) and
 [SeaORM](https://www.sea-ql.org/SeaORM/). Define a model once and get its table, admin pages
 and REST endpoints, with authentication, file uploads and management commands built in.
 
-Status: early (0.1). Tested against SQLite and PostgreSQL.
+Status: early (0.1). Tested against SQLite, PostgreSQL and MySQL.
 
 ## Quick start
 
@@ -222,6 +222,7 @@ The REST API is unchanged: it reads and writes the id (`author_id`).
 | `promote --username U` | Make an existing account an active superuser |
 | `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
 | `changepassword --username U [--password-stdin]` | Change a password |
+| `apikey --username U --name N [--days D] [--read-only]` | Make an API key (90 days by default; `--days 0` for never) |
 | `openapi` | Print the OpenAPI document as JSON |
 | `routes` | List generated URLs |
 | `check` | Validate configuration without serving |
@@ -320,8 +321,8 @@ operation needs, and file uploads if they are enabled. Hidden fields do not appe
 read-only fields appear only in what is returned.
 
 To call the API from Swagger UI, press **Authorize** and log in with an account's username
-and password. Accounts with two-factor authentication get a token from `POST /api/auth/token`
-and paste it under `bearer` instead.
+and password, or paste an [API key](#api-keys) under `apiKey`. Accounts with two-factor
+authentication can also get a token from `POST /api/auth/token` and paste it under `bearer`.
 
 **Protecting it.** The documentation is public by default; it reveals model and field names,
 never data. To ask for a username and password first (the browser's own prompt), set both in
@@ -393,8 +394,33 @@ Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); 
   `auth.totp_required: true` makes it mandatory. See below.
 - `POST /api/auth/token` with `{"username", "password", "totp"}` (JSON or a form) returns a
   JWT as `access_token`.
-- The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
-  `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries a CSRF token.
+- The API accepts only `Authorization: Bearer <token>`, or an [API key](#api-keys). The admin
+  uses the same JWT in an `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries
+  a CSRF token.
+
+### API keys
+
+For programs that call the REST API: scripts, other services, CI. Each account makes its own
+on its **API keys** page (the key icon under its name in the admin), or with
+`cargo run -- apikey --username U --name "deploy script"`. Send the key with each request:
+
+```sh
+curl -H "Authorization: Bearer hera_..." https://example.com/api/post
+curl -H "X-API-Key: hera_..." https://example.com/api/post
+```
+
+- **What it can do:** a key acts as its account, with the account's permissions. A
+  **read-only** key can only view. Keys work for the REST API only, never the admin pages.
+- **How long:** until revoked, until it expires (30 days, 90 days, a year, or never), or
+  until the account is deactivated or deleted. Each key's page shows when it was last used.
+- **Stored safely:** a key is shown once, when it is made; only a SHA-256 digest is kept.
+  Making one needs a login in the last 15 minutes or the password, as turning on two-factor
+  authentication does, so a stolen session cookie alone cannot make one.
+- **Superusers** see each account's keys on its Users page, and can revoke them.
+- **Turning them off:** `auth.api_keys: false` in the settings. Existing keys then stop
+  working, and the page is hidden.
+
+Your own `UserStore` can accept keys too, by implementing `UserStore::api_key`.
 
 ### Login methods
 
@@ -453,7 +479,8 @@ create an account at the first login, as staff without permissions of their own,
 - GitHub uses the account's primary verified address. For an OpenID Connect provider that
   does not say whether addresses are verified, `trust_email: true` trusts them; only do that
   for a directory whose users cannot pick their own address.
-- These logins are for the admin. API clients still get a token from `POST /api/auth/token`.
+- These logins are for the admin. API clients use an [API key](#api-keys), or a token from
+  `POST /api/auth/token`.
 
 ### E-mail
 
@@ -688,7 +715,8 @@ to compile faster: `heraapi = { ..., default-features = false, features = ["post
 (the features are `sqlite`, `postgres` and `mysql`). An address for a driver left out then
 stops start-up with the feature to turn back on.
 
-The API behaves the same on SQLite and PostgreSQL: date-times are ISO 8601
+The API behaves the same on SQLite, PostgreSQL and MySQL: true and false are JSON booleans,
+date-times are ISO 8601
 (`2026-03-04T05:06:07`), JSON columns are returned as JSON, and `?q=` search ignores case and
 treats `%` and `_` as ordinary characters.
 
@@ -701,15 +729,16 @@ cargo test                       # SQLite, in memory
 docker run -d --rm -e POSTGRES_PASSWORD=test -p 5432:5432 postgres:17-alpine
 TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres cargo test
 
-# or MySQL (each test uses its own database); only the migration tests pass there so far
+# or MySQL (each test uses its own database)
 docker run -d --rm -e MYSQL_ROOT_PASSWORD=test -p 3306:3306 mysql:8.4
-TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test --test migrations
+TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 ```
 
 ## Not done yet
 
-- **Auth:** passkeys and API keys are planned as further login methods.
-  Logins through other sites are for the admin only; API clients cannot use them yet, and
+- **Auth:** passkeys are planned as a further login method. API keys have no scopes beyond
+  read-only (a key cannot be limited to some models).
+  Logins through other sites are for the admin only (API clients use keys or tokens), and
   linking another site to an account goes by e-mail address only (no "connect" button).
   Also missing: per-record (row-level) permissions. Login limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.
@@ -723,9 +752,6 @@ TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test --test migra
   add them with your own `tower` layers.
 - **API documentation:** your own routes are not discovered automatically, and the viewers are
   loaded from a CDN rather than bundled.
-- **MySQL:** migrations are tested on MySQL 8.4, but much of the rest of the test suite
-  still creates its tables with SQLite-style SQL and fails there. Known bug: true/false
-  columns come back from the API as `1`/`0`.
 - **Verification:** S3, Azure and GCS compile but have not been run against real services.
 
 ## License

@@ -42,6 +42,8 @@ pub struct AuthConfig {
     pub(crate) client_ip_header: Option<HeaderName>,
     /// How people may log in: password, other sites, or both.
     pub(crate) methods: Arc<crate::oauth::Methods>,
+    /// Whether the REST API accepts API keys.
+    pub(crate) api_keys: bool,
 }
 
 // Hand-written so the signing secret can never reach a log line.
@@ -56,6 +58,7 @@ impl std::fmt::Debug for AuthConfig {
             .field("login_lockout_secs", &self.login_lockout_secs)
             .field("client_ip_header", &self.client_ip_header)
             .field("password_login", &self.methods.password)
+            .field("api_keys", &self.api_keys)
             .field(
                 "providers",
                 &self
@@ -93,6 +96,7 @@ impl AuthConfig {
             login_lockout_secs: 300,
             client_ip_header: None,
             methods: Arc::new(crate::oauth::Methods::password_only()),
+            api_keys: true,
         })
     }
 
@@ -202,6 +206,14 @@ impl AuthConfig {
                 .get::<ConnectInfo<SocketAddr>>()
                 .map(|peer| peer.0.ip())
         })
+    }
+
+    /// Whether the REST API accepts API keys, which accounts make on their API keys page
+    /// (default `true`). Turned off, existing keys stop working and the page is hidden.
+    #[must_use]
+    pub fn api_keys(mut self, enabled: bool) -> Self {
+        self.api_keys = enabled;
+        self
     }
 
     /// Controls the cookie's `Secure` flag; turn off only for local HTTP development.
@@ -374,6 +386,25 @@ pub trait UserStore: Send + Sync {
     async fn use_recovery_code(&self, _username: &str, _digest: &str) -> Result<bool, AdminError> {
         Ok(false)
     }
+
+    /// The account owning the API key with this digest, if the key exists and has not
+    /// expired. The account's permissions still come from [`UserStore::access`], so a
+    /// deactivated account's keys stop working. The default has no keys.
+    ///
+    /// # Errors
+    /// Whatever the store fails with; the request is then answered with a `500`.
+    async fn api_key(&self, _digest: &str) -> Result<Option<ApiKeyOwner>, AdminError> {
+        Ok(None)
+    }
+}
+
+/// The account an API key belongs to, as [`UserStore::api_key`] finds it.
+#[derive(Clone, Debug)]
+pub struct ApiKeyOwner {
+    /// Login name of the account the key acts as.
+    pub username: String,
+    /// The key may only read: adding, changing and deleting are refused.
+    pub read_only: bool,
 }
 
 /// A single admin account defined by environment variables.
@@ -601,6 +632,32 @@ const RECOVERY_CHARS: usize = 16;
 /// How many recovery codes an account gets at a time.
 pub(crate) const RECOVERY_CODES: usize = 10;
 
+const API_KEY_PREFIX: &str = "hera_";
+const API_KEY_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// Random characters in a key: 40 of 62 is about 238 bits.
+const API_KEY_CHARS: usize = 40;
+
+/// A new API key, and the start of it that is shown to tell keys apart.
+pub(crate) fn new_api_key() -> (String, String) {
+    let random: String = (0..API_KEY_CHARS)
+        .map(|_| char::from(API_KEY_ALPHABET[rand::random_range(0..API_KEY_ALPHABET.len())]))
+        .collect();
+    let key = format!("{API_KEY_PREFIX}{random}");
+    let prefix = key[..API_KEY_PREFIX.len() + 8].to_owned();
+    (key, prefix)
+}
+
+/// What is stored for an API key, or `None` if it is not shaped like one. The key is long and
+/// random, so a plain hash is enough; no slow password hash is needed.
+pub(crate) fn api_key_digest(key: &str) -> Option<String> {
+    let random = key.strip_prefix(API_KEY_PREFIX)?;
+    if random.len() != API_KEY_CHARS || !random.bytes().all(|b| API_KEY_ALPHABET.contains(&b)) {
+        return None;
+    }
+    let digest = sha2::Sha256::digest(format!("heraapi-api-key:{key}").as_bytes());
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// A fresh set of recovery codes, as shown to the person: `xxxx-xxxx-xxxx-xxxx`.
 pub(crate) fn new_recovery_codes() -> Vec<String> {
     (0..RECOVERY_CODES)
@@ -721,8 +778,10 @@ pub(crate) struct Session {
     pub(crate) access: Access,
     csrf: String,
     via_cookie: bool,
-    /// When the login happened (seconds since 1970).
+    /// When the login happened (seconds since 1970); `0` for API keys.
     issued_at: u64,
+    /// Authenticated by a read-only API key: only viewing is allowed.
+    read_only: bool,
 }
 
 /// How long after logging in an account counts as having just proved who it is, for
@@ -754,7 +813,33 @@ impl Session {
             csrf: claims.csrf,
             via_cookie,
             issued_at: claims.iat,
+            read_only: false,
         }))
+    }
+
+    /// The session for an API key, if it is a valid key of an account that may still log in.
+    async fn from_api_key(state: &AdminState, key: &str) -> Result<Option<Self>, AdminError> {
+        if !state.auth.api_keys {
+            return Ok(None);
+        }
+        let Some(digest) = api_key_digest(key) else {
+            return Ok(None);
+        };
+        let Some(owner) = state.users.api_key(&digest).await? else {
+            return Ok(None);
+        };
+        Ok(state
+            .users
+            .access(&owner.username)
+            .await?
+            .map(|access| Self {
+                username: owner.username,
+                access,
+                csrf: String::new(),
+                via_cookie: false,
+                issued_at: 0,
+                read_only: owner.read_only,
+            }))
     }
 
     /// The session carried by the admin cookie, if there is a valid one.
@@ -779,7 +864,7 @@ impl Session {
 
     /// Whether this account may do `action` on `model`.
     pub(crate) fn can(&self, model: &str, action: Action) -> bool {
-        self.access.allows(model, action)
+        (!self.read_only || action == Action::View) && self.access.allows(model, action)
     }
 
     /// Refuses the request unless this account may do `action` on `model`.
@@ -795,7 +880,7 @@ impl Session {
 
     /// Refuses the request unless this account is a superuser.
     pub(crate) fn require_superuser(&self) -> Result<(), AdminError> {
-        if self.access.is_superuser() {
+        if self.access.is_superuser() && !self.read_only {
             return Ok(());
         }
         Err(AdminError::Forbidden(
@@ -841,13 +926,21 @@ impl FromRequestParts<Arc<AdminState>> for Session {
             .uri
             .path()
             .starts_with(&format!("{}/", state.api_base));
-        let session = match bearer {
-            Some(token) => match state.auth.verify(token) {
+        // API keys come as a Bearer token or in `X-API-Key`, and only for the REST API: the
+        // admin pages, and with them account management, need a login.
+        let api_key = bearer
+            .filter(|token| token.starts_with(API_KEY_PREFIX))
+            .or_else(|| parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+        let session = match (api_key, bearer) {
+            (Some(key), _) if api => Self::from_api_key(state, key).await,
+            (Some(_), _) => Ok(None),
+            (None, Some(token)) => match state.auth.verify(token) {
                 Some(claims) => Self::load(state, claims, false).await,
                 None => Ok(None),
             },
-            None => Self::from_cookie(&parts.headers, state).await,
+            (None, None) => Self::from_cookie(&parts.headers, state).await,
         };
+        let bearer = bearer.or(api_key);
         match session {
             Ok(Some(session)) => Ok(session),
             // API clients get a status code, not a login page.

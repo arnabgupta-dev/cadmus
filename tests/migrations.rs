@@ -587,8 +587,12 @@ async fn databases_from_before_migrations_get_the_built_in_tables_brought_up_to_
         ["root"]
     );
     assert_eq!(
-        query_strings(&db, "SELECT name FROM hera_migration WHERE app = 'auth'").await,
-        ["0001_initial"]
+        query_strings(
+            &db,
+            "SELECT name FROM hera_migration WHERE app = 'auth' ORDER BY id"
+        )
+        .await,
+        ["0001_initial", "0002_api_keys"]
     );
     // Next time there is nothing to do for them.
     let events = app_v1(&db).migrate_to(None, false).await.unwrap();

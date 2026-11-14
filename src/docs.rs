@@ -238,12 +238,13 @@ impl Docs {
         settings: &UiSettings,
         resources: &[Arc<dyn Resource>],
         uploads: bool,
+        api_keys: bool,
     ) -> Self {
         let title = config
             .title
             .clone()
             .unwrap_or_else(|| format!("{} API", settings.site_title));
-        let mut document = document(&config, &title, api_base, resources, uploads);
+        let mut document = document(&config, &title, api_base, resources, uploads, api_keys);
         if let Some(edit) = &config.extend {
             edit(&mut document);
         }
@@ -814,6 +815,7 @@ fn document(
     api_base: &str,
     resources: &[Arc<dyn Resource>],
     uploads: bool,
+    api_keys: bool,
 ) -> Value {
     let mut schemas = Map::new();
     let mut paths = Map::new();
@@ -902,11 +904,16 @@ fn document(
     }
     let _ = write!(
         description,
-        "Authenticate with a bearer token from `POST {token_url}`. What an account may do \
-         depends on its permissions; a refused request answers `403`."
+        "Authenticate with a bearer token from `POST {token_url}`{}. What an account may do \
+         depends on its permissions; a refused request answers `403`.",
+        if api_keys {
+            ", or with an API key made on the account's API keys page"
+        } else {
+            ""
+        }
     );
 
-    json!({
+    let mut document = json!({
         "openapi": "3.0.3",
         "info": { "title": title, "version": config.version, "description": description },
         "tags": tags,
@@ -923,7 +930,7 @@ fn document(
                 },
                 "bearer": {
                     "type": "http", "scheme": "bearer", "bearerFormat": "JWT",
-                    "description": format!("A token from `POST {token_url}`"),
+                    "description": format!("A token from `POST {token_url}`, or an API key (`hera_...`)"),
                 },
             },
             "responses": {
@@ -940,5 +947,17 @@ fn document(
                 },
             },
         },
-    })
+    });
+    if api_keys {
+        document["security"]
+            .as_array_mut()
+            .expect("security is a list")
+            .push(json!({ "apiKey": [] }));
+        document["components"]["securitySchemes"]["apiKey"] = json!({
+            "type": "apiKey", "in": "header", "name": "X-API-Key",
+            "description": "An API key from the account's API keys page in the admin. It can \
+                            also be sent as a bearer token.",
+        });
+    }
+    document
 }

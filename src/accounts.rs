@@ -62,6 +62,18 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             &format!("{b}/password"),
             get(password_page).post(password_change),
         )
+        .route(
+            &format!("{b}/api-keys"),
+            get(api_keys_page).post(api_key_create),
+        )
+        .route(
+            &format!("{b}/api-keys/{{key}}/delete"),
+            post(api_key_revoke),
+        )
+        .route(
+            &format!("{b}/users/{{id}}/api-keys/{{key}}/delete"),
+            post(user_api_key_revoke),
+        )
         .with_state(state)
 }
 
@@ -369,6 +381,10 @@ async fn render_user(
             .collect(),
         None => Vec::new(),
     };
+    let api_keys = match id {
+        Some(id) if state.auth.api_keys => key_views(database(state)?, id).await?,
+        _ => Vec::new(),
+    };
     render(
         state,
         "user_form.html",
@@ -391,6 +407,7 @@ async fn render_user(
             actions => action_names(),
             permissions => Value::from(Serde(permission_grid(state, &view.grants))),
             identities => Value::from(Serde(&identities)),
+            api_keys => Value::from(Serde(&api_keys)),
             can_invite => crate::login::can_invite(state),
             invite => view.invite,
             password_login => state.auth.methods.password,
@@ -1136,4 +1153,204 @@ async fn two_factor_recovery(
         &recovery,
     )?;
     Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], page).into_response())
+}
+
+// ---- API keys ----------------------------------------------------------------------------
+
+/// An API key as the pages list it; the key itself is never shown again.
+#[derive(Serialize)]
+struct KeyView {
+    id: i32,
+    name: String,
+    prefix: String,
+    read_only: bool,
+    created: String,
+    last_used: Option<String>,
+    expires: Option<String>,
+    expired: bool,
+}
+
+async fn key_views(db: &DatabaseConnection, user_id: i32) -> Result<Vec<KeyView>, AdminError> {
+    let now = chrono::Utc::now();
+    Ok(users::api_keys(db, user_id)
+        .await?
+        .into_iter()
+        .map(|key| KeyView {
+            id: key.id,
+            name: key.name,
+            prefix: key.prefix,
+            read_only: key.read_only,
+            created: when(Some(key.created)).unwrap_or_default(),
+            last_used: when(key.last_used),
+            expires: when(key.expires),
+            expired: key.expires.is_some_and(|at| at <= now),
+        })
+        .collect())
+}
+
+/// What the "make a key" form had in it, to show it again after a mistake.
+struct KeyForm<'a> {
+    name: &'a str,
+    expires: &'a str,
+    read_only: bool,
+}
+
+const NEW_KEY_FORM: KeyForm<'static> = KeyForm {
+    name: "",
+    expires: "90",
+    read_only: false,
+};
+
+fn keys_enabled(state: &AdminState) -> Result<(), AdminError> {
+    if state.auth.api_keys {
+        Ok(())
+    } else {
+        Err(AdminError::NotFound("API keys are turned off".into()))
+    }
+}
+
+async fn render_api_keys(
+    state: &AdminState,
+    session: &Session,
+    new_key: Option<&str>,
+    form: &KeyForm<'_>,
+    error: Option<String>,
+    notice: Option<&str>,
+) -> Result<Html<String>, AdminError> {
+    let account = own_account(state, session).await?;
+    let keys = key_views(database(state)?, account.id).await?;
+    render(
+        state,
+        "api_keys.html",
+        Some(session),
+        context! {
+            section => "api_keys",
+            notice => notice_text(notice),
+            keys => Value::from(Serde(&keys)),
+            new_key,
+            api_url => state.auth.methods.absolute(&state.api_base),
+            name => form.name,
+            expires => form.expires,
+            read_only => form.read_only,
+            fresh => session.is_fresh(),
+            error,
+        },
+    )
+}
+
+async fn api_keys_page(
+    State(state): Shared,
+    session: Session,
+    Query(query): Query<NoticeQuery>,
+) -> Result<Html<String>, AdminError> {
+    keys_enabled(&state)?;
+    render_api_keys(
+        &state,
+        &session,
+        None,
+        &NEW_KEY_FORM,
+        None,
+        query.notice.as_deref(),
+    )
+    .await
+}
+
+async fn api_key_create(
+    State(state): Shared,
+    session: Session,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    keys_enabled(&state)?;
+    let form = Submitted::parse(&body);
+    session.check_csrf(form.get("_csrf"))?;
+    let entered = KeyForm {
+        name: form.get("name").unwrap_or_default(),
+        expires: form.get("expires").unwrap_or("90"),
+        read_only: form.checked("read_only"),
+    };
+    let again = async |message: String| -> Result<Response, AdminError> {
+        let page = render_api_keys(&state, &session, None, &entered, Some(message), None).await?;
+        Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
+    };
+    let days = match entered.expires {
+        "never" => None,
+        "30" => Some(30),
+        "90" => Some(90),
+        "365" => Some(365),
+        _ => return again("Choose when the key expires.".into()).await,
+    };
+    // A key outlives the login, so a stolen session alone must not be enough to make one:
+    // as for two-factor changes, a recent login or the password proves who is asking.
+    if !session.is_fresh() {
+        let password = form.get("password").unwrap_or_default();
+        if !auth::confirm_password(&state, &session.username, password).await? {
+            return again(
+                "The password is not correct. Without one, log out and in again, then make \
+                 the key within 15 minutes."
+                    .into(),
+            )
+            .await;
+        }
+    }
+    let key = match users::new_api_key(
+        database(&state)?,
+        &session.username,
+        entered.name,
+        days,
+        entered.read_only,
+    )
+    .await
+    {
+        Ok(key) => key,
+        Err(AdminError::BadInput { message, .. }) => {
+            return again(crate::login::capitalised(&message)).await;
+        }
+        Err(other) => return Err(other),
+    };
+    tracing::info!(username = %session.username, name = entered.name.trim(), "API key created");
+    // Shown on this response only, never again, so no redirect.
+    let page = render_api_keys(&state, &session, Some(&key), &NEW_KEY_FORM, None, None).await?;
+    Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], page).into_response())
+}
+
+async fn api_key_revoke(
+    State(state): Shared,
+    session: Session,
+    Path(key): Path<String>,
+    body: Bytes,
+) -> Result<Redirect, AdminError> {
+    keys_enabled(&state)?;
+    session.check_csrf(Submitted::parse(&body).get("_csrf"))?;
+    let key = parse_id("key", &key)?;
+    let account = own_account(&state, &session).await?;
+    if !users::revoke_api_key(database(&state)?, account.id, key).await? {
+        return Err(AdminError::NotFound(format!("API key `{key}`")));
+    }
+    tracing::info!(username = %session.username, key, "API key revoked");
+    Ok(Redirect::to(&format!(
+        "{}/auth/api-keys?notice=api_key_revoked",
+        state.base
+    )))
+}
+
+/// A superuser revoking someone else's key, from the user form.
+async fn user_api_key_revoke(
+    State(state): Shared,
+    session: Session,
+    Path((id, key)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Redirect, AdminError> {
+    keys_enabled(&state)?;
+    session.check_csrf(Submitted::parse(&body).get("_csrf"))?;
+    session.require_superuser()?;
+    let id = parse_id("user", &id)?;
+    let key = parse_id("key", &key)?;
+    if !users::revoke_api_key(database(&state)?, id, key).await? {
+        return Err(AdminError::NotFound(format!("API key `{key}`")));
+    }
+    tracing::info!(by = %session.username, user = id, key, "API key revoked");
+    Ok(Redirect::to(&format!(
+        "{}/auth/users/{id}?notice=api_key_revoked",
+        state.base
+    )))
 }

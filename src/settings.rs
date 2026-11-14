@@ -424,6 +424,9 @@ pub struct AuthSettings {
     pub login_max_attempts: u32,
     /// Length of the lockout period (default 5 minutes).
     pub login_lockout: Duration,
+    /// Whether accounts may make API keys for programs calling the REST API (default
+    /// `true`). Turned off, existing keys stop working.
+    pub api_keys: bool,
 }
 
 impl Default for AuthSettings {
@@ -437,6 +440,7 @@ impl Default for AuthSettings {
             cookie_secure: true,
             login_max_attempts: 5,
             login_lockout: Duration::from_secs(300),
+            api_keys: true,
         }
     }
 }

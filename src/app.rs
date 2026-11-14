@@ -167,7 +167,8 @@ impl App {
             .token_ttl_secs(auth.token_lifetime.as_secs().max(1))
             .totp_required(auth.totp_required)
             .cookie_secure(auth.cookie_secure)
-            .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1));
+            .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1))
+            .api_keys(auth.api_keys);
         auth_config = auth_config.with_methods(crate::oauth::Methods::new(
             auth.methods,
             auth.signup,
@@ -807,8 +808,8 @@ impl App {
     }
 
     /// Runs the management command given on the command line
-    /// (`serve`, `migrate`, `createsuperuser`, `changepassword`, `promote`, `totp`, `openapi`,
-    /// `routes`, `check`).
+    /// (`serve`, `makemigrations`, `migrate`, `showmigrations`, `sqlmigrate`, `createsuperuser`,
+    /// `changepassword`, `promote`, `totp`, `apikey`, `openapi`, `routes`, `check`).
     ///
     /// # Errors
     /// Returns whatever the chosen command fails with.
@@ -989,6 +990,28 @@ impl App {
                 println!("they are not shown again (new ones can be made on the two-factor page):");
                 for code in codes {
                     println!("  {code}");
+                }
+                Ok(())
+            }
+            Command::Apikey {
+                username,
+                name,
+                days,
+                read_only,
+            } => {
+                let key = crate::users::new_api_key(
+                    &self.db,
+                    &username,
+                    &name,
+                    (days > 0).then_some(days),
+                    read_only,
+                )
+                .await?;
+                println!("API key for `{username}` (shown only now; it is not stored):");
+                println!("  {key}");
+                println!("send it as: Authorization: Bearer {key}");
+                if !self.auth.api_keys {
+                    println!("note: auth.api_keys is off in the settings, so it does not work yet");
                 }
                 Ok(())
             }
@@ -1354,6 +1377,21 @@ enum Command {
         /// Turn it off instead, e.g. after a device was lost.
         #[arg(long)]
         disable: bool,
+    },
+    /// Make an API key for an account, for programs calling the REST API as it.
+    Apikey {
+        /// Login name of the account the key acts as.
+        #[arg(long)]
+        username: String,
+        /// What uses the key, e.g. "deploy script".
+        #[arg(long)]
+        name: String,
+        /// Days until it expires; 0 for never.
+        #[arg(long, default_value_t = 90)]
+        days: u32,
+        /// Only allow reading: no adding, changing or deleting.
+        #[arg(long)]
+        read_only: bool,
     },
     /// Make an existing account an active superuser.
     Promote {

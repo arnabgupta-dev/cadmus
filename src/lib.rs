@@ -43,8 +43,8 @@ use std::sync::Arc;
 pub use access::{Access, Action};
 pub use app::App;
 pub use auth::{
-    AdminUser, AuthConfig, EnvUserStore, UserStore, hash_password, hash_password_async, totp_uri,
-    verify_totp,
+    AdminUser, ApiKeyOwner, AuthConfig, EnvUserStore, UserStore, hash_password,
+    hash_password_async, totp_uri, verify_totp,
 };
 pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
@@ -60,11 +60,11 @@ pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
 pub use users::{
     DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, identity,
-    new_recovery_codes, promote, set_email, user,
+    new_api_key, new_recovery_codes, promote, set_email, user,
 };
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 15] = [
+const TEMPLATES: [(&str, &str); 16] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
@@ -80,6 +80,7 @@ const TEMPLATES: [(&str, &str); 15] = [
         "accounts_list.html",
         include_str!("../templates/accounts_list.html"),
     ),
+    ("api_keys.html", include_str!("../templates/api_keys.html")),
     (
         "user_form.html",
         include_str!("../templates/user_form.html"),
@@ -376,6 +377,7 @@ impl AdminBuilder {
                 &self.settings,
                 &self.resources,
                 self.uploads.is_some(),
+                auth.api_keys,
             )
         });
 

@@ -93,6 +93,20 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
   <style>.linked { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; } .linked li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }</style>
   {% endif %}
 
+  {% if api_keys %}
+  <section class="panel panel-pad" aria-labelledby="h-keys">
+    <h2 id="h-keys">API keys</h2>
+    <p class="muted">Keys this account made for programs calling the API. Revoking one stops it at once; unticking Active below stops them all.</p>
+    <ul class="linked">
+      {% for k in api_keys %}
+      <li><span><strong>{{ k.name }}</strong>{% if k.read_only %} · read only{% endif %}{% if k.expired %} · expired{% endif %}<br><span class="muted"><code>{{ k.prefix }}…</code> · made {{ k.created }} · {% if k.last_used %}last used {{ k.last_used }}{% else %}never used{% endif %}</span></span>
+        <button class="btn ghost" type="submit" form="revoke-{{ k.id }}">Revoke</button></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% if not identities %}<style>.linked { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; } .linked li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }</style>{% endif %}
+  {% endif %}
+
   <section class="panel panel-pad" aria-labelledby="h-status">
     <h2 id="h-status">Status</h2>
     <label class="option"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}><span><strong>Active</strong><span>Can log in. Untick to lock the account out without deleting it.</span></span></label>
@@ -129,6 +143,7 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
 {% if id is not none %}
 <form id="delete-form" method="post" action="{{ base }}/auth/users/{{ id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
 <form id="invite-form" method="post" action="{{ base }}/auth/users/{{ id }}/invite"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
+{% for k in api_keys %}<form id="revoke-{{ k.id }}" method="post" action="{{ base }}/auth/users/{{ id }}/api-keys/{{ k.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
 {% for i in identities %}<form id="unlink-{{ i.id }}" method="post" action="{{ base }}/auth/users/{{ id }}/identities/{{ i.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
 <dialog id="confirm-delete" aria-labelledby="confirm-title">
   <div class="dialog-body"><h2 id="confirm-title">Delete {{ username }}?</h2><p class="muted">The account can no longer log in, and its tokens stop working at once. This cannot be undone; to lock it out for now, untick Active instead.</p></div>
