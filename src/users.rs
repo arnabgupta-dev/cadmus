@@ -49,6 +49,40 @@ pub mod user {
         /// Time step of the last authenticator code this account logged in with; a code for
         /// this step or an earlier one is refused, so each code works once.
         pub totp_last_step: Option<i64>,
+        /// E-mail address, stored in lower case. Unique when set; it can be used to log in.
+        // A separate unique index rather than a unique column: SQLite cannot add a unique
+        // column to a table that already exists.
+        #[sea_orm(unique_key = "auth_user_email")]
+        pub email: Option<String>,
+        /// Given name.
+        pub first_name: Option<String>,
+        /// Family name.
+        pub last_name: Option<String>,
+        /// Telephone number, as entered.
+        pub phone: Option<String>,
+        /// When the account last logged in.
+        pub last_login: Option<DateTimeUtc>,
+        /// When the account was created (unknown for accounts older than this column).
+        pub date_joined: Option<DateTimeUtc>,
+    }
+
+    impl Model {
+        /// First and last name, or the username if neither is set.
+        #[must_use]
+        pub fn display_name(&self) -> String {
+            let name = [self.first_name.as_deref(), self.last_name.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if name.is_empty() {
+                self.username.clone()
+            } else {
+                name
+            }
+        }
     }
 
     /// No relations.
@@ -185,11 +219,9 @@ impl DbUserStore {
 
 #[async_trait]
 impl UserStore for DbUserStore {
-    async fn find(&self, username: &str) -> Result<Option<AdminUser>, AdminError> {
-        let account = user::Entity::find()
-            .filter(user::Column::Username.eq(username))
-            .one(&self.db)
-            .await?;
+    /// Accepts the username or the e-mail address.
+    async fn find(&self, login: &str) -> Result<Option<AdminUser>, AdminError> {
+        let account = find_by_login(&self.db, login).await?;
         Ok(account
             .filter(|a| a.is_active && a.is_staff)
             .map(|a| AdminUser {
@@ -197,6 +229,15 @@ impl UserStore for DbUserStore {
                 password_hash: a.password_hash,
                 totp_secret: a.totp_secret,
             }))
+    }
+
+    async fn logged_in(&self, username: &str) -> Result<(), AdminError> {
+        user::Entity::update_many()
+            .col_expr(user::Column::LastLogin, Expr::value(chrono::Utc::now()))
+            .filter(user::Column::Username.eq(username))
+            .exec(&self.db)
+            .await?;
+        Ok(())
     }
 
     /// One conditional update, so two logins racing with the same code cannot both win.
@@ -281,6 +322,25 @@ pub(crate) async fn store_totp(
     Ok(())
 }
 
+/// The account a login form names: by username, or else by e-mail address. Usernames may
+/// contain `@`, so the username is tried first.
+pub(crate) async fn find_by_login(
+    db: &DatabaseConnection,
+    login: &str,
+) -> Result<Option<user::Model>, AdminError> {
+    let login = login.trim();
+    if let Some(account) = find_account(db, login).await? {
+        return Ok(Some(account));
+    }
+    if !login.contains('@') {
+        return Ok(None);
+    }
+    Ok(user::Entity::find()
+        .filter(user::Column::Email.eq(login.to_lowercase()))
+        .one(db)
+        .await?)
+}
+
 /// The account with this login name, whatever its status.
 pub(crate) async fn find_account(
     db: &DatabaseConnection,
@@ -354,6 +414,50 @@ pub(crate) struct AccountInput {
     pub(crate) grants: Vec<(String, Action)>,
     /// Turns the account's two-factor authentication off.
     pub(crate) reset_totp: bool,
+    /// Empty text is stored as no value.
+    pub(crate) email: Option<String>,
+    pub(crate) first_name: Option<String>,
+    pub(crate) last_name: Option<String>,
+    pub(crate) phone: Option<String>,
+}
+
+/// Lower-cases an address and checks that it looks like one; `None` for empty input.
+fn normalise_email(email: Option<&str>) -> Result<Option<String>, AdminError> {
+    let Some(email) = email.map(str::trim).filter(|e| !e.is_empty()) else {
+        return Ok(None);
+    };
+    let valid = email.len() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        });
+    if !valid {
+        return Err(bad("email", "enter an address like name@example.com"));
+    }
+    Ok(Some(email.to_lowercase()))
+}
+
+/// Checks a telephone number loosely: digits with the usual separators.
+fn normalise_phone(phone: Option<&str>) -> Result<Option<String>, AdminError> {
+    let Some(phone) = phone.map(str::trim).filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let digits = phone.chars().filter(char::is_ascii_digit).count();
+    let valid = (5..=20).contains(&digits)
+        && phone
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '-' | '(' | ')' | '.'));
+    if !valid {
+        return Err(bad("phone", "use digits, spaces and + - ( ) only"));
+    }
+    Ok(Some(phone.to_owned()))
+}
+
+fn text(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
 /// Creates (`id == None`) or updates an account together with its groups and permissions.
@@ -367,6 +471,18 @@ pub(crate) async fn save_user(
     input: AccountInput,
 ) -> Result<i32, AdminError> {
     check_username(&input.username)?;
+    let email = normalise_email(input.email.as_deref())?;
+    let phone = normalise_phone(input.phone.as_deref())?;
+    // Checked here for a clear message; the unique key still guards against a race.
+    if let Some(address) = &email {
+        let holder = user::Entity::find()
+            .filter(user::Column::Email.eq(address.as_str()))
+            .one(db)
+            .await?;
+        if holder.is_some_and(|h| Some(h.id) != id) {
+            return Err(bad("email", "another account already uses this address"));
+        }
+    }
     let password_hash = match (&input.password, id) {
         (Some(password), _) => {
             check_password(password)?;
@@ -386,10 +502,16 @@ pub(crate) async fn save_user(
         None => user::ActiveModel {
             totp_secret: Set(None),
             totp_last_step: Set(None),
+            last_login: Set(None),
+            date_joined: Set(Some(chrono::Utc::now())),
             ..Default::default()
         },
     };
     account.username = Set(input.username);
+    account.email = Set(email);
+    account.first_name = Set(text(input.first_name));
+    account.last_name = Set(text(input.last_name));
+    account.phone = Set(phone);
     account.is_active = Set(input.is_active);
     account.is_staff = Set(input.is_staff);
     account.is_superuser = Set(input.is_superuser);
@@ -590,8 +712,40 @@ pub async fn create_superuser(
         groups: Vec::new(),
         grants: Vec::new(),
         reset_totp: false,
+        email: None,
+        first_name: None,
+        last_name: None,
+        phone: None,
     };
     save_user(db, None, input).await.map(|_| ())
+}
+
+/// Sets the e-mail address of an account, e.g. after `createsuperuser --email`.
+///
+/// # Errors
+/// [`AdminError::NotFound`] if there is no such account, [`AdminError::BadInput`] if the
+/// address is malformed or another account uses it.
+pub async fn set_email(
+    db: &DatabaseConnection,
+    username: &str,
+    email: &str,
+) -> Result<(), AdminError> {
+    let address = normalise_email(Some(email))?
+        .ok_or_else(|| bad("email", "enter an address like name@example.com"))?;
+    let account = find_account(db, username)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    let holder = user::Entity::find()
+        .filter(user::Column::Email.eq(address.as_str()))
+        .one(db)
+        .await?;
+    if holder.is_some_and(|h| h.id != account.id) {
+        return Err(bad("email", "another account already uses this address"));
+    }
+    let mut account: user::ActiveModel = account.into();
+    account.email = Set(Some(address));
+    account.update(db).await?;
+    Ok(())
 }
 
 /// Makes an existing account an active superuser, keeping its password.

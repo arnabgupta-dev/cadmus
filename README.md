@@ -128,7 +128,7 @@ The REST API is unchanged: it reads and writes the id (`author_id`).
 |---|---|
 | `serve [--bind addr]` | Start the server (graceful shutdown on Ctrl-C) |
 | `migrate` | Create missing tables, columns and unique keys for all models |
-| `createsuperuser --username U [--password-stdin]` | Create a superuser |
+| `createsuperuser --username U [--email E] [--password-stdin]` | Create a superuser |
 | `promote --username U` | Make an existing account an active superuser |
 | `totp --username U [--disable]` | Turn two-factor authentication on (prints a QR code to scan) or off |
 | `changepassword --username U [--password-stdin]` | Change a password |
@@ -230,8 +230,13 @@ Log messages go to standard error; `LOG_LEVEL` sets the detail. If your `main` i
 Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); implement
 `UserStore` to use your own.
 
-- Username + password (Argon2id, verified off the async executor). What an account may do
-  once logged in is described under [Permissions](#permissions).
+- Username or e-mail address + password (Argon2id, verified off the async executor). What an
+  account may do once logged in is described under [Permissions](#permissions).
+- Accounts have optional details: e-mail (unique, stored in lower case), first and last name
+  and phone, plus when they joined and last logged in. Superusers edit them on the Users page;
+  `createsuperuser --email` sets the address of the first account. For fields of your own,
+  add a model with a `belongs_to` relation to `heraapi::user::Entity` (one profile row per
+  account).
 - Optional two-factor authentication with any authenticator app (TOTP);
   `ADMIN_TOTP_REQUIRED=true` makes it mandatory. See below.
 - `POST /api/auth/token` with `{"username", "password", "totp"}` (JSON or a form) returns a
@@ -413,8 +418,10 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** no OIDC/OAuth login, API keys, per-record (row-level) permissions, recovery codes
-  for two-factor authentication, or a page for users to change their own password. Login
+- **Auth:** password login only for now. Planned, chosen per project in `.env`: single sign-on
+  (Google, Microsoft, GitHub, Facebook and any OpenID Connect provider), e-mail magic links,
+  passkeys and API keys. Also missing: per-record (row-level) permissions, recovery codes for
+  two-factor authentication, and a page for users to change their own password. Login
   limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.
 - **Admin:** uploaded files are not editable in the admin; no filters or bulk actions; no

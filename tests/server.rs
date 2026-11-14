@@ -358,32 +358,37 @@ async fn every_request_is_logged_without_its_query_string() {
     let db = database().await;
     let app = new_app(&db).router().unwrap();
 
+    // A process-wide subscriber: one that is set for this thread only can miss events while
+    // other tests in this binary register the same log call sites at the same moment.
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    // This test runs on one thread, so the log of its requests ends up here.
-    let guard = tracing::subscriber::set_default(subscriber);
-    fetch(&app, Method::GET, "/hello?secret=hunter2", &[]).await;
-    fetch(&app, Method::GET, "/api/note?q=private+search", &[]).await;
-    fetch(&app, Method::POST, "/nowhere", &[]).await;
-    drop(guard);
+    tracing::subscriber::set_global_default(subscriber).expect("only this test sets one");
+
+    // Paths no other test uses, since every test's requests now reach this log.
+    fetch(&app, Method::GET, "/log-probe?secret=hunter2", &[]).await;
+    fetch(&app, Method::GET, "/api/log-probe?q=private+search", &[]).await;
+    fetch(&app, Method::POST, "/log-probe-post", &[]).await;
 
     let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-    let lines: Vec<&str> = log.lines().filter(|l| l.contains("request")).collect();
-    assert_eq!(lines.len(), 3, "{log}");
+    let ours: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains(" request ") && l.contains("log-probe"))
+        .collect();
+    assert_eq!(ours.len(), 3, "{log}");
     assert!(
-        lines[0].contains("method=GET path=/hello status=200 ms="),
+        ours[0].contains("method=GET path=/log-probe status=404 ms="),
         "{log}"
     );
     assert!(
-        lines[1].contains("method=GET path=/api/note status=401 ms="),
+        ours[1].contains("method=GET path=/api/log-probe status=401 ms="),
         "{log}"
     );
     assert!(
-        lines[2].contains("method=POST path=/nowhere status=404 ms="),
+        ours[2].contains("method=POST path=/log-probe-post status=404 ms="),
         "{log}"
     );
     assert!(

@@ -814,7 +814,7 @@ fn document(
         json!({
             "type": "object", "required": ["username", "password"],
             "properties": {
-                "username": { "type": "string" },
+                "username": { "type": "string", "description": "Username, or the account's e-mail address" },
                 "password": { "type": "string", "format": "password" },
                 "totp": { "type": "string", "description": "Six-digit authenticator code, for accounts with two-factor authentication", "example": "123456" },
             },

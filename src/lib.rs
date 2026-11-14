@@ -51,7 +51,8 @@ pub use settings::{NavLink, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
 pub use users::{
-    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, promote, user,
+    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, promote,
+    set_email, user,
 };
 
 /// Template names and their built-in sources.

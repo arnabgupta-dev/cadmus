@@ -256,6 +256,7 @@ async fn index(State(state): Shared, session: Session) -> Result<Html<String>, A
     }
     let mut accounts = None;
     let mut two_factor = None;
+    let mut greeting = None;
     if let Some(db) = &state.accounts {
         use sea_orm::{EntityTrait, PaginatorTrait};
         if session.access.is_superuser() {
@@ -263,9 +264,10 @@ async fn index(State(state): Shared, session: Session) -> Result<Html<String>, A
             let groups = crate::users::group::Entity::find().count(db).await?;
             accounts = Some(context! { users, groups });
         }
-        two_factor = crate::users::find_account(db, &session.username)
-            .await?
-            .map(|a| a.totp_secret.is_some());
+        if let Some(account) = crate::users::find_account(db, &session.username).await? {
+            two_factor = Some(account.totp_secret.is_some());
+            greeting = Some(account.display_name());
+        }
     }
     render(
         &state,
@@ -276,6 +278,7 @@ async fn index(State(state): Shared, session: Session) -> Result<Html<String>, A
             tiles => Value::from(Serde(&tiles)),
             accounts,
             two_factor,
+            greeting,
         },
     )
 }

@@ -222,7 +222,12 @@ async fn user_list(
         .map(|a| ListRow {
             id: a.id,
             cells: vec![
-                a.username,
+                a.username.clone(),
+                // A blank name is shown as nothing rather than repeating the username.
+                Some(a.display_name())
+                    .filter(|n| *n != a.username)
+                    .unwrap_or_default(),
+                a.email.clone().unwrap_or_default(),
                 yes_no(a.is_active),
                 yes_no(a.is_staff),
                 yes_no(a.is_superuser),
@@ -235,7 +240,15 @@ async fn user_list(
         &session,
         "users",
         "Users",
-        &["Username", "Active", "Staff", "Superuser", "Two-factor"],
+        &[
+            "Username",
+            "Name",
+            "Email",
+            "Active",
+            "Staff",
+            "Superuser",
+            "Two-factor",
+        ],
         &rows,
         query.notice.as_deref(),
     )
@@ -251,6 +264,13 @@ struct GroupChoice {
 /// What the user form shows: either a stored account or a rejected submission, as typed.
 struct UserView {
     username: String,
+    email: String,
+    first_name: String,
+    last_name: String,
+    phone: String,
+    /// Shown, never edited.
+    last_login: Option<String>,
+    date_joined: Option<String>,
     is_active: bool,
     is_staff: bool,
     is_superuser: bool,
@@ -263,6 +283,12 @@ impl UserView {
     fn blank() -> Self {
         Self {
             username: String::new(),
+            email: String::new(),
+            first_name: String::new(),
+            last_name: String::new(),
+            phone: String::new(),
+            last_login: None,
+            date_joined: None,
             is_active: true,
             is_staff: true,
             is_superuser: false,
@@ -275,6 +301,12 @@ impl UserView {
     fn from_input(input: &AccountInput, has_totp: bool) -> Self {
         Self {
             username: input.username.clone(),
+            email: input.email.clone().unwrap_or_default(),
+            first_name: input.first_name.clone().unwrap_or_default(),
+            last_name: input.last_name.clone().unwrap_or_default(),
+            phone: input.phone.clone().unwrap_or_default(),
+            last_login: None,
+            date_joined: None,
             is_active: input.is_active,
             is_staff: input.is_staff,
             is_superuser: input.is_superuser,
@@ -309,6 +341,12 @@ async fn render_user(
             section => "users",
             id,
             username => &view.username,
+            email => &view.email,
+            first_name => &view.first_name,
+            last_name => &view.last_name,
+            phone => &view.phone,
+            last_login => &view.last_login,
+            date_joined => &view.date_joined,
             is_active => view.is_active,
             is_staff => view.is_staff,
             is_superuser => view.is_superuser,
@@ -335,7 +373,16 @@ fn user_input(state: &AdminState, form: &Submitted) -> AccountInput {
         groups: form.all("group").filter_map(|id| id.parse().ok()).collect(),
         grants: form.grants(state),
         reset_totp: form.checked("reset_totp"),
+        email: form.get("email").map(str::to_owned),
+        first_name: form.get("first_name").map(str::to_owned),
+        last_name: form.get("last_name").map(str::to_owned),
+        phone: form.get("phone").map(str::to_owned),
     }
+}
+
+/// A timestamp as the admin shows it.
+fn when(at: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
+    at.map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
 }
 
 async fn user_new(State(state): Shared, session: Session) -> Result<Html<String>, AdminError> {
@@ -367,6 +414,12 @@ async fn user_edit(
         .await?
         .ok_or_else(|| AdminError::NotFound(format!("user `{id}`")))?;
     let view = UserView {
+        email: account.email.clone().unwrap_or_default(),
+        first_name: account.first_name.clone().unwrap_or_default(),
+        last_name: account.last_name.clone().unwrap_or_default(),
+        phone: account.phone.clone().unwrap_or_default(),
+        last_login: when(account.last_login),
+        date_joined: when(account.date_joined),
         username: account.username,
         is_active: account.is_active,
         is_staff: account.is_staff,

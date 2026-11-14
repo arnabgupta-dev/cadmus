@@ -36,7 +36,7 @@
 {% block crumbs %}<span class="here">Dashboard</span>{% endblock %}
 {% block content %}
 <div class="hello">
-  <h1>{{ site.site_title }}</h1>
+  <h1>{% if greeting %}Hello, {{ greeting }}{% else %}{{ site.site_title }}{% endif %}</h1>
   <p>{% if is_superuser %}You have full access, including accounts.{% elif tiles %}Showing the {{ tiles|length }} model{% if tiles|length != 1 %}s{% endif %} your account can open.{% else %}Your account has no permissions yet.{% endif %}</p>
 </div>
 

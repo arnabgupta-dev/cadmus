@@ -23,7 +23,7 @@ use crate::settings::UiSettings;
 use crate::storage::Storage;
 use crate::uploads::Uploads;
 use crate::users::{
-    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, promote,
+    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, promote, set_email,
 };
 use crate::{Admin, base_path, server};
 
@@ -414,10 +414,14 @@ impl App {
             }
             Command::Createsuperuser {
                 username,
+                email,
                 password_stdin,
             } => {
                 let password = read_password(password_stdin)?;
                 create_superuser(&self.db, &username, &password).await?;
+                if let Some(email) = email {
+                    set_email(&self.db, &username, &email).await?;
+                }
                 println!("created superuser `{username}`");
                 Ok(())
             }
@@ -582,6 +586,9 @@ enum Command {
         /// Login name.
         #[arg(long)]
         username: String,
+        /// E-mail address; the account can log in with it too.
+        #[arg(long)]
+        email: Option<String>,
         /// Read the password from standard input instead of prompting.
         #[arg(long)]
         password_stdin: bool,

@@ -284,6 +284,15 @@ pub trait UserStore: Send + Sync {
         Ok(self.find(username).await?.map(|_| Access::superuser()))
     }
 
+    /// Called after each successful login with the account's username, e.g. to record the
+    /// time. The default does nothing.
+    ///
+    /// # Errors
+    /// Whatever the store fails with; the login is then refused with a `500`.
+    async fn logged_in(&self, _username: &str) -> Result<(), AdminError> {
+        Ok(())
+    }
+
     /// Records that the account logged in with the authenticator code of time step `step`,
     /// and says whether that is allowed: `false` if this step or a later one was already
     /// used, which means the code is being replayed.
@@ -407,16 +416,21 @@ pub(crate) async fn login(
     credentials: &Credentials,
     address: Option<IpAddr>,
 ) -> Result<String, AdminError> {
-    let username = credentials.username.as_str();
+    let typed = credentials.username.trim();
+    // Look the account up first, so that its username and its e-mail address share one
+    // attempt count; a name that matches nothing is counted as typed.
+    let user = state.users.find(typed).await?;
+    let key = user
+        .as_ref()
+        .map_or_else(|| typed.to_lowercase(), |u| u.username.clone());
     state
         .limiter
-        .attempt(username, address)
+        .attempt(&key, address)
         .map_err(|retry_after_secs| {
-            tracing::warn!(%username, ?address, "login attempts exhausted");
+            tracing::warn!(login = %typed, ?address, "login attempts exhausted");
             AdminError::RateLimited { retry_after_secs }
         })?;
 
-    let user = state.users.find(username).await?;
     // Argon2 is deliberately slow; run it on the blocking pool so it cannot stall other requests.
     let candidate = credentials.password.clone();
     let hash = user
@@ -433,15 +447,16 @@ pub(crate) async fn login(
             let code = credentials.totp.as_deref().unwrap_or_default();
             let step = totp_step(secret, code, unix_now()).ok_or(AdminError::Unauthorized)?;
             // Each code works once, so one read over a shoulder or off the wire is useless.
-            if !state.users.accept_totp_step(username, step).await? {
-                tracing::warn!(%username, "authenticator code reused");
+            if !state.users.accept_totp_step(&user.username, step).await? {
+                tracing::warn!(username = %user.username, "authenticator code reused");
                 return Err(AdminError::Unauthorized);
             }
         }
         None if state.auth.totp_required => return Err(AdminError::Unauthorized),
         None => {}
     }
-    state.limiter.succeeded(username, address);
+    state.limiter.succeeded(&key, address);
+    state.users.logged_in(&user.username).await?;
     state.auth.issue(&user.username)
 }
 

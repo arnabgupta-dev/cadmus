@@ -46,11 +46,29 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
         <p class="muted">Letters, digits and <code>_ - . @</code>.</p>
       </div>
       <div class="field">
+        <label for="f-email">Email</label>
+        <input id="f-email" name="email" type="email" value="{{ email }}" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="email">
+        <p class="muted">Optional. The account can log in with it instead of the username.</p>
+      </div>
+      <div class="field">
+        <label for="f-first">First name</label>
+        <input id="f-first" name="first_name" value="{{ first_name }}" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="f-last">Last name</label>
+        <input id="f-last" name="last_name" value="{{ last_name }}" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="f-phone">Phone</label>
+        <input id="f-phone" name="phone" type="tel" value="{{ phone }}" autocomplete="off" inputmode="tel">
+      </div>
+      <div class="field">
         <label for="f-password"{% if id is none %} class="required"{% endif %}>Password</label>
         <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8"{% if id is none %} required{% endif %}>
         <p class="muted">{% if id is not none %}Leave empty to keep the current password.{% else %}At least 8 characters.{% endif %}</p>
       </div>
     </div>
+    {% if id is not none %}<p class="muted" style="padding:0 24px 20px">{% if date_joined %}Joined {{ date_joined }}. {% endif %}{% if last_login %}Last logged in {{ last_login }}.{% else %}Has not logged in yet.{% endif %}</p>{% endif %}
   </section>
 
   <section class="panel panel-pad" aria-labelledby="h-status">
