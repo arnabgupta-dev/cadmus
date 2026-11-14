@@ -26,7 +26,7 @@ same agent.
 Its address:
 
 ```text
-https://cadmus-mcp.example.workers.dev/mcp
+https://cadmus-mcp.cadmus-mcp.workers.dev/mcp
 ```
 
 It needs no login, and it can only read the docs. It always serves the docs on this site.
@@ -42,7 +42,7 @@ it on.
 **Claude Code**:
 
 ```sh
-claude mcp add --transport http cadmus-docs https://cadmus-mcp.example.workers.dev/mcp
+claude mcp add --transport http cadmus-docs https://cadmus-mcp.cadmus-mcp.workers.dev/mcp
 ```
 
 **Gemini CLI** (`~/.gemini/settings.json`):
@@ -50,7 +50,7 @@ claude mcp add --transport http cadmus-docs https://cadmus-mcp.example.workers.d
 ```json
 {
   "mcpServers": {
-    "cadmus-docs": { "httpUrl": "https://cadmus-mcp.example.workers.dev/mcp" }
+    "cadmus-docs": { "httpUrl": "https://cadmus-mcp.cadmus-mcp.workers.dev/mcp" }
   }
 }
 ```
@@ -60,7 +60,7 @@ claude mcp add --transport http cadmus-docs https://cadmus-mcp.example.workers.d
 ```json
 {
   "mcpServers": {
-    "cadmus-docs": { "url": "https://cadmus-mcp.example.workers.dev/mcp" }
+    "cadmus-docs": { "url": "https://cadmus-mcp.cadmus-mcp.workers.dev/mcp" }
   }
 }
 ```
@@ -70,7 +70,7 @@ claude mcp add --transport http cadmus-docs https://cadmus-mcp.example.workers.d
 ```json
 {
   "servers": {
-    "cadmus-docs": { "type": "http", "url": "https://cadmus-mcp.example.workers.dev/mcp" }
+    "cadmus-docs": { "type": "http", "url": "https://cadmus-mcp.cadmus-mcp.workers.dev/mcp" }
   }
 }
 ```

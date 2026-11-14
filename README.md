@@ -788,7 +788,7 @@ with it:
 
 - **Hosted docs server**, for any app that adds an MCP server by its address (ChatGPT,
   Claude, Gemini CLI, Cursor, VS Code). Nothing to install; the assistant can search and read
-  the documentation. Add `https://cadmus-mcp.example.workers.dev/mcp`.
+  the documentation. Add `https://cadmus-mcp.cadmus-mcp.workers.dev/mcp`.
 - **Local server**, `cadmus mcp`, for coding agents on your computer. The agent can also
   create projects, add models and run migrations for you:
 

@@ -21,7 +21,8 @@ npx wrangler@4 login     # opens the browser; sign in or create a free Cloudflar
 npx wrangler@4 deploy
 ```
 
-The address is `https://cadmus-mcp.<your-subdomain>.workers.dev/mcp`. Redeploy only when
+The address is `https://cadmus-mcp.<your-subdomain>.workers.dev/mcp`; the live one is
+`https://cadmus-mcp.cadmus-mcp.workers.dev/mcp`. Redeploy only when
 `src/index.js` changes.
 
 The code uses only standard web APIs, so it can also run on Deno Deploy, Bun or Vercel Edge.
