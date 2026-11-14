@@ -222,3 +222,28 @@ fn environment_helpers_read_parse_and_name_the_variable() {
     assert_eq!(env_opt("HERA_TEST_EMPTY"), None);
     assert_eq!(env("HERA_TEST_NUMBER").unwrap(), " 42 ");
 }
+
+#[cfg(all(feature = "sqlite", feature = "postgres", feature = "mysql"))]
+#[tokio::test]
+async fn the_default_build_talks_to_every_database() {
+    // Nothing listens on port 1: getting as far as connecting proves the driver is there.
+    for url in [
+        "postgres://app:secret@127.0.0.1:1/shop",
+        "postgresql://app:secret@127.0.0.1:1/shop",
+        "mysql://app:secret@127.0.0.1:1/shop",
+    ] {
+        let mut custom = settings();
+        custom.database.url = url.into();
+        custom.database.acquire_timeout = Some(Duration::from_secs(1));
+        match App::from_settings(custom).await {
+            Err(AdminError::Db(e)) => {
+                assert!(
+                    !e.to_string().contains("no supporting driver"),
+                    "{url}: {e}"
+                );
+            }
+            Err(other) => panic!("{url}: expected a connection error, got {other}"),
+            Ok(_) => panic!("{url}: nothing should answer on port 1"),
+        }
+    }
+}

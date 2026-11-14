@@ -711,7 +711,12 @@ fn check_database_url(setting: &str, url: &str) -> Result<(), AdminError> {
     let (feature, built) = match scheme.as_str() {
         "sqlite" => ("sqlite", cfg!(feature = "sqlite")),
         "postgres" | "postgresql" => ("postgres", cfg!(feature = "postgres")),
-        "mysql" | "mariadb" => ("mysql", cfg!(feature = "mysql")),
+        "mysql" => ("mysql", cfg!(feature = "mysql")),
+        "mariadb" => {
+            return Err(AdminError::Config(format!(
+                "{setting}: MariaDB uses mysql:// addresses, e.g. mysql://user:password@host/name"
+            )));
+        }
         _ => {
             return Err(AdminError::Config(format!(
                 "{setting}: `{scheme}` is not a supported database; use sqlite://, \

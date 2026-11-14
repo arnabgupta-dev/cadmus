@@ -40,7 +40,8 @@ enum Command {
         /// Use a local checkout of the framework instead of the GitHub repository.
         #[arg(long)]
         framework_path: Option<PathBuf>,
-        /// Database the project will use.
+        /// Database the project starts with; only the address in .env depends on it, and
+        /// changing `DATABASE_URL` switches to another one later.
         #[arg(long, value_enum, default_value_t = Database::Sqlite)]
         database: Database,
     },
@@ -63,15 +64,6 @@ enum Database {
 }
 
 impl Database {
-    /// The framework's Cargo feature for this driver.
-    fn feature(self) -> &'static str {
-        match self {
-            Self::Sqlite => "sqlite",
-            Self::Postgres => "postgres",
-            Self::Mysql => "mysql",
-        }
-    }
-
     /// A `DATABASE_URL` to start from.
     fn url(self, project: &str) -> String {
         let name = project.replace('-', "_");
@@ -168,15 +160,8 @@ fn new_project(
         }
         None => format!("git = {REPOSITORY:?}"),
     };
-    // SQLite is the framework's default feature; the others replace it.
-    let framework = if database == Database::Sqlite {
-        format!("{{ {source} }}")
-    } else {
-        format!(
-            "{{ {source}, default-features = false, features = [{:?}] }}",
-            database.feature()
-        )
-    };
+    // Every driver is built in by default, so the database is chosen in settings.
+    let framework = format!("{{ {source} }}");
 
     write_new(
         &root.join("Cargo.toml"),
@@ -304,6 +289,9 @@ pub fn settings() -> Result<Settings, AdminError> {{
     Ok(Settings {{
         secret_key: env("SECRET_KEY")?,
         database: DatabaseSettings {{
+            // The address picks the database: sqlite://db.sqlite3?mode=rwc,
+            // postgres://user:password@host/name or mysql://user:password@host/name
+            // (MariaDB too). It usually holds a password, so it lives in .env.
             url: env("DATABASE_URL")?,
             ..Default::default()
         }},
@@ -753,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn new_project_selects_the_database_driver() {
+    fn new_project_starts_with_the_chosen_database() {
         let dir = temp("database");
         let read = |project: &str, file: &str| {
             std::fs::read_to_string(dir.join(project).join(file)).unwrap()
@@ -766,9 +754,11 @@ mod tests {
         assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
 
         new_project(&dir, "my-shop", None, Database::Postgres).unwrap();
-        assert!(read("my-shop", "Cargo.toml").contains(&format!(
-            "heraapi = {{ git = {REPOSITORY:?}, default-features = false, features = [\"postgres\"] }}"
-        )));
+        // Every driver is built in, so only the address differs.
+        assert_eq!(
+            read("my-shop", "Cargo.toml"),
+            read("lite", "Cargo.toml").replace("\"lite\"", "\"my-shop\"")
+        );
         for file in [".env", ".env.example"] {
             assert!(
                 read("my-shop", file)
@@ -778,7 +768,7 @@ mod tests {
         }
 
         new_project(&dir, "legacy", None, Database::Mysql).unwrap();
-        assert!(read("legacy", "Cargo.toml").contains("features = [\"mysql\"]"));
+        assert!(!read("legacy", "Cargo.toml").contains("features = [\"mysql\"]"));
         assert!(
             read("legacy", ".env")
                 .contains("DATABASE_URL=mysql://root:root@localhost:3306/legacy\n")

@@ -10,7 +10,9 @@ keywords = ["axum", "sea-orm", "admin", "rest", "crud"]
 categories = ["web-programming", "web-programming::http-server", "database"]
 
 [features]
-default = ["sqlite"]
+# Every driver is built in, so the database is chosen by `database.url` alone. Projects that
+# use one database can keep only its driver with `default-features = false`.
+default = ["sqlite", "postgres", "mysql"]
 sqlite = ["sea-orm/sqlx-sqlite", "sea-orm/runtime-tokio-rustls"]
 postgres = ["sea-orm/sqlx-postgres", "sea-orm/runtime-tokio-rustls"]
 mysql = ["sea-orm/sqlx-mysql", "sea-orm/runtime-tokio-rustls"]

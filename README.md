@@ -25,8 +25,8 @@ checkout, use `cargo install --path cli` and `hera new blog --framework-path /pa
 
 `hera new` writes `src/settings.rs` (see [Settings](#settings)), a `.env` with the database URL
 and a generated signing secret (git-ignored), and a `.env.example`.
-`hera new blog --database postgres` (or `mysql`) sets the project up for that database instead
-of SQLite: it selects the driver and writes a matching `DATABASE_URL` to edit.
+`hera new blog --database postgres` (or `mysql`) writes a PostgreSQL `DATABASE_URL` to edit
+instead of the SQLite one; every driver is built in, so that address is the only difference.
 
 Field types: `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`,
 and `references` for a foreign key to another model; add `?` for nullable.
@@ -543,20 +543,22 @@ from environment variables. It still works; to move to settings, run `hera new` 
 
 ## Databases
 
-| Database | Cargo feature | `DATABASE_URL` |
-|---|---|---|
-| SQLite | `sqlite` (default) | `sqlite://db.sqlite3?mode=rwc` |
-| PostgreSQL | `postgres` | `postgres://user:password@host:5432/name` |
-| MySQL and MariaDB | `mysql` | `mysql://user:password@host:3306/name` |
+The address in `database.url` chooses the database, as `DATABASES` does in Django. Every
+driver is built in, so switching is a settings change: no code or `Cargo.toml` edit.
 
-Oracle and SQL Server are not supported: open-source SeaORM, the database layer, has no driver for them.
-If `DATABASE_URL` names a database the project was not built for, start-up says which
-feature to turn on.
+| Database | `database.url` |
+|---|---|
+| SQLite | `sqlite://db.sqlite3?mode=rwc` (`mode=rwc` creates the file) |
+| PostgreSQL | `postgres://user:password@host:5432/name` |
+| MySQL and MariaDB | `mysql://user:password@host:3306/name` |
 
-Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`. `hera new
---database` picks one for a new project; to switch an existing project, change the dependency
-to `heraapi = { ..., default-features = false, features = ["postgres"] }` and its
-`DATABASE_URL`.
+Oracle and SQL Server are not supported: open-source SeaORM, the database layer, has no
+driver for them.
+
+**Smaller builds.** A project that only ever uses one database can leave the other drivers out
+to compile faster: `heraapi = { ..., default-features = false, features = ["postgres"] }`
+(the features are `sqlite`, `postgres` and `mysql`). An address for a driver left out then
+stops start-up with the feature to turn back on.
 
 The API behaves the same on SQLite and PostgreSQL: date-times are ISO 8601
 (`2026-03-04T05:06:07`), JSON columns are returned as JSON, and `?q=` search ignores case and
