@@ -114,6 +114,7 @@ server with the setting it is about, e.g. `admin.accent_color: accent colour mus
 | `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
 | `home` | `enabled`, `title`, `tagline` |
 | `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
+| `mail` | `url` (SMTP; unset writes messages to the log), `from` |
 | `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
 
 Durations are written `Duration::from_secs(600)`. Different values per machine are ordinary
@@ -345,6 +346,7 @@ auth: AuthSettings {
 | Method | What it needs |
 |---|---|
 | `AuthMethod::Password` | nothing; leave it out to turn password login off everywhere, the API's token endpoint included |
+| `AuthMethod::MagicLink` | [e-mail](#e-mail); people type their address and get a login link |
 | `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
 | `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
 | `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
@@ -375,6 +377,35 @@ create an account at the first login, as staff without permissions of their own,
   does not say whether addresses are verified, `trust_email: true` trusts them; only do that
   for a directory whose users cannot pick their own address.
 - These logins are for the admin. API clients still get a token from `POST /api/auth/token`.
+
+### E-mail
+
+Login links and password resets are sent by e-mail. Until `mail.url` is set, messages are
+written to the server's log instead, so on your own machine you copy the link from the
+terminal:
+
+```rust
+mail: MailSettings {
+    url: env_opt("MAIL_URL"),   // smtps://user:password@smtp.example.com
+    from: Some("Acme <noreply@acme.com>".into()),
+},
+```
+
+`smtps://` (TLS, port 465) and `smtp://…?tls=required` (STARTTLS, port 587) work with any
+provider's SMTP service. Unencrypted `smtp://` is accepted only for this machine, e.g. a test
+inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
+implement `heraapi::Mailer` (one `send` method) and pass it to `App::mailer`.
+
+- **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
+  link that works once, within 15 minutes; any other login retires it too. Opening the link
+  shows a button rather than logging in at once, because mail scanners open links to check
+  them. Two-factor accounts then enter their code. `signup` applies as for other sites.
+- **Forgot your password?** appears under the password field when passwords are on and
+  `server.public_url` is set. The link works for an hour, until the password is changed.
+- **Your own password:** the lock button next to your name opens the page to change it.
+- The reply to "send me a link" is the same whether or not the address has an account, and
+  messages are sent in the background, so neither the answer nor its timing reveals who is
+  registered. Requests are limited like login attempts.
 
 ### Two-factor authentication
 
@@ -577,12 +608,11 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** e-mail magic links, passkeys and API keys are planned as further login methods.
+- **Auth:** passkeys and API keys are planned as further login methods; invitations and
+  two-factor recovery codes are next.
   Logins through other sites are for the admin only; API clients cannot use them yet, and
   linking another site to an account goes by e-mail address only (no "connect" button).
-  Also missing: per-record (row-level) permissions, recovery codes for
-  two-factor authentication, and a page for users to change their own password. Login
-  limits are per process, not shared between instances. Accounts and groups are managed in
+  Also missing: per-record (row-level) permissions. Login limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.
 - **Admin:** uploaded files are not editable in the admin; no filters or bulk actions; no
   file-upload field on model forms. Relations: no many-to-many widget, no list of the rows

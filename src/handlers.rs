@@ -96,6 +96,7 @@ pub(crate) fn render(
         is_superuser => session.is_some_and(|s| s.access.is_superuser()),
         // Whether accounts are the built-in ones, which have a page for the user's own settings.
         self_service => state.accounts.is_some() && session.is_some(),
+        password_login => state.auth.methods.password,
         // Whether to link to the Users and Groups pages.
         manages_accounts => state.accounts.is_some()
             && session.is_some_and(|s| s.access.is_superuser()),
@@ -158,8 +159,44 @@ struct LoginButton<'a> {
     label: &'a str,
 }
 
-/// What the login page shows: the password form, provider buttons, or the code step.
-fn login_context(state: &AdminState, error: Option<String>, code_step: bool) -> Value {
+/// Which step of logging in the login page shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// The ways to log in.
+    Login,
+    /// The authenticator code, after another site or a login link.
+    Code,
+    /// "Check your inbox."
+    Sent,
+    /// The button that uses a login link.
+    Link,
+    /// The address to send a password reset link to.
+    Forgot,
+    /// Choosing the new password.
+    Reset,
+}
+
+impl Mode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Code => "code",
+            Self::Sent => "sent",
+            Self::Link => "link",
+            Self::Forgot => "forgot",
+            Self::Reset => "reset",
+        }
+    }
+}
+
+/// The login page in `mode`, with an error or a notice.
+pub(crate) fn login_page_as(
+    state: &AdminState,
+    status: StatusCode,
+    mode: Mode,
+    error: Option<String>,
+    notice: Option<String>,
+) -> Result<Response, AdminError> {
     let methods = &state.auth.methods;
     let buttons: Vec<LoginButton<'_>> = methods
         .providers
@@ -169,13 +206,27 @@ fn login_context(state: &AdminState, error: Option<String>, code_step: bool) -> 
             label: &p.label,
         })
         .collect();
-    context! {
-        totp_required => state.auth.totp_required,
-        password_login => methods.password,
-        providers => Serde(buttons),
-        code_step => code_step,
-        error => error,
-    }
+    let page = render(
+        state,
+        "login.html",
+        None,
+        context! {
+            mode => mode.name(),
+            totp_required => state.auth.totp_required,
+            password_login => methods.password,
+            magic_link => methods.magic_link && state.accounts.is_some(),
+            can_reset => crate::login::can_reset(state),
+            providers => Serde(buttons),
+            error => error,
+            notice => notice,
+        },
+    )?;
+    Ok((
+        status,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        page,
+    )
+        .into_response())
 }
 
 /// The login page with a message, e.g. after a refused login through a provider.
@@ -184,23 +235,7 @@ pub(crate) fn login_error(
     status: StatusCode,
     message: String,
 ) -> Result<Response, AdminError> {
-    let page = render(
-        state,
-        "login.html",
-        None,
-        login_context(state, Some(message), false),
-    )?;
-    Ok((status, page).into_response())
-}
-
-/// The page that asks for the authenticator code after a login through a provider.
-pub(crate) fn code_form(
-    state: &AdminState,
-    status: StatusCode,
-    error: Option<String>,
-) -> Result<Response, AdminError> {
-    let page = render(state, "login.html", None, login_context(state, error, true))?;
-    Ok((status, page).into_response())
+    login_page_as(state, status, Mode::Login, Some(message), None)
 }
 
 /// The admin session cookie.
@@ -213,13 +248,8 @@ pub(crate) fn session_cookie(state: &AdminState, token: String) -> Cookie<'stati
         .build()
 }
 
-async fn login_page(State(state): Shared) -> Result<Html<String>, AdminError> {
-    render(
-        &state,
-        "login.html",
-        None,
-        login_context(&state, None, false),
-    )
+async fn login_page(State(state): Shared) -> Result<Response, AdminError> {
+    login_page_as(&state, StatusCode::OK, Mode::Login, None, None)
 }
 
 async fn login_submit(
@@ -382,6 +412,7 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
         "group_deleted" => "Group deleted.",
         "two_factor_on" => "Two-factor authentication is on.",
         "two_factor_off" => "Two-factor authentication is off.",
+        "password_changed" => "Your password is changed.",
         _ => return None,
     })
 }

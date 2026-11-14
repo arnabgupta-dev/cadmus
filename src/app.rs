@@ -65,6 +65,8 @@ pub struct App {
     home: HomeConfig,
     /// `None` reads `LOG_LEVEL` when the server starts.
     log_level: Option<tracing::Level>,
+    /// `None` writes messages to the log.
+    mailer: Option<Arc<dyn crate::mail::Mailer>>,
 }
 
 impl App {
@@ -89,6 +91,7 @@ impl App {
             docs: DocsConfig::new(),
             home: HomeConfig::new(),
             log_level: None,
+            mailer: None,
         }
     }
 
@@ -143,6 +146,7 @@ impl App {
             docs,
             home,
             uploads,
+            mail,
             log_level,
         } = settings;
 
@@ -228,6 +232,19 @@ impl App {
                         usize::try_from(uploads.max_chunk_bytes).unwrap_or(usize::MAX),
                     ),
             );
+        }
+        if let Some(url) = mail.url.filter(|url| !url.trim().is_empty()) {
+            let from = mail
+                .from
+                .filter(|from| !from.trim().is_empty())
+                .ok_or_else(|| {
+                    AdminError::Config(
+                        "mail.from is not set: who should messages come from, e.g. \
+                     `Shop <noreply@shop.example.com>`?"
+                            .into(),
+                    )
+                })?;
+            app.mailer = Some(Arc::new(crate::mail::SmtpMailer::new(&url, &from)?));
         }
         app.log_level = Some(log_level);
         Ok(app)
@@ -325,6 +342,15 @@ impl App {
     pub fn users(mut self, users: impl UserStore + 'static) -> Self {
         self.users = Arc::new(users);
         self.builtin_users = false;
+        self
+    }
+
+    /// Sends login links and password resets through `mailer`, e.g. your own
+    /// [`crate::Mailer`] over an e-mail service's HTTP API. Without one, `mail.url` decides;
+    /// with neither, messages are written to the log.
+    #[must_use]
+    pub fn mailer(mut self, mailer: impl crate::mail::Mailer + 'static) -> Self {
+        self.mailer = Some(Arc::new(mailer));
         self
     }
 
@@ -441,6 +467,7 @@ impl App {
     /// The admin and API as configured so far.
     fn admin(&self) -> Result<Admin, AdminError> {
         let mut builder = Admin::builder()
+            .mailer_shared(self.mailer.clone())
             .settings(self.settings.clone())
             .docs(self.docs.clone())
             .auth_shared(self.auth.clone(), Arc::clone(&self.users));

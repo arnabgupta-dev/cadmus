@@ -377,6 +377,17 @@ pub(crate) async fn find_by_login(
         .await?)
 }
 
+/// The account with this e-mail address, whatever its status.
+pub(crate) async fn find_by_email(
+    db: &DatabaseConnection,
+    email: &str,
+) -> Result<Option<user::Model>, AdminError> {
+    Ok(user::Entity::find()
+        .filter(user::Column::Email.eq(email.trim().to_lowercase()))
+        .one(db)
+        .await?)
+}
+
 /// The account with this login name, whatever its status.
 pub(crate) async fn find_account(
     db: &DatabaseConnection,
@@ -695,7 +706,15 @@ pub(crate) async fn resolve_identity(
     let account = match existing {
         Some(account) => account,
         None if methods.signup_allows(&email) => {
-            signup(db, &email, found, &methods.signup_groups).await?
+            signup(
+                db,
+                &email,
+                found.first_name.clone(),
+                found.last_name.clone(),
+                &methods.signup_groups,
+                &found.provider,
+            )
+            .await?
         }
         None => {
             return Ok(Err(format!(
@@ -717,13 +736,16 @@ pub(crate) async fn resolve_identity(
     Ok(Ok(account))
 }
 
-/// Creates the account of someone who logged in through another site for the first time:
-/// active staff without permissions of its own, in `groups`, with a password nobody knows.
-async fn signup(
+/// Creates the account of someone who logged in through another site or a login link for
+/// the first time: active staff without permissions of its own, in `groups`, with a password
+/// nobody knows. `source` names how they came, for the log.
+pub(crate) async fn signup(
     db: &DatabaseConnection,
     email: &str,
-    found: &crate::oauth::Identity,
+    first_name: Option<String>,
+    last_name: Option<String>,
     groups: &[String],
+    source: &str,
 ) -> Result<user::Model, AdminError> {
     // The address is the username, unless an older account already has that name.
     let mut username = email.to_owned();
@@ -747,8 +769,8 @@ async fn signup(
         is_superuser: Set(false),
         totp_last_step: Set(None),
         email: Set(Some(email.to_owned())),
-        first_name: Set(found.first_name.clone()),
-        last_name: Set(found.last_name.clone()),
+        first_name: Set(first_name),
+        last_name: Set(last_name),
         phone: Set(None),
         last_login: Set(None),
         date_joined: Set(Some(chrono::Utc::now())),
@@ -777,7 +799,7 @@ async fn signup(
         }
     }
     txn.commit().await?;
-    tracing::info!(username = %account.username, provider = %found.provider, "account created at first login");
+    tracing::info!(username = %account.username, %source, "account created at first login");
     Ok(account)
 }
 

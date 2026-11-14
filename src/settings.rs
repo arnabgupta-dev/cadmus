@@ -288,6 +288,8 @@ pub struct Settings {
     pub home: HomeSettings,
     /// File uploads.
     pub uploads: UploadSettings,
+    /// Sending e-mail: login links and password resets.
+    pub mail: MailSettings,
     /// How much is logged. SQL statements are logged from `DEBUG` up.
     pub log_level: LogLevel,
 }
@@ -304,6 +306,7 @@ impl Default for Settings {
             docs: DocsSettings::default(),
             home: HomeSettings::default(),
             uploads: UploadSettings::default(),
+            mail: MailSettings::default(),
             log_level: LogLevel::INFO,
         }
     }
@@ -322,6 +325,7 @@ impl std::fmt::Debug for Settings {
             .field("docs", &self.docs)
             .field("home", &self.home)
             .field("uploads", &self.uploads)
+            .field("mail", &self.mail)
             .field("log_level", &self.log_level)
             .finish()
     }
@@ -446,8 +450,12 @@ impl Default for AuthSettings {
 /// `https://shop.example.com/admin/auth/google/callback`.
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
-    /// Username or e-mail address and password.
+    /// Username or e-mail address and password. Adds "Forgot your password?", which e-mails
+    /// a link to choose a new one.
     Password,
+    /// A login link e-mailed to the account's address, valid once for 15 minutes. Sent with
+    /// [`MailSettings`]; needs `server.public_url` for the link.
+    MagicLink,
     /// Sign in with Google (OpenID Connect).
     Google(OAuthClient),
     /// Sign in with a Microsoft account (OpenID Connect).
@@ -474,6 +482,7 @@ impl AuthMethod {
     pub fn name(&self) -> &str {
         match self {
             Self::Password => "password",
+            Self::MagicLink => "magic-link",
             Self::Google(_) => "google",
             Self::Microsoft { .. } => "microsoft",
             Self::GitHub(_) => "github",
@@ -734,6 +743,28 @@ impl Default for HomeSettings {
             title: None,
             tagline: None,
         }
+    }
+}
+
+/// Sending e-mail. Until `url` is set, messages are written to the log instead, so on your
+/// own machine login links can be copied from the terminal.
+#[derive(Clone, Default)]
+pub struct MailSettings {
+    /// The SMTP server, e.g. `smtps://user:password@smtp.example.com` (TLS, port 465) or
+    /// `smtp://user:password@smtp.example.com:587?tls=required` (STARTTLS). It holds a
+    /// password, so usually `env_opt("MAIL_URL")`.
+    pub url: Option<String>,
+    /// Who messages come from, e.g. `Shop <noreply@shop.example.com>`. Required with `url`.
+    pub from: Option<String>,
+}
+
+// The URL holds a password.
+impl std::fmt::Debug for MailSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailSettings")
+            .field("url", &self.url.as_ref().map(|_| "<hidden>"))
+            .field("from", &self.from)
+            .finish()
     }
 }
 

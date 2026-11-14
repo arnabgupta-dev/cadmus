@@ -26,6 +26,8 @@ mod error;
 mod handlers;
 mod home;
 mod limit;
+mod login;
+mod mail;
 mod oauth;
 mod resource;
 mod seaorm;
@@ -46,6 +48,7 @@ pub use auth::{
 pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
+pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
 pub use resource::{
     Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
 };
@@ -59,7 +62,7 @@ pub use users::{
 };
 
 /// Template names and their built-in sources.
-const TEMPLATES: [(&str, &str); 14] = [
+const TEMPLATES: [(&str, &str); 15] = [
     ("base.html", include_str!("../templates/base.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("index.html", include_str!("../templates/index.html")),
@@ -79,6 +82,7 @@ const TEMPLATES: [(&str, &str); 14] = [
         "user_form.html",
         include_str!("../templates/user_form.html"),
     ),
+    ("password.html", include_str!("../templates/password.html")),
     (
         "group_form.html",
         include_str!("../templates/group_form.html"),
@@ -98,7 +102,7 @@ const TEMPLATES: [(&str, &str); 14] = [
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
-const RESERVED_SLUGS: [&str; 9] = [
+const RESERVED_SLUGS: [&str; 10] = [
     "api",
     "auth",
     "docs",
@@ -106,6 +110,7 @@ const RESERVED_SLUGS: [&str; 9] = [
     "login",
     "logout",
     "openapi.json",
+    "password",
     "redoc",
     "uploads",
 ];
@@ -124,6 +129,8 @@ pub(crate) struct AdminState {
     /// The API documentation, unless it is turned off.
     pub(crate) docs: Option<docs::Docs>,
     pub(crate) templates: minijinja::Environment<'static>,
+    /// Sends login links and password resets.
+    pub(crate) mailer: Arc<dyn mail::Mailer>,
 }
 
 impl AdminState {
@@ -192,6 +199,7 @@ impl Admin {
         if !self.state.auth.methods.providers.is_empty() {
             router = router.merge(oauth::router(Arc::clone(&self.state)));
         }
+        router = router.merge(login::router(Arc::clone(&self.state)));
         if self.state.accounts.is_some() {
             router.merge(accounts::router(Arc::clone(&self.state)))
         } else {
@@ -217,6 +225,7 @@ pub struct AdminBuilder {
     settings: UiSettings,
     auth: Option<(AuthConfig, Arc<dyn UserStore>)>,
     resources: Vec<Arc<dyn Resource>>,
+    mailer: Option<Arc<dyn Mailer>>,
 }
 
 impl AdminBuilder {
@@ -239,6 +248,18 @@ impl AdminBuilder {
     #[must_use]
     pub fn accounts(mut self, db: sea_orm::DatabaseConnection) -> Self {
         self.accounts = Some(db);
+        self
+    }
+
+    /// Sends login links and password resets (by default they are written to the log).
+    #[must_use]
+    pub fn mailer(mut self, mailer: impl Mailer + 'static) -> Self {
+        self.mailer = Some(Arc::new(mailer));
+        self
+    }
+
+    pub(crate) fn mailer_shared(mut self, mailer: Option<Arc<dyn Mailer>>) -> Self {
+        self.mailer = mailer;
         self
     }
 
@@ -300,9 +321,11 @@ impl AdminBuilder {
             )
         })?;
 
-        if !auth.methods.providers.is_empty() && self.accounts.is_none() {
+        if (!auth.methods.providers.is_empty() || auth.methods.magic_link)
+            && self.accounts.is_none()
+        {
             return Err(AdminError::Config(
-                "auth.methods: logging in through other sites links them to the built-in \
+                "auth.methods: logging in through other sites or by e-mail uses the built-in \
                  accounts, which a custom UserStore replaces"
                     .into(),
             ));
@@ -365,6 +388,7 @@ impl AdminBuilder {
                 accounts: self.accounts,
                 docs,
                 templates,
+                mailer: self.mailer.unwrap_or_else(|| Arc::new(mail::LogMailer)),
             }),
         })
     }

@@ -304,6 +304,7 @@ dialog[open] { animation: pop .18s var(--ease); }
       </div>
       <div class="me-actions">
         {% if self_service %}<a class="btn ghost icon" href="{{ base }}/auth/two-factor" aria-label="Two-factor authentication"{% if section == "two_factor" %} aria-current="page"{% endif %}><svg class="i" aria-hidden="true"><use href="#i-phone"/></svg></a>{% endif %}
+        {% if self_service and password_login %}<a class="btn ghost icon" href="{{ base }}/auth/password" aria-label="Change password"{% if section == "password" %} aria-current="page"{% endif %}><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg></a>{% endif %}
         <button class="btn ghost icon" type="button" data-theme-toggle aria-label="Switch colour theme"><svg class="i" aria-hidden="true"><use href="#i-moon"/></svg></button>
         <form method="post" action="{{ base }}/logout">
           <input type="hidden" name="_csrf" value="{{ csrf }}">

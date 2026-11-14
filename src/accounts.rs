@@ -53,6 +53,10 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             get(two_factor_page).post(two_factor_enable),
         )
         .route(&format!("{b}/two-factor/disable"), post(two_factor_disable))
+        .route(
+            &format!("{b}/password"),
+            get(password_page).post(password_change),
+        )
         .with_state(state)
 }
 
@@ -847,6 +851,85 @@ async fn two_factor_disable(
     tracing::info!(username = %session.username, "two-factor authentication disabled");
     Ok(Redirect::to(&format!(
         "{}/auth/two-factor?notice=two_factor_off",
+        state.base
+    ))
+    .into_response())
+}
+
+// ---- own password ------------------------------------------------------------------------
+
+fn render_password(
+    state: &AdminState,
+    session: &Session,
+    status: StatusCode,
+    error: Option<String>,
+    notice: Option<&str>,
+) -> Result<Response, AdminError> {
+    if !state.auth.methods.password {
+        return Err(AdminError::NotFound("password login is turned off".into()));
+    }
+    let page = render(
+        state,
+        "password.html",
+        Some(session),
+        context! {
+            section => "password",
+            notice => notice_text(notice),
+            can_reset => crate::login::can_reset(state),
+            error,
+        },
+    )?;
+    Ok((status, page).into_response())
+}
+
+async fn password_page(
+    State(state): Shared,
+    session: Session,
+    Query(query): Query<NoticeQuery>,
+) -> Result<Response, AdminError> {
+    render_password(
+        &state,
+        &session,
+        StatusCode::OK,
+        None,
+        query.notice.as_deref(),
+    )
+}
+
+async fn password_change(
+    State(state): Shared,
+    session: Session,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    let form = Submitted::parse(&body);
+    session.check_csrf(form.get("_csrf"))?;
+    let again = |message: String| {
+        render_password(
+            &state,
+            &session,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some(message),
+            None,
+        )
+    };
+    let current = form.get("current").unwrap_or_default();
+    if !auth::confirm_password(&state, &session.username, current).await? {
+        return again("The current password is not correct.".into());
+    }
+    let password = form.get("password").unwrap_or_default();
+    if form.get("password2").unwrap_or_default() != password {
+        return again("The two new passwords are different.".into());
+    }
+    match users::change_password(database(&state)?, &session.username, password).await {
+        Ok(()) => {}
+        Err(AdminError::BadInput { message, .. }) => {
+            return again(crate::login::capitalised(&message));
+        }
+        Err(other) => return Err(other),
+    }
+    tracing::info!(username = %session.username, "password changed by its owner");
+    Ok(Redirect::to(&format!(
+        "{}/auth/password?notice=password_changed",
         state.base
     ))
     .into_response())

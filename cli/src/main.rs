@@ -235,6 +235,8 @@ SECRET_KEY=
 DEBUG=true
 # Where people reach the site; needed to log in with Google and the like.
 PUBLIC_URL=http://localhost:3000
+# Sending e-mail (login links, password resets). Unset: messages go to the log.
+# MAIL_URL=smtps://user:password@smtp.example.com
 # Apps registered with the login providers enabled in settings.rs:
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
@@ -311,6 +313,8 @@ pub fn settings() -> Result<Settings, AdminError> {{
             // <PUBLIC_URL>/admin/auth/<name>/callback, e.g. .../admin/auth/google/callback.
             methods: vec![
                 AuthMethod::Password,
+                // A login link by e-mail (see `mail` below):
+                // AuthMethod::MagicLink,
                 // AuthMethod::Google(OAuthClient::from_env("GOOGLE")?),
                 // AuthMethod::Microsoft {{
                 //     client: OAuthClient::from_env("MICROSOFT")?,
@@ -356,6 +360,12 @@ pub fn settings() -> Result<Settings, AdminError> {{
             // az://container/prefix or gs://bucket/prefix.
             // storage_url: Some("file:///var/lib/{name}/media".into()),
             ..Default::default()
+        }},
+        mail: MailSettings {{
+            // Login links and password resets. Until MAIL_URL is set they are written to
+            // the log, so on your machine you can copy them from the terminal.
+            url: env_opt("MAIL_URL"),
+            from: Some("{name} <noreply@example.com>".into()),
         }},
         log_level: env_or("LOG_LEVEL", LogLevel::INFO)?,
         ..Default::default()

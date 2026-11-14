@@ -10,12 +10,11 @@
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
@@ -27,18 +26,14 @@ use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
 use crate::AdminState;
-use crate::auth::{constant_time_eq, totp_step_now};
+use crate::auth::constant_time_eq;
 use crate::error::AdminError;
 use crate::settings::{AuthMethod, OAuthClient, Signup};
 
 const FLOW_COOKIE: &str = "hera_oauth";
-const PENDING_COOKIE: &str = "hera_pending";
 const FLOW_PURPOSE: &str = "oauth-flow";
-const PENDING_PURPOSE: &str = "pending-login";
 /// How long someone may take at the provider's page.
 const FLOW_SECS: u64 = 600;
-/// How long someone may take to type their authenticator code afterwards.
-const PENDING_SECS: u64 = 300;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Clock difference tolerated when checking a provider's token expiry.
 const SKEW_SECS: u64 = 60;
@@ -58,6 +53,7 @@ const MICROSOFT_SHARED_TENANTS: [&str; 3] = ["common", "organizations", "consume
 /// The login methods a site offers, checked and ready to use.
 pub(crate) struct Methods {
     pub(crate) password: bool,
+    pub(crate) magic_link: bool,
     pub(crate) providers: Vec<Arc<Provider>>,
     pub(crate) signup: Signup,
     pub(crate) signup_groups: Vec<String>,
@@ -71,6 +67,7 @@ impl Methods {
     pub(crate) fn password_only() -> Self {
         Self {
             password: true,
+            magic_link: false,
             providers: Vec::new(),
             signup: Signup::Closed,
             signup_groups: Vec::new(),
@@ -93,16 +90,19 @@ impl Methods {
             ));
         }
         let mut password = false;
+        let mut magic_link = false;
         let mut providers: Vec<Arc<Provider>> = Vec::new();
         for method in methods {
             let name = method.name().to_owned();
             if name == "password" && password
+                || name == "magic-link" && magic_link
                 || providers.iter().any(|provider| provider.name == name)
             {
                 return Err(error(format!("`{name}` is listed twice")));
             }
             match method {
                 AuthMethod::Password => password = true,
+                AuthMethod::MagicLink => magic_link = true,
                 other => providers.push(Arc::new(Provider::new(other).map_err(error)?)),
             }
         }
@@ -114,6 +114,13 @@ impl Methods {
                      needs to know where to send them back, e.g. `http://localhost:3000`",
                     providers[0].name
                 )));
+            }
+            None if magic_link => {
+                return Err(AdminError::Config(
+                    "server.public_url is not set, but login links need the site's address, \
+                     e.g. `http://localhost:3000`"
+                        .into(),
+                ));
             }
             None => None,
         };
@@ -135,6 +142,7 @@ impl Methods {
         };
         Ok(Self {
             password,
+            magic_link,
             providers,
             signup,
             signup_groups,
@@ -163,6 +171,17 @@ impl Methods {
             .get_or_init(build_http_client)
             .as_ref()
             .map_err(Clone::clone)
+    }
+
+    /// An absolute URL for `path` on this site, for links in e-mails. Falls back to the bare
+    /// path when no public address is set (only password logins then).
+    pub(crate) fn absolute(&self, path: &str) -> String {
+        format!("{}{path}", self.public_url.as_deref().unwrap_or_default())
+    }
+
+    /// Whether e-mails can contain links back to the site.
+    pub(crate) fn has_public_url(&self) -> bool {
+        self.public_url.is_some()
     }
 
     fn redirect_uri(&self, base: &str, provider: &Provider) -> String {
@@ -264,7 +283,7 @@ impl Provider {
             })
         };
         let (label, client, kind) = match method {
-            AuthMethod::Password => unreachable!("handled by the caller"),
+            AuthMethod::Password | AuthMethod::MagicLink => unreachable!("handled by the caller"),
             AuthMethod::Google(client) => (
                 "Google".to_owned(),
                 client,
@@ -304,7 +323,14 @@ impl Provider {
                         .name
                         .chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-                let reserved = ["password", "google", "microsoft", "github", "facebook"];
+                let reserved = [
+                    "password",
+                    "magic-link",
+                    "google",
+                    "microsoft",
+                    "github",
+                    "facebook",
+                ];
                 if !valid_name || reserved.contains(&provider.name.as_str()) {
                     return Err(format!(
                         "`{}` cannot name a provider: use lowercase letters, digits and `-`, \
@@ -781,19 +807,11 @@ struct Flow {
     exp: u64,
 }
 
-/// A login that passed the provider and waits for the authenticator code.
-#[derive(Serialize, Deserialize)]
-struct Pending {
-    sub: String,
-    exp: u64,
-}
-
 pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.base.clone();
     Router::new()
         .route(&format!("{b}/auth/{{provider}}/start"), get(start))
         .route(&format!("{b}/auth/{{provider}}/callback"), get(callback))
-        .route(&format!("{b}/login/code"), get(code_page).post(code_submit))
         .with_state(state)
 }
 
@@ -931,148 +949,7 @@ async fn callback(
             return refuse(StatusCode::FORBIDDEN, message);
         }
     };
-    // The same rules as a password login: active staff only, and the second factor.
-    let Some(user) = state.users.find(&account.username).await? else {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            "This account cannot log in. Ask an administrator.".into(),
-        );
-    };
-    if user.totp_secret.is_some() {
-        let pending = Pending {
-            sub: user.username,
-            exp: unix_now() + PENDING_SECS,
-        };
-        let cookie = Cookie::build((PENDING_COOKIE, state.auth.seal(PENDING_PURPOSE, &pending)?))
-            .path(state.base.clone())
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .secure(state.auth.cookie_secure)
-            .build();
-        let next = format!("{}/login/code", state.base);
-        return Ok((jar.add(cookie), continue_page(&next)).into_response());
-    }
-    if state.auth.totp_required {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            "This site requires two-factor authentication. Ask an administrator to set it up \
-             for your account."
-                .into(),
-        );
-    }
-    let session = finish(&state, &user.username).await?;
-    let next = format!("{}/", state.base);
-    Ok((jar.add(session), continue_page(&next)).into_response())
-}
-
-/// Logs the account in: records it and returns the session cookie.
-async fn finish(state: &AdminState, username: &str) -> Result<Cookie<'static>, AdminError> {
-    state.users.logged_in(username).await?;
-    let token = state.auth.issue(username)?;
-    Ok(crate::handlers::session_cookie(state, token))
-}
-
-/// A page that moves on to `next` by itself.
-///
-/// The provider's redirect makes the request to the callback a cross-site one, and a
-/// redirect from there would still count as cross-site, so the `SameSite=Strict` session
-/// cookie would not be sent with it. Moving on from a page of our own makes it same-site.
-fn continue_page(next: &str) -> Response {
-    let next = html_escape(next);
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-             <meta http-equiv=\"refresh\" content=\"0;url={next}\"><title>Logging in…</title>\
-             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>\
-             <body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;\
-             min-height:90vh\"><p>Logging in… <a href=\"{next}\">Continue</a></p></body></html>"
-        )),
-    )
-        .into_response()
-}
-
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn pending(state: &AdminState, jar: &CookieJar) -> Option<Pending> {
-    jar.get(PENDING_COOKIE)
-        .and_then(|cookie| state.auth.open::<Pending>(PENDING_PURPOSE, cookie.value()))
-}
-
-async fn code_page(State(state): Shared, jar: CookieJar) -> Result<Response, AdminError> {
-    if pending(&state, &jar).is_none() {
-        return Ok(Redirect::to(&format!("{}/login", state.base)).into_response());
-    }
-    crate::handlers::code_form(&state, StatusCode::OK, None)
-}
-
-#[derive(Deserialize)]
-struct CodeForm {
-    #[serde(default)]
-    totp: String,
-}
-
-async fn code_submit(
-    State(state): Shared,
-    jar: CookieJar,
-    parts: Parts,
-    Form(form): Form<CodeForm>,
-) -> Result<Response, AdminError> {
-    let Some(pending) = pending(&state, &jar) else {
-        return crate::handlers::login_error(
-            &state,
-            StatusCode::UNAUTHORIZED,
-            "That took too long. Log in again.".into(),
-        );
-    };
-    let address = state.auth.client_ip(&parts);
-    if let Err(retry_after_secs) = state.limiter.attempt(&pending.sub, address) {
-        let minutes = retry_after_secs.div_ceil(60);
-        let page = crate::handlers::code_form(
-            &state,
-            StatusCode::TOO_MANY_REQUESTS,
-            Some(format!(
-                "Too many attempts. Try again in {minutes} minute{}.",
-                if minutes == 1 { "" } else { "s" }
-            )),
-        )?;
-        let retry = [(header::RETRY_AFTER, retry_after_secs.to_string())];
-        return Ok((retry, page).into_response());
-    }
-    let Some(user) = state.users.find(&pending.sub).await? else {
-        return crate::handlers::login_error(
-            &state,
-            StatusCode::FORBIDDEN,
-            "This account cannot log in. Ask an administrator.".into(),
-        );
-    };
-    let accepted = match &user.totp_secret {
-        Some(secret) => match totp_step_now(secret, &form.totp) {
-            Some(step) => state.users.accept_totp_step(&user.username, step).await?,
-            None => false,
-        },
-        // Turned off meanwhile.
-        None => !state.auth.totp_required,
-    };
-    if !accepted {
-        tracing::warn!(username = %user.username, "wrong authenticator code after provider login");
-        return crate::handlers::code_form(
-            &state,
-            StatusCode::UNAUTHORIZED,
-            Some("That code is not right. Codes change every 30 seconds.".into()),
-        );
-    }
-    state.limiter.succeeded(&user.username, address);
-    let session = finish(&state, &user.username).await?;
-    let jar = jar
-        .remove(Cookie::build((PENDING_COOKIE, "")).path(state.base.clone()))
-        .add(session);
-    Ok((jar, Redirect::to(&format!("{}/", state.base))).into_response())
+    crate::login::complete(&state, jar, &account.username, true).await
 }
 
 #[cfg(test)]
@@ -1306,13 +1183,5 @@ mod tests {
         assert!(domains.signup_allows("ada@acme.com"));
         assert!(!domains.signup_allows("ada@acme.com.evil.io"));
         assert!(!domains.signup_allows("ada@notacme.com"));
-    }
-
-    #[test]
-    fn continue_page_escapes_the_target() {
-        let page = continue_page("/admin/\"><script>");
-        let (_, body) = page.into_parts();
-        drop(body);
-        assert_eq!(html_escape("/a?b=1&c=\"x\""), "/a?b=1&amp;c=&quot;x&quot;");
     }
 }
