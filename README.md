@@ -418,7 +418,9 @@ with an authenticator app, and confirm with your password and a code. From then 
 in (the form's code field, or `"totp"` in the token request) needs the current code.
 
 - Each code works once, so a code that was seen or intercepted cannot be reused.
-- Turning it on or off asks for the password again.
+- Turning it off asks for a current code from the app (or a recovery code). Turning it on
+  needs the code from the new app, plus the password if the login is more than 15 minutes
+  old; accounts without a password log in again instead.
 - **Recovery codes:** turning it on shows ten codes, once. Each logs in a single time in
   place of an authenticator code (anywhere a code is asked for, the API included), for when
   the phone is lost. The two-factor page shows how many are left and makes a new set, which

@@ -132,6 +132,33 @@ impl Browser {
         browser
     }
 
+    /// A session from a login an hour ago: too old to stand in for the password.
+    fn stale(username: &str) -> Self {
+        #[derive(serde::Serialize)]
+        struct Claims<'a> {
+            sub: &'a str,
+            iat: u64,
+            exp: u64,
+            csrf: &'a str,
+        }
+        let now = unix_now();
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &Claims {
+                sub: username,
+                iat: now - 3600,
+                exp: now + 3600,
+                csrf: "stale-csrf",
+            },
+            &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap();
+        Self {
+            cookie: format!("admin_token={token}"),
+            csrf: "stale-csrf".into(),
+        }
+    }
+
     async fn get(&self, app: &Router, path: &str) -> Reply {
         let request = Request::get(path)
             .header(header::COOKIE, &self.cookie)
@@ -285,7 +312,7 @@ async fn an_address_is_limited_across_accounts() {
 
 #[tokio::test]
 async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
-    let (app, _db) = app_with(auth().login_limit(50, 120)).await;
+    let (app, db) = app_with(auth().login_limit(50, 120)).await;
     let root = Browser::login(&app, "root", None).await;
 
     // The header links to the page; it offers a key that is not stored yet.
@@ -308,14 +335,35 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
         StatusCode::OK
     );
 
-    // Wrong password, wrong code, tampered key: nothing is turned on, and the same key is
-    // offered again so the code already scanned stays valid.
+    // A fresh login needs no password; an older one does.
     let path = "/admin/auth/two-factor";
+    let stale = Browser::stale("root");
+    assert!(!page.body.contains("name=\"password\""));
+    assert!(
+        stale
+            .get(&app, path)
+            .await
+            .body
+            .contains("name=\"password\"")
+    );
+    let reply = stale
+        .post(
+            &app,
+            path,
+            &format!("secret={secret}&password=wrong&code={}", code(&secret, 0)),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        reply.body.contains("password is not correct"),
+        "{}",
+        reply.body
+    );
+    assert_eq!(field(&reply.body, "secret"), secret);
+
+    // Wrong code, tampered key: nothing is turned on, and the same key is offered again so
+    // the code already scanned stays valid.
     for (fields, message) in [
-        (
-            format!("secret={secret}&password=wrong&code={}", code(&secret, 0)),
-            "password is not correct",
-        ),
         (
             format!("secret={secret}&{}&code=000000", password_field()),
             "code is not correct",
@@ -436,17 +484,30 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
         StatusCode::OK
     );
 
-    // Turning it off needs the password.
+    // Turning it off needs a code: from the app, or a recovery code.
     let reply = root
-        .post(&app, "/admin/auth/two-factor/disable", "password=wrong")
+        .post(&app, "/admin/auth/two-factor/disable", "code=000000")
         .await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let reply = root
+        .post(&app, "/admin/auth/two-factor/disable", &password_field())
+        .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the password is not a code"
+    );
     assert_eq!(
         token(&app, "root", PASSWORD, None, None).await.status,
         StatusCode::UNAUTHORIZED
     );
+    let recovery = heraapi::new_recovery_codes(&db, "root").await.unwrap();
     let reply = root
-        .post(&app, "/admin/auth/two-factor/disable", &password_field())
+        .post(
+            &app,
+            "/admin/auth/two-factor/disable",
+            &format!("code={}", recovery[0]),
+        )
         .await;
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
     assert_eq!(
@@ -597,7 +658,8 @@ async fn a_site_that_requires_two_factor_does_not_let_it_be_turned_off() {
 #[tokio::test]
 async fn guessing_the_password_on_the_two_factor_page_is_limited_too() {
     let (app, _db) = app_with(auth().login_limit(3, 120)).await;
-    let root = Browser::login(&app, "root", None).await;
+    // An older login, which is asked for the password.
+    let root = Browser::stale("root");
     let page = root.get(&app, "/admin/auth/two-factor").await;
     let secret = field(&page.body, "secret");
     let guess = format!("secret={secret}&password=guess&code={}", code(&secret, 0));

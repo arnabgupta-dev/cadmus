@@ -736,3 +736,70 @@ async fn invitations_can_be_sent_again_and_work_without_passwords() {
     assert_eq!(accepted.status, StatusCode::SEE_OTHER);
     assert!(accepted.cookie("admin_token").is_some());
 }
+
+fn totp_now(secret: &str, steps_ahead: u64) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let key = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, secret).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(&key).unwrap();
+    mac.update(&(now / 30 + steps_ahead).to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let offset = usize::from(digest[19] & 0x0f);
+    let chunk: [u8; 4] = digest[offset..offset + 4].try_into().unwrap();
+    format!(
+        "{:06}",
+        (u32::from_be_bytes(chunk) & 0x7fff_ffff) % 1_000_000
+    )
+}
+
+fn hidden(page: &str, name: &str) -> String {
+    page.split(&format!("name=\"{name}\" value=\""))
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn accounts_without_a_password_manage_two_factor_with_codes() {
+    let site = site(|s| s.auth.methods = vec![AuthMethod::MagicLink]).await;
+    post(&site.app, "/admin/login/link", "email=ada%40acme.com", None).await;
+    let path = link_path(&site.outbox.nth(0).await);
+    let session = format!(
+        "admin_token={}",
+        post(&site.app, &path, "", None)
+            .await
+            .cookie("admin_token")
+            .unwrap()
+    );
+
+    // Just logged in: turning it on needs only the code from the new app.
+    let page = get(&site.app, "/admin/auth/two-factor", Some(&session)).await;
+    assert!(!page.body.contains("name=\"password\""), "{}", page.body);
+    let (csrf, secret) = (hidden(&page.body, "_csrf"), hidden(&page.body, "secret"));
+    let on = post(
+        &site.app,
+        "/admin/auth/two-factor",
+        &format!("_csrf={csrf}&secret={secret}&code={}", totp_now(&secret, 0)),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert!(on.body.contains("Save your recovery codes"));
+
+    // Turning it off needs a code too, never a password.
+    let page = get(&site.app, "/admin/auth/two-factor", Some(&session)).await;
+    assert!(!page.body.contains("type=\"password\""));
+    let off = post(
+        &site.app,
+        "/admin/auth/two-factor/disable",
+        &format!("_csrf={csrf}&code={}", totp_now(&secret, 1)),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::SEE_OTHER, "{}", off.body);
+    assert!(off.location().ends_with("notice=two_factor_off"));
+}

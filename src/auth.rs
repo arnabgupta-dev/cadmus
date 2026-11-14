@@ -721,7 +721,13 @@ pub(crate) struct Session {
     pub(crate) access: Access,
     csrf: String,
     via_cookie: bool,
+    /// When the login happened (seconds since 1970).
+    issued_at: u64,
 }
+
+/// How long after logging in an account counts as having just proved who it is, for
+/// changes that would otherwise ask for the password again.
+const FRESH_LOGIN_SECS: u64 = 15 * 60;
 
 impl Session {
     /// Refuses cookie sessions: the JSON API has no CSRF token, so it only accepts credentials
@@ -747,6 +753,7 @@ impl Session {
             access,
             csrf: claims.csrf,
             via_cookie,
+            issued_at: claims.iat,
         }))
     }
 
@@ -763,6 +770,11 @@ impl Session {
             Some(claims) => Self::load(state, claims, true).await,
             None => Ok(None),
         }
+    }
+
+    /// Whether the login is recent enough to stand in for typing the password again.
+    pub(crate) fn is_fresh(&self) -> bool {
+        unix_now().saturating_sub(self.issued_at) <= FRESH_LOGIN_SECS
     }
 
     /// Whether this account may do `action` on `model`.

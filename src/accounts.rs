@@ -847,6 +847,7 @@ fn render_two_factor(
             uri,
             // Generated here from our own data, so it is safe to insert as markup.
             qr => qr.map(Value::from_safe_string),
+            fresh => session.is_fresh(),
             recovery_codes => &recovery.codes,
             recovery_left => recovery.left,
             recovery_total => auth::RECOVERY_CODES,
@@ -908,9 +909,16 @@ async fn two_factor_enable(
     if !auth::totp_secret_is_strong(secret) {
         return again("That setup page was incomplete; scan the new code below.");
     }
-    let password = form.get("password").unwrap_or_default();
-    if !auth::confirm_password(&state, &session.username, password).await? {
-        return again("The password is not correct.");
+    // A recent login proves who is asking; after that, the password does. Accounts that
+    // log in another way can always log in again.
+    if !session.is_fresh() {
+        let password = form.get("password").unwrap_or_default();
+        if !auth::confirm_password(&state, &session.username, password).await? {
+            return again(
+                "The password is not correct. Without one, log out and in again, then turn it \
+                 on within 15 minutes.",
+            );
+        }
     }
     let code = form.get("code").unwrap_or_default();
     let Some(step) = auth::totp_step_now(secret, code) else {
@@ -949,8 +957,18 @@ async fn two_factor_disable(
             "this site requires two-factor authentication".into(),
         ));
     }
-    let password = form.get("password").unwrap_or_default();
-    if !auth::confirm_password(&state, &session.username, password).await? {
+    let account = own_account(&state, &session).await?;
+    let Some(secret) = account.totp_secret else {
+        return Ok(Redirect::to(&format!("{}/auth/two-factor", state.base)).into_response());
+    };
+    // A code from the app (or a recovery code) proves it, so accounts without a password can
+    // turn it off too. Guesses count as login attempts.
+    state
+        .limiter
+        .attempt(&session.username, None)
+        .map_err(|retry_after_secs| AdminError::RateLimited { retry_after_secs })?;
+    let code = form.get("code").unwrap_or_default();
+    if !auth::second_factor(&state, &session.username, &secret, code).await? {
         let recovery = Recovery {
             codes: Vec::new(),
             left: users::recovery_codes_left(database(&state)?, &session.username).await?,
@@ -960,12 +978,13 @@ async fn two_factor_disable(
             &session,
             true,
             None,
-            Some("The password is not correct."),
+            Some("That code is not right. Use the current one from your app, or a recovery code."),
             None,
             &recovery,
         )?;
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
     }
+    state.limiter.succeeded(&session.username, None);
     users::store_totp(database(&state)?, &session.username, None, None).await?;
     tracing::info!(username = %session.username, "two-factor authentication disabled");
     Ok(Redirect::to(&format!(
