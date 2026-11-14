@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
-use herapi::{App, AuthConfig, Storage, Uploads, create_superuser};
+use cadmus::{App, AuthConfig, Storage, Uploads, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::DatabaseConnection;
 use tower::ServiceExt;
@@ -396,7 +396,7 @@ async fn aborted_uploads_cannot_be_continued() {
 
 #[tokio::test]
 async fn hostile_filenames_cannot_escape_the_storage_directory() {
-    let root = std::env::temp_dir().join(format!("hera-upload-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("cadmus-upload-test-{}", std::process::id()));
     let store = root.join("store");
     std::fs::create_dir_all(&store).unwrap();
     let storage = Storage::from_url(&format!("file://{}", store.display()), Vec::new()).unwrap();

@@ -4,7 +4,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use herapi::{App, AuthConfig, ModelOptions, create_superuser};
+use cadmus::{App, AuthConfig, ModelOptions, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use tower::ServiceExt;
 
 mod common;
 
-/// One column of every type `hera generate model` can produce, required and nullable.
+/// One column of every type `cadmus generate model` can produce, required and nullable.
 mod sample {
     use sea_orm::entity::prelude::*;
 

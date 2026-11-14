@@ -52,7 +52,7 @@ impl Action {
 /// addition: whoever may change a model may also view it.
 ///
 /// ```
-/// use herapi::{Access, Action};
+/// use cadmus::{Access, Action};
 ///
 /// let editor = Access::none().grant("post", Action::Change).grant("post", Action::Add);
 /// assert!(editor.allows("post", Action::View));

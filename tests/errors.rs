@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use axum::{Json, Router};
-use herapi::{AdminError, ApiResult, App, AuthConfig, ModelOptions, create_superuser};
+use cadmus::{AdminError, ApiResult, App, AuthConfig, ModelOptions, create_superuser};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 

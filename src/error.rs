@@ -94,7 +94,7 @@ impl AdminError {
     ///
     /// ```
     /// use axum::http::StatusCode;
-    /// use herapi::AdminError;
+    /// use cadmus::AdminError;
     ///
     /// let error = AdminError::custom(StatusCode::CONFLICT, "out_of_stock", "no items left");
     /// assert_eq!(error.to_string(), "no items left");

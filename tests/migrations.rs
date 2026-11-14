@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use herapi::migrations::{Column, Migration, MigrationEvent, Type};
-use herapi::{App, AuthConfig, ModelOptions};
+use cadmus::migrations::{Column, Migration, MigrationEvent, Type};
+use cadmus::{App, AuthConfig, ModelOptions};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 mod common;
@@ -169,7 +169,7 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 /// An empty directory for one test's migration files.
 fn scratch_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "hera-migrations-{}-{}",
+        "cadmus-migrations-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -567,7 +567,7 @@ async fn databases_from_before_migrations_get_the_built_in_tables_brought_up_to_
     let db = common::database().await;
     // An old database: accounts, but not the tables added since.
     db.get_schema_builder()
-        .register(herapi::user::Entity)
+        .register(cadmus::user::Entity)
         .sync(&db)
         .await
         .unwrap();
@@ -589,7 +589,7 @@ async fn databases_from_before_migrations_get_the_built_in_tables_brought_up_to_
     assert_eq!(
         query_strings(
             &db,
-            "SELECT name FROM hera_migration WHERE app = 'auth' ORDER BY id"
+            "SELECT name FROM cadmus_migration WHERE app = 'auth' ORDER BY id"
         )
         .await,
         ["0001_initial", "0002_api_keys"]

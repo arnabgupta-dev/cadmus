@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::{AdminError, App, AuthConfig, ModelOptions, create_superuser};
+use cadmus::{AdminError, App, AuthConfig, ModelOptions, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use tower::ServiceExt;

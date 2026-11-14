@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::settings::*;
-use herapi::{AdminError, App, Email, Mailer, create_superuser, enable_totp, set_email};
+use cadmus::settings::*;
+use cadmus::{AdminError, App, Email, Mailer, create_superuser, enable_totp, set_email};
 use http_body_util::BodyExt;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use tower::ServiceExt;
@@ -167,9 +167,9 @@ async fn log_in(app: &Router, username: &str, password: &str) -> Reply {
     .await
 }
 
-async fn account(db: &DatabaseConnection, username: &str) -> Option<herapi::user::Model> {
-    herapi::user::Entity::find()
-        .filter(herapi::user::Column::Username.eq(username))
+async fn account(db: &DatabaseConnection, username: &str) -> Option<cadmus::user::Model> {
+    cadmus::user::Entity::find()
+        .filter(cadmus::user::Column::Username.eq(username))
         .one(db)
         .await
         .unwrap()
@@ -282,10 +282,10 @@ async fn login_links_ask_for_the_authenticator_code() {
     assert_eq!(used.status, StatusCode::SEE_OTHER);
     assert_eq!(used.location(), "/admin/login/code");
     assert!(used.cookie("admin_token").is_none());
-    let pending = format!("hera_pending={}", used.cookie("hera_pending").unwrap());
+    let pending = format!("cadmus_pending={}", used.cookie("cadmus_pending").unwrap());
 
     // A recovery code does instead of the authenticator code, once.
-    let codes = herapi::new_recovery_codes(&site.db, "ada").await.unwrap();
+    let codes = cadmus::new_recovery_codes(&site.db, "ada").await.unwrap();
     let body = format!("totp={}", codes[0]);
     let finished = post(&site.app, "/admin/login/code", &body, Some(&pending)).await;
     assert_eq!(finished.status, StatusCode::SEE_OTHER, "{}", finished.body);

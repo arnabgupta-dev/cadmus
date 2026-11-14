@@ -12,7 +12,7 @@ pub(crate) fn render_migration(name: &str, operations: &[Operation]) -> String {
          //! It can be edited until it has been applied somewhere, for instance to change data\n\
          //! with `.sql_reversible(...)` or `.run(...)`.\n\
          \n\
-         use herapi::migrations::*;\n\
+         use cadmus::migrations::*;\n\
          \n\
          pub fn migration() -> Migration {{\n    Migration::new({})",
         string(name)
@@ -33,7 +33,7 @@ pub(crate) fn render_list(modules: &[String]) -> String {
          //! `cargo run -- makemigrations` adds a file here and rewrites this list;\n\
          //! `cargo run -- migrate` applies the migrations the database has not had yet.\n\
          \n\
-         use herapi::migrations::Migration;\n",
+         use cadmus::migrations::Migration;\n",
     );
     if !modules.is_empty() {
         out.push('\n');

@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use herapi::settings::*;
-use herapi::{AdminError, App, EnvUserStore, create_superuser, enable_totp, set_email};
+use cadmus::settings::*;
+use cadmus::{AdminError, App, EnvUserStore, create_superuser, enable_totp, set_email};
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -271,7 +271,7 @@ async fn login_with(site: &Site, claims: Value, userinfo: Option<Value>) -> Repl
     let start = get_with(&site.app, "/admin/auth/acme/start", None).await;
     assert_eq!(start.status, StatusCode::SEE_OTHER, "{}", start.body);
     let flow = start
-        .cookie("hera_oauth")
+        .cookie("cadmus_oauth")
         .expect("the round trip is remembered");
     let target = url::Url::parse(start.location()).unwrap();
     let query: HashMap<String, String> = target.query_pairs().into_owned().collect();
@@ -309,7 +309,7 @@ async fn login_with(site: &Site, claims: Value, userinfo: Option<Value>) -> Repl
         "/admin/auth/acme/callback?code={code}&state={}",
         query["state"]
     );
-    get_with(&site.app, &path, Some(&format!("hera_oauth={flow}"))).await
+    get_with(&site.app, &path, Some(&format!("cadmus_oauth={flow}"))).await
 }
 
 fn rand_suffix() -> u32 {
@@ -331,13 +331,13 @@ fn totp_code(secret: &str) -> String {
     )
 }
 
-async fn identities(db: &DatabaseConnection) -> Vec<herapi::identity::Model> {
-    herapi::identity::Entity::find().all(db).await.unwrap()
+async fn identities(db: &DatabaseConnection) -> Vec<cadmus::identity::Model> {
+    cadmus::identity::Entity::find().all(db).await.unwrap()
 }
 
-async fn account(db: &DatabaseConnection, username: &str) -> Option<herapi::user::Model> {
-    herapi::user::Entity::find()
-        .filter(herapi::user::Column::Username.eq(username))
+async fn account(db: &DatabaseConnection, username: &str) -> Option<cadmus::user::Model> {
+    cadmus::user::Entity::find()
+        .filter(cadmus::user::Column::Username.eq(username))
         .one(db)
         .await
         .unwrap()
@@ -403,7 +403,7 @@ async fn an_account_is_matched_by_its_verified_address_then_by_the_link() {
     );
     let session = reply.cookie("admin_token").expect("logged in");
     assert_eq!(
-        reply.cookie("hera_oauth").as_deref(),
+        reply.cookie("cadmus_oauth").as_deref(),
         Some(""),
         "the round trip is used up"
     );
@@ -502,7 +502,7 @@ async fn signup_admits_allowed_domains_into_the_signup_groups() {
         s.auth.signup_groups = vec!["Editors".into(), "Missing".into()];
     })
     .await;
-    herapi::group::ActiveModel {
+    cadmus::group::ActiveModel {
         name: Set("Editors".into()),
         ..Default::default()
     }
@@ -554,7 +554,7 @@ async fn accounts_with_two_factor_enter_their_code_afterwards() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(reply.body.contains("url=/admin/login/code"));
     assert!(reply.cookie("admin_token").is_none(), "not logged in yet");
-    let pending = format!("hera_pending={}", reply.cookie("hera_pending").unwrap());
+    let pending = format!("cadmus_pending={}", reply.cookie("cadmus_pending").unwrap());
 
     let form = get_with(&site.app, "/admin/login/code", Some(&pending)).await;
     assert_eq!(form.status, StatusCode::OK);
@@ -608,7 +608,7 @@ async fn required_two_factor_and_inactive_accounts_are_enforced() {
 
     let site = self::site(|_| {}).await;
     let ada = account(&site.db, "ada").await.unwrap();
-    let mut ada: herapi::user::ActiveModel = ada.into();
+    let mut ada: cadmus::user::ActiveModel = ada.into();
     ada.is_active = Set(false);
     ada.update(&site.db).await.unwrap();
     let reply = login_as(
@@ -624,7 +624,7 @@ async fn required_two_factor_and_inactive_accounts_are_enforced() {
 async fn tampered_round_trips_are_refused() {
     let site = site(|_| {}).await;
     let start = get_with(&site.app, "/admin/auth/acme/start", None).await;
-    let flow = format!("hera_oauth={}", start.cookie("hera_oauth").unwrap());
+    let flow = format!("cadmus_oauth={}", start.cookie("cadmus_oauth").unwrap());
     let query: HashMap<String, String> = url::Url::parse(start.location())
         .unwrap()
         .query_pairs()
@@ -656,7 +656,7 @@ async fn tampered_round_trips_are_refused() {
     let other = get_with(
         &site.app,
         "/admin/auth/acme/callback?code=x&state=y",
-        Some("hera_oauth=garbage"),
+        Some("cadmus_oauth=garbage"),
     )
     .await;
     assert_eq!(other.status, StatusCode::BAD_REQUEST);
@@ -702,7 +702,7 @@ async fn providers_need_the_built_in_accounts() {
     let db = common::database().await;
     let store = EnvUserStore::from_lookup(|key| match key {
         "ADMIN_USERNAME" => Some("root".into()),
-        "ADMIN_PASSWORD_HASH" => Some(herapi::hash_password("whatever-long").unwrap()),
+        "ADMIN_PASSWORD_HASH" => Some(cadmus::hash_password("whatever-long").unwrap()),
         _ => None,
     })
     .unwrap();

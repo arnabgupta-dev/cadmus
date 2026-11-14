@@ -15,7 +15,7 @@ use super::{Migration, Operation, State};
 use crate::error::AdminError;
 
 /// Where applied migrations are recorded.
-pub(crate) const HISTORY: &str = "hera_migration";
+pub(crate) const HISTORY: &str = "cadmus_migration";
 
 /// Brings a database from before migrations up to date with SeaORM's schema sync.
 pub(crate) type LegacySync<'a> =

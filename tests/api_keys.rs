@@ -4,7 +4,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::{App, AuthConfig, ModelOptions, create_superuser, new_api_key};
+use cadmus::{App, AuthConfig, ModelOptions, create_superuser, new_api_key};
 use http_body_util::BodyExt;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::{Value, json};
@@ -169,9 +169,9 @@ async fn a_key_made_on_the_page_works_until_it_is_revoked() {
     assert_eq!(made.status, StatusCode::OK, "{}", made.body);
     assert_eq!(made.headers[header::CACHE_CONTROL], "no-store");
     let key = shown_key(&made.body);
-    assert!(key.starts_with("hera_") && key.len() == 45, "{key}");
+    assert!(key.starts_with("cadmus_") && key.len() == 47, "{key}");
     assert!(made.body.contains("Deploy script"));
-    assert!(made.body.contains(&format!("{}…", &key[..13])));
+    assert!(made.body.contains(&format!("{}…", &key[..15])));
     assert!(made.body.contains("expires "));
 
     // It reads and writes through the API, as a bearer token or in X-API-Key.
@@ -254,8 +254,8 @@ async fn keys_stop_working_when_they_expire_or_the_account_is_locked() {
     );
     // Made-up and malformed keys are simply refused.
     for key in [
-        "hera_0000000000000000000000000000000000000000",
-        "hera_short",
+        "cadmus_0000000000000000000000000000000000000000",
+        "cadmus_short",
     ] {
         assert_eq!(
             api(&app, "GET", "/api/note", key, None).await.status,

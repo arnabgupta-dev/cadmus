@@ -4,7 +4,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use herapi::{
+use cadmus::{
     AdminUser, App, AuthConfig, EnvUserStore, ModelOptions, Storage, create_superuser,
     hash_password, promote,
 };

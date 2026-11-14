@@ -30,7 +30,7 @@ use crate::auth::constant_time_eq;
 use crate::error::AdminError;
 use crate::settings::{AuthMethod, OAuthClient, Signup};
 
-const FLOW_COOKIE: &str = "hera_oauth";
+const FLOW_COOKIE: &str = "cadmus_oauth";
 const FLOW_PURPOSE: &str = "oauth-flow";
 /// How long someone may take at the provider's page.
 const FLOW_SECS: u64 = 600;
@@ -207,7 +207,7 @@ fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .timeout(HTTP_TIMEOUT)
-        .user_agent(concat!("herapi/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("cadmus/", env!("CARGO_PKG_VERSION")))
         // Providers answer directly; following redirects would only hide mistakes.
         .redirect(reqwest::redirect::Policy::none())
         .build()

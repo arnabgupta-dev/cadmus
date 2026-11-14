@@ -27,7 +27,7 @@ use crate::handlers::{Mode, login_page_as, session_cookie};
 use crate::mail::{Email, send_later};
 use crate::users;
 
-const PENDING_COOKIE: &str = "hera_pending";
+const PENDING_COOKIE: &str = "cadmus_pending";
 const PENDING_PURPOSE: &str = "pending-login";
 const LINK_PURPOSE: &str = "login-link";
 const RESET_PURPOSE: &str = "password-reset";

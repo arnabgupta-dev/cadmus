@@ -4,7 +4,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::{App, AuthConfig, create_superuser, hash_password, set_email};
+use cadmus::{App, AuthConfig, create_superuser, hash_password, set_email};
 use http_body_util::BodyExt;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend};
 use serde_json::json;

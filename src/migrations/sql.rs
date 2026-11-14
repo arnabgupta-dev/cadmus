@@ -484,7 +484,7 @@ fn alter_column(
 /// temporary name, the rows copied across, the old table dropped and the new one renamed.
 fn rebuild(before: &Table, after: &Table, fill: Option<(&str, &Value)>) -> Vec<String> {
     let backend = DbBackend::Sqlite;
-    let temporary = format!("__hera_new_{}", after.name);
+    let temporary = format!("__cadmus_new_{}", after.name);
     let mut sql = vec![create_table_only(backend, after, &temporary)];
     let mut targets = Vec::new();
     let mut sources = Vec::new();
@@ -609,10 +609,10 @@ mod tests {
         assert_eq!(
             sql(&change, &base(), DbBackend::Sqlite),
             [
-                r#"CREATE TABLE "__hera_new_post" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar NOT NULL, "views" integer NULL, "slug" varchar NOT NULL UNIQUE )"#,
-                r#"INSERT INTO "__hera_new_post" ("id", "title", "views", "slug") SELECT "id", "title", "views", 'it''s' FROM "post""#,
+                r#"CREATE TABLE "__cadmus_new_post" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar NOT NULL, "views" integer NULL, "slug" varchar NOT NULL UNIQUE )"#,
+                r#"INSERT INTO "__cadmus_new_post" ("id", "title", "views", "slug") SELECT "id", "title", "views", 'it''s' FROM "post""#,
                 r#"DROP TABLE "post""#,
-                r#"ALTER TABLE "__hera_new_post" RENAME TO "post""#,
+                r#"ALTER TABLE "__cadmus_new_post" RENAME TO "post""#,
                 r#"CREATE INDEX "idx-post-title" ON "post" ("title")"#,
             ]
         );

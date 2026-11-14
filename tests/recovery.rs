@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::{App, AuthConfig, create_superuser, disable_totp, enable_totp, new_recovery_codes};
+use cadmus::{App, AuthConfig, create_superuser, disable_totp, enable_totp, new_recovery_codes};
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use sea_orm::DatabaseConnection;

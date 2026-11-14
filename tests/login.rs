@@ -4,7 +4,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use herapi::{
+use cadmus::{
     App, AuthConfig, ModelOptions, create_superuser, disable_totp, enable_totp, totp_uri,
     verify_totp,
 };
@@ -501,7 +501,7 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
         token(&app, "root", PASSWORD, None, None).await.status,
         StatusCode::UNAUTHORIZED
     );
-    let recovery = herapi::new_recovery_codes(&db, "root").await.unwrap();
+    let recovery = cadmus::new_recovery_codes(&db, "root").await.unwrap();
     let reply = root
         .post(
             &app,

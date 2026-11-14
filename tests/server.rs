@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::routing::get;
-use herapi::{App, AuthConfig, ModelOptions, Storage, create_superuser};
+use cadmus::{App, AuthConfig, ModelOptions, Storage, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};

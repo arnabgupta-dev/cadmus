@@ -1,8 +1,8 @@
-# herapi
+# Cadmus
 
-[![CI](https://github.com/arnabgupta-dev/herapi/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/herapi/actions/workflows/ci.yml)
+[![CI](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml)
 
-**Django-style web framework for Rust.** Describe your data once, as a model, and herapi
+**Django-style web framework for Rust.** Describe your data once, as a model, and Cadmus
 gives you:
 
 - **a database table** for it, kept up to date with migrations;
@@ -40,17 +40,17 @@ databases, but details may still change between versions.
   [deploying](#deploying)
 - [Reference](#reference): [commands](#management-commands), [settings](#all-settings),
   [migrations in detail](#migrations-in-detail)
-- [Not done yet](#not-done-yet) · [Working on herapi](#working-on-herapi) ·
+- [Not done yet](#not-done-yet) · [Working on Cadmus](#working-on-cadmus) ·
   [License](#license)
 
 ## Coming from Django?
 
 Most ideas carry over directly:
 
-| In Django | In herapi |
+| In Django | In Cadmus |
 |---|---|
-| `django-admin startproject` | `hera new` |
-| `models.py` and a model class | `src/models/post.rs`, a SeaORM entity (`hera generate model` writes it) |
+| `django-admin startproject` | `cadmus new` |
+| `models.py` and a model class | `src/models/post.rs`, a SeaORM entity (`cadmus generate model` writes it) |
 | `admin.site.register(Post, PostAdmin)` | `app.model::<post::Entity>(ModelOptions::new()...)` |
 | `list_display`, `search_fields`, `list_filter`, `readonly_fields`, `actions` | the same names on `ModelOptions` |
 | `settings.py` | `src/settings.rs` |
@@ -74,28 +74,28 @@ You need [Rust](https://www.rust-lang.org/tools/install) (a recent stable versio
 with `rustup`). Nothing else: the first project uses SQLite, a database kept in a single
 file.
 
-**1. Install the `hera` command**, which creates projects and models:
+**1. Install the `cadmus` command**, which creates projects and models:
 
 ```sh
-cargo install --git https://github.com/arnabgupta-dev/herapi herapi-cli
+cargo install --git https://github.com/arnabgupta-dev/cadmus cadmus-cli
 ```
 
 **2. Create a project:**
 
 ```sh
-hera new blog
+cadmus new blog
 cd blog
 ```
 
 This writes a ready-to-run project (see [What is in a project](#what-is-in-a-project)),
 including a `.env` file with a fresh secret key. For PostgreSQL or MySQL instead of SQLite,
-use `hera new blog --database postgres` (or `mysql`) and edit the address in `.env`.
+use `cadmus new blog --database postgres` (or `mysql`) and edit the address in `.env`.
 
 **3. Describe your data.** A blog post with a title, a body, a published flag and a view
 count:
 
 ```sh
-hera generate model Post title:string body:text published:bool views:int
+cadmus generate model Post title:string body:text published:bool views:int
 ```
 
 This writes `src/models/post.rs` and registers it. The field types are `string`, `text`,
@@ -182,8 +182,8 @@ async fn main() -> Result<(), AdminError> {
 
 ### Models
 
-A model describes one kind of record: its fields and their types. herapi uses SeaORM
-entities as models; `hera generate model` writes one for you:
+A model describes one kind of record: its fields and their types. Cadmus uses SeaORM
+entities as models; `cadmus generate model` writes one for you:
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -302,7 +302,7 @@ pub fn migration() -> Migration {
   `migrate` turns it into the right SQL for each.
 - **Safe:** each migration runs as one transaction, so a failure leaves the database as it
   was (MySQL is the exception: it saves table changes as it goes).
-- **History:** applied migrations are recorded in the `hera_migration` table, and
+- **History:** applied migrations are recorded in the `cadmus_migration` table, and
   `showmigrations` lists them.
 - **Undo:** `cargo run -- migrate 0001` rolls back everything after `0001`.
 - **Renames:** `makemigrations` asks whether a column was renamed or replaced, so data is not
@@ -337,7 +337,7 @@ use.
   account superuser again.
 - Accounts also have an e-mail address (unique; it can be used to log in), first and last
   name and phone, and record when they joined and last logged in. For fields of your own, add
-  a model linked to `herapi::user::Entity` (one profile row per account).
+  a model linked to `cadmus::user::Entity` (one profile row per account).
 - Passwords are stored as Argon2id hashes, never in plain text.
 
 ### People log in, programs use keys
@@ -367,8 +367,8 @@ use an **API key** instead: a long random string, made once and pasted into the 
 configuration.
 
 ```sh
-curl -H "Authorization: Bearer hera_..." https://example.com/api/post
-curl -H "X-API-Key: hera_..." https://example.com/api/post     # the same
+curl -H "Authorization: Bearer cadmus_..." https://example.com/api/post
+curl -H "X-API-Key: cadmus_..." https://example.com/api/post     # the same
 ```
 
 | | Login token | API key |
@@ -404,8 +404,8 @@ plain Rust, so the compiler catches a misspelt setting, and your editor complete
 and shows what each one does. Anything left out keeps its default:
 
 ```rust
-use herapi::AdminError;
-use herapi::settings::*;
+use cadmus::AdminError;
+use cadmus::settings::*;
 
 pub fn settings() -> Result<Settings, AdminError> {
     let debug = env_or("DEBUG", false)?;
@@ -452,8 +452,8 @@ A link from one model to another (a foreign key) is a `references` field. Genera
 being pointed to first:
 
 ```sh
-hera generate model Author name:string email:string
-hera generate model Post title:string author:references editor:references=author?
+cadmus generate model Author name:string email:string
+cadmus generate model Post title:string author:references editor:references=author?
 ```
 
 `author:references` adds an `author_id` column pointing at `author`.
@@ -549,7 +549,7 @@ mail: MailSettings {
 `smtps://` (TLS, port 465) and `smtp://...?tls=required` (STARTTLS, port 587) work with any
 provider's SMTP service. Unencrypted `smtp://` is accepted only to this machine, e.g. a test
 inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
-implement `herapi::Mailer` (one `send` method) and pass it to `App::mailer`.
+implement `cadmus::Mailer` (one `send` method) and pass it to `App::mailer`.
 
 - **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
   link that works once, within 15 minutes. Opening it shows a button rather than logging in
@@ -706,13 +706,13 @@ ISO 8601 (`2026-03-04T05:06:07`), JSON fields come back as JSON, and `?q=` searc
 case.
 
 **Smaller builds:** a project that only uses one database can leave the other drivers out, to
-compile faster: `herapi = { ..., default-features = false, features = ["postgres"] }` (the
+compile faster: `cadmus = { ..., default-features = false, features = ["postgres"] }` (the
 features are `sqlite`, `postgres` and `mysql`).
 
 ### Errors and your own code
 
 `src/routes.rs` holds your own axum routes, served next to the generated ones. Every failure
-in herapi is an `AdminError`, shown in the right form for where the request went:
+in Cadmus is an `AdminError`, shown in the right form for where the request went:
 
 | Request to | An error looks like |
 |---|---|
@@ -778,7 +778,7 @@ Before going live:
    [Login attempt limits](#login-attempt-limits)), and `server.bind` to `0.0.0.0:3000` if the
    proxy runs on another machine or container.
 3. Set `DATABASE_URL` and `SECRET_KEY` on the server, keep `.env` out of git, and use a
-   different `SECRET_KEY` for each environment (`hera secret` prints a new one).
+   different `SECRET_KEY` for each environment (`cadmus secret` prints a new one).
 4. Run `cargo run --release -- migrate` as part of each deployment, before starting the new
    version.
 
@@ -809,19 +809,19 @@ program).
 | `routes` | list the generated addresses |
 | `check` | check the configuration without starting the server |
 
-And the `hera` command:
+And the `cadmus` command:
 
 | Command | What it does |
 |---|---|
-| `hera new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project |
-| `hera generate model NAME field:type ...` | add a model to the project in the current folder |
-| `hera secret` | print a new secret key |
+| `cadmus new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project |
+| `cadmus generate model NAME field:type ...` | add a model to the project in the current folder |
+| `cadmus secret` | print a new secret key |
 
 ### All settings
 
 | Section | Settings (defaults in brackets) |
 |---|---|
-| `secret_key` | signs login tokens; at least 32 bytes (`hera secret` prints one) |
+| `secret_key` | signs login tokens; at least 32 bytes (`cadmus secret` prints one) |
 | `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
 | `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
 | `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min), `api_keys` (`true`) |
@@ -873,7 +873,7 @@ date the first time `migrate` runs.
 <summary>Projects configured from environment variables only (<code>App::from_env</code>)</summary>
 
 Projects made before `src/settings.rs` existed start with `App::from_env()`, which reads
-everything from environment variables. It still works. To move to settings, run `hera new`
+everything from environment variables. It still works. To move to settings, run `cadmus new`
 for a fresh `src/settings.rs`, copy it in, replace `App::from_env()` with
 `App::from_settings(settings::settings()?)`, and rename `ADMIN_JWT_SECRET` to `SECRET_KEY`
 in `.env`.
@@ -932,10 +932,10 @@ unless you implement `UserStore::access`, API keys work only if you implement
 - **Untested services:** S3, Azure and Google Cloud Storage compile but have not been run
   against the real services.
 
-## Working on herapi
+## Working on Cadmus
 
-To use a local copy of herapi in a project: `cargo install --path cli`, then
-`hera new blog --framework-path /path/to/herapi`.
+To use a local copy of Cadmus in a project: `cargo install --path cli`, then
+`cadmus new blog --framework-path /path/to/cadmus`.
 
 Running the tests:
 
@@ -955,5 +955,5 @@ TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 
 [MIT](LICENSE). Free to use and change, commercially or otherwise. Copies must keep the
 copyright notice; beyond that, a link back to
-[this repository](https://github.com/arnabgupta-dev/herapi) wherever you use it is
+[this repository](https://github.com/arnabgupta-dev/cadmus) wherever you use it is
 appreciated.

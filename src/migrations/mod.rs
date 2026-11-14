@@ -3,13 +3,13 @@
 //! `cargo run -- makemigrations` compares the models with the tables the existing migrations
 //! build up, and writes the difference as a new Rust file in `src/migrations/`. `cargo run --
 //! migrate` applies the migrations a database has not had yet, in order, and records each one
-//! in the `hera_migration` table. Because migration files describe changes rather than SQL,
+//! in the `cadmus_migration` table. Because migration files describe changes rather than SQL,
 //! the same files work on SQLite, PostgreSQL and MySQL.
 //!
 //! A generated migration looks like this, and can be edited before it is applied anywhere:
 //!
 //! ```
-//! use herapi::migrations::*;
+//! use cadmus::migrations::*;
 //!
 //! pub fn migration() -> Migration {
 //!     Migration::new("0002_post_slug")
@@ -231,7 +231,7 @@ impl Migration {
     /// Runs Rust code inside the migration's transaction, for changes to the data:
     ///
     /// ```
-    /// # use herapi::migrations::*;
+    /// # use cadmus::migrations::*;
     /// use sea_orm::ConnectionTrait;
     ///
     /// Migration::new("0003_titles").run(|db| {

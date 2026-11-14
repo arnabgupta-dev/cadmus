@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use herapi::{AdminError, App, AuthConfig, ModelOptions, Storage, Uploads, create_superuser};
+use cadmus::{AdminError, App, AuthConfig, ModelOptions, Storage, Uploads, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use tower::ServiceExt;
@@ -30,7 +30,7 @@ mod product {
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 const PASSWORD: &str = "correct horse battery staple";
-const BOUNDARY: &str = "----hera-test";
+const BOUNDARY: &str = "----cadmus-test";
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really a picture";
 
 fn app(db: &DatabaseConnection, max_file_bytes: u64) -> App {
@@ -181,7 +181,7 @@ async fn product(db: &DatabaseConnection, id: i32) -> product::Model {
 }
 
 async fn file_count(db: &DatabaseConnection) -> u64 {
-    herapi::file::Entity::find().count(db).await.unwrap()
+    cadmus::file::Entity::find().count(db).await.unwrap()
 }
 
 #[tokio::test]

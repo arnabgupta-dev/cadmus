@@ -1,9 +1,9 @@
-//! `hera`: creates projects and models for herapi.
+//! `cadmus`: creates projects and models for cadmus.
 //!
 //! ```text
-//! hera new blog
+//! cadmus new blog
 //! cd blog
-//! hera generate model Post title:string body:text published:bool views:int rating:float?
+//! cadmus generate model Post title:string body:text published:bool views:int rating:float?
 //! cargo run -- makemigrations
 //! cargo run -- migrate
 //! cargo run -- createsuperuser --username admin
@@ -17,14 +17,14 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Where generated projects get the framework from until it is on crates.io.
-const REPOSITORY: &str = "https://github.com/arnabgupta-dev/herapi";
-const MODULES_MARKER: &str = "// hera:modules (generated modules are added above this line)";
-const MODELS_MARKER: &str = "// hera:models (generated models are registered above this line)";
+const REPOSITORY: &str = "https://github.com/arnabgupta-dev/cadmus";
+const MODULES_MARKER: &str = "// cadmus:modules (generated modules are added above this line)";
+const MODELS_MARKER: &str = "// cadmus:models (generated models are registered above this line)";
 
 #[derive(Parser)]
 #[command(
-    name = "hera",
-    about = "Project and model generator for herapi",
+    name = "cadmus",
+    about = "Project and model generator for cadmus",
     version
 )]
 struct Cli {
@@ -174,7 +174,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
-herapi = {framework}
+cadmus = {framework}
 sea-orm = {{ version = "2", default-features = false, features = ["macros", "with-json", "with-chrono"] }}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 "#
@@ -187,7 +187,7 @@ mod models;
 mod routes;
 mod settings;
 
-use herapi::{AdminError, App};
+use cadmus::{AdminError, App};
 
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
@@ -206,7 +206,7 @@ async fn main() -> Result<(), AdminError> {
 //! `cargo run -- makemigrations` adds a file here and rewrites this list;
 //! `cargo run -- migrate` applies the migrations the database has not had yet.
 
-use herapi::migrations::Migration;
+use cadmus::migrations::Migration;
 
 /// Every migration, in the order they apply.
 pub fn all() -> Vec<Migration> {
@@ -229,9 +229,9 @@ pub fn router() -> Router {
     write_new(
         &root.join("src/models/mod.rs"),
         &format!(
-            r"//! Models. `hera generate model` adds a module and a registration line here.
+            r"//! Models. `cadmus generate model` adds a module and a registration line here.
 
-use herapi::App;
+use cadmus::App;
 
 {MODULES_MARKER}
 
@@ -247,7 +247,7 @@ pub fn register(app: App) -> App {{
         r"# Secrets and values that differ between machines. Everything else is in
 # src/settings.rs. Copy to .env and fill in; never commit .env.
 DATABASE_URL={url}
-# Signs login tokens. `hera secret` prints a new one.
+# Signs login tokens. `cadmus secret` prints a new one.
 SECRET_KEY=
 # On your own machine: lets the login cookie work over plain http://.
 # Leave it unset in production.
@@ -279,7 +279,7 @@ PUBLIC_URL=http://localhost:3000
     println!("created {}", root.display());
     println!("next:");
     println!("  cd {name}");
-    println!("  hera generate model Post title:string body:text published:bool");
+    println!("  cadmus generate model Post title:string body:text published:bool");
     println!("  cargo run -- makemigrations");
     println!("  cargo run -- migrate");
     println!("  cargo run -- createsuperuser --username admin");
@@ -299,10 +299,10 @@ fn settings_source(name: &str) -> String {
 //! on your machine, the host's variables in production), read with `env(...)`.
 //!
 //! Every field is documented: hover over it in your editor, or see the `Settings` type in
-//! the herapi documentation. Anything left out keeps its default.
+//! the cadmus documentation. Anything left out keeps its default.
 
-use herapi::AdminError;
-use herapi::settings::*;
+use cadmus::AdminError;
+use cadmus::settings::*;
 
 pub fn settings() -> Result<Settings, AdminError> {{
     // `DEBUG=true` in .env on your machine; unset in production.
@@ -644,10 +644,10 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
 
     let index = project.join("src/models/mod.rs");
     let existing = std::fs::read_to_string(&index).map_err(|_| {
-        "src/models/mod.rs not found: run this inside a project created by `hera new`".to_owned()
+        "src/models/mod.rs not found: run this inside a project created by `cadmus new`".to_owned()
     })?;
     if !existing.contains(MODULES_MARKER) || !existing.contains(MODELS_MARKER) {
-        return Err("src/models/mod.rs has lost its `// hera:` marker comments".into());
+        return Err("src/models/mod.rs has lost its `// cadmus:` marker comments".into());
     }
     // Check before writing anything, so a failure leaves the project untouched.
     let file = project.join(format!("src/models/{module}.rs"));
@@ -680,7 +680,7 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
         .replace(
             MODELS_MARKER,
             &format!(
-                "    .model::<{module}::Entity>(herapi::ModelOptions::new().label({:?}){file_option})\n    {MODELS_MARKER}",
+                "    .model::<{module}::Entity>(cadmus::ModelOptions::new().label({:?}){file_option})\n    {MODELS_MARKER}",
                 label(name)
             ),
         );
@@ -701,7 +701,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("hera-cli-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cadmus-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -814,7 +814,7 @@ mod tests {
 
         new_project(&dir, "lite", None, Database::Sqlite).unwrap();
         assert!(
-            read("lite", "Cargo.toml").contains(&format!("herapi = {{ git = {REPOSITORY:?} }}"))
+            read("lite", "Cargo.toml").contains(&format!("cadmus = {{ git = {REPOSITORY:?} }}"))
         );
         assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
 

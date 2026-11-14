@@ -203,7 +203,7 @@ impl DocsConfig {
     /// your own:
     ///
     /// ```
-    /// use herapi::DocsConfig;
+    /// use cadmus::DocsConfig;
     /// use serde_json::json;
     ///
     /// let docs = DocsConfig::new().extend(|document| {
@@ -930,7 +930,7 @@ fn document(
                 },
                 "bearer": {
                     "type": "http", "scheme": "bearer", "bearerFormat": "JWT",
-                    "description": format!("A token from `POST {token_url}`, or an API key (`hera_...`)"),
+                    "description": format!("A token from `POST {token_url}`, or an API key (`cadmus_...`)"),
                 },
             },
             "responses": {

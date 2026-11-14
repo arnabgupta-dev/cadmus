@@ -108,7 +108,7 @@ impl App {
     }
 
     /// Builds an app from the project's [`Settings`], connecting to its database. This is how
-    /// a project made by `hera new` starts:
+    /// a project made by `cadmus new` starts:
     ///
     /// ```ignore
     /// let app = App::from_settings(settings::settings()?).await?;
@@ -1223,8 +1223,8 @@ fn check_database_url(setting: &str, url: &str) -> Result<(), AdminError> {
         return Ok(());
     }
     Err(AdminError::Config(format!(
-        "{setting} is a {feature} address, but herapi was built without its `{feature}` \
-         feature. In Cargo.toml: herapi = {{ ..., default-features = false, features = \
+        "{setting} is a {feature} address, but cadmus was built without its `{feature}` \
+         feature. In Cargo.toml: cadmus = {{ ..., default-features = false, features = \
          [\"{feature}\"] }}"
     )))
 }

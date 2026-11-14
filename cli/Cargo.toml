@@ -1,15 +1,15 @@
 [package]
-name = "herapi-cli"
+name = "cadmus-cli"
 version = "0.1.0"
 edition = "2024"
-description = "Project and model generator for herapi"
+description = "Project and model generator for cadmus"
 license = "MIT"
-repository = "https://github.com/arnabgupta-dev/herapi"
+repository = "https://github.com/arnabgupta-dev/cadmus"
 keywords = ["axum", "sea-orm", "admin", "generator", "cli"]
 categories = ["command-line-utilities", "web-programming"]
 
 [[bin]]
-name = "hera"
+name = "cadmus"
 path = "src/main.rs"
 
 [dependencies]

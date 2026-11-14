@@ -4,8 +4,8 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use herapi::settings::*;
-use herapi::{AdminError, App};
+use cadmus::settings::*;
+use cadmus::{AdminError, App};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -194,33 +194,33 @@ fn environment_helpers_read_parse_and_name_the_variable() {
     // SAFETY: this is the only test in this file that touches the environment, and the other
     // tests here only read variables that are never written.
     unsafe {
-        std::env::set_var("HERA_TEST_FLAG_YES", "yes");
-        std::env::set_var("HERA_TEST_FLAG_OFF", "off");
-        std::env::set_var("HERA_TEST_NUMBER", " 42 ");
-        std::env::set_var("HERA_TEST_BAD_NUMBER", "forty-two");
-        std::env::set_var("HERA_TEST_LEVEL", "debug");
-        std::env::set_var("HERA_TEST_EMPTY", "");
+        std::env::set_var("CADMUS_TEST_FLAG_YES", "yes");
+        std::env::set_var("CADMUS_TEST_FLAG_OFF", "off");
+        std::env::set_var("CADMUS_TEST_NUMBER", " 42 ");
+        std::env::set_var("CADMUS_TEST_BAD_NUMBER", "forty-two");
+        std::env::set_var("CADMUS_TEST_LEVEL", "debug");
+        std::env::set_var("CADMUS_TEST_EMPTY", "");
     }
-    assert!(env_or("HERA_TEST_FLAG_YES", false).unwrap());
-    assert!(!env_or("HERA_TEST_FLAG_OFF", true).unwrap());
-    assert!(env_or("HERA_TEST_UNSET", true).unwrap());
-    assert_eq!(env_or("HERA_TEST_NUMBER", 0_u32).unwrap(), 42);
+    assert!(env_or("CADMUS_TEST_FLAG_YES", false).unwrap());
+    assert!(!env_or("CADMUS_TEST_FLAG_OFF", true).unwrap());
+    assert!(env_or("CADMUS_TEST_UNSET", true).unwrap());
+    assert_eq!(env_or("CADMUS_TEST_NUMBER", 0_u32).unwrap(), 42);
     assert_eq!(
-        env_or("HERA_TEST_LEVEL", LogLevel::INFO).unwrap(),
+        env_or("CADMUS_TEST_LEVEL", LogLevel::INFO).unwrap(),
         LogLevel::DEBUG
     );
-    match env_or("HERA_TEST_BAD_NUMBER", 0_u32) {
-        Err(AdminError::Config(message)) => assert!(message.contains("HERA_TEST_BAD_NUMBER")),
+    match env_or("CADMUS_TEST_BAD_NUMBER", 0_u32) {
+        Err(AdminError::Config(message)) => assert!(message.contains("CADMUS_TEST_BAD_NUMBER")),
         other => panic!("{other:?}"),
     }
-    match env("HERA_TEST_UNSET") {
-        Err(AdminError::Config(message)) => assert!(message.starts_with("HERA_TEST_UNSET")),
+    match env("CADMUS_TEST_UNSET") {
+        Err(AdminError::Config(message)) => assert!(message.starts_with("CADMUS_TEST_UNSET")),
         other => panic!("{other:?}"),
     }
     // Empty counts as unset.
-    assert!(env("HERA_TEST_EMPTY").is_err());
-    assert_eq!(env_opt("HERA_TEST_EMPTY"), None);
-    assert_eq!(env("HERA_TEST_NUMBER").unwrap(), " 42 ");
+    assert!(env("CADMUS_TEST_EMPTY").is_err());
+    assert_eq!(env_opt("CADMUS_TEST_EMPTY"), None);
+    assert_eq!(env("CADMUS_TEST_NUMBER").unwrap(), " 42 ");
 }
 
 #[cfg(all(feature = "sqlite", feature = "postgres", feature = "mysql"))]

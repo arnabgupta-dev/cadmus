@@ -570,6 +570,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cadmus"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base32",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "dotenvy",
+ "futures-util",
+ "hmac 0.13.0",
+ "http-body-util",
+ "jsonwebtoken",
+ "lettre",
+ "minijinja",
+ "object_store",
+ "qrcode",
+ "rand 0.10.3",
+ "reqwest",
+ "rpassword",
+ "rustls",
+ "rustls-platform-verifier",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.1",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "cadmus-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "rand 0.10.3",
+]
+
+[[package]]
 name = "cc"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1431,55 +1480,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "herapi"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "async-trait",
- "axum",
- "axum-extra",
- "base32",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "clap",
- "dotenvy",
- "futures-util",
- "hmac 0.13.0",
- "http-body-util",
- "jsonwebtoken",
- "lettre",
- "minijinja",
- "object_store",
- "qrcode",
- "rand 0.10.3",
- "reqwest",
- "rpassword",
- "rustls",
- "rustls-platform-verifier",
- "sea-orm",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.11.1",
- "thiserror",
- "tokio",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "herapi-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "rand 0.10.3",
-]
 
 [[package]]
 name = "hex"

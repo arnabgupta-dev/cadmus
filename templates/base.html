@@ -7,7 +7,7 @@
 <title>{% block title %}{{ site.site_title }}{% endblock %}</title>
 <script>
 /* Before the first paint, so a remembered theme never flashes the other one. */
-try { var t = localStorage.getItem("hera-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+try { var t = localStorage.getItem("cadmus-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
 {% if site.web_fonts %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -343,7 +343,7 @@ dialog[open] { animation: pop .18s var(--ease); }
   document.querySelectorAll("[data-theme-toggle]").forEach(function (b) {
     function paint() { b.querySelector("use").setAttribute("href", dark() ? "#i-sun" : "#i-moon"); b.setAttribute("aria-label", dark() ? "Switch to light theme" : "Switch to dark theme"); }
     paint();
-    b.addEventListener("click", function () { var t = dark() ? "light" : "dark"; root.dataset.theme = t; try { localStorage.setItem("hera-theme", t); } catch (e) {} paint(); });
+    b.addEventListener("click", function () { var t = dark() ? "light" : "dark"; root.dataset.theme = t; try { localStorage.setItem("cadmus-theme", t); } catch (e) {} paint(); });
   });
   var opener = document.querySelector("[data-open-nav]");
   function nav(open) { body.classList.toggle("nav-open", open); if (opener) opener.setAttribute("aria-expanded", String(open)); if (open) { var first = document.querySelector("#sidebar a"); if (first) first.focus(); } }
