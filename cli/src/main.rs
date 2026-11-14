@@ -16,8 +16,15 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Where generated projects get the framework from until it is on crates.io.
-const REPOSITORY: &str = "https://github.com/arnabgupta-dev/cadmus";
+/// The framework version generated projects ask for: this generator's own `major.minor`, as
+/// the two are released together.
+fn framework_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    version
+        .rsplit_once('.')
+        .map_or(version, |(major_minor, _)| major_minor)
+        .to_owned()
+}
 const MODULES_MARKER: &str = "// cadmus:modules (generated modules are added above this line)";
 const MODELS_MARKER: &str = "// cadmus:models (generated models are registered above this line)";
 
@@ -38,7 +45,7 @@ enum Command {
     New {
         /// Project (and crate) name: lowercase letters, digits, `-` and `_`.
         name: String,
-        /// Use a local checkout of the framework instead of the GitHub repository.
+        /// Use a local checkout of the framework instead of the version on crates.io.
         #[arg(long)]
         framework_path: Option<PathBuf>,
         /// Database the project starts with; only the address in .env depends on it, and
@@ -152,17 +159,16 @@ fn new_project(
     if root.exists() {
         return Err(format!("{} already exists", root.display()));
     }
-    let source = match framework_path {
+    // Every driver is built in by default, so the database is chosen in settings.
+    let framework = match framework_path {
         Some(path) => {
             let absolute = path
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("path = {:?}", absolute.display().to_string())
+            format!("{{ path = {:?} }}", absolute.display().to_string())
         }
-        None => format!("git = {REPOSITORY:?}"),
+        None => format!("{:?}", framework_version()),
     };
-    // Every driver is built in by default, so the database is chosen in settings.
-    let framework = format!("{{ {source} }}");
 
     write_new(
         &root.join("Cargo.toml"),
@@ -814,7 +820,7 @@ mod tests {
 
         new_project(&dir, "lite", None, Database::Sqlite).unwrap();
         assert!(
-            read("lite", "Cargo.toml").contains(&format!("cadmus = {{ git = {REPOSITORY:?} }}"))
+            read("lite", "Cargo.toml").contains(&format!("cadmus = \"{}\"\n", framework_version()))
         );
         assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
 

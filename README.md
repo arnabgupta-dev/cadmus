@@ -77,7 +77,7 @@ file.
 **1. Install the `cadmus` command**, which creates projects and models:
 
 ```sh
-cargo install --git https://github.com/arnabgupta-dev/cadmus cadmus-cli
+cargo install cadmus-cli
 ```
 
 **2. Create a project:**
@@ -934,7 +934,9 @@ unless you implement `UserStore::access`, API keys work only if you implement
 
 ## Working on Cadmus
 
-To use a local copy of Cadmus in a project: `cargo install --path cli`, then
+To try the latest unreleased version, install the command with
+`cargo install --git https://github.com/arnabgupta-dev/cadmus cadmus-cli`. To use a local copy
+of Cadmus in a project: `cargo install --path cli`, then
 `cadmus new blog --framework-path /path/to/cadmus`.
 
 Running the tests:

@@ -2,9 +2,10 @@
 name = "cadmus-cli"
 version = "0.1.0"
 edition = "2024"
-description = "Project and model generator for cadmus"
+description = "The `cadmus` command: creates Cadmus projects and models"
 license = "MIT"
 repository = "https://github.com/arnabgupta-dev/cadmus"
+readme = "../README.md"
 keywords = ["axum", "sea-orm", "admin", "generator", "cli"]
 categories = ["command-line-utilities", "web-programming"]
 
