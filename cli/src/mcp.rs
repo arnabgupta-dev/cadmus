@@ -35,7 +35,9 @@ To build an app:
 5. Tell the user to run `cargo run -- serve` in the project: the admin is at /admin, the API \
 documentation at /api/docs.
 
-After changing a model file by hand, run makemigrations and migrate again. Never edit a \
+After changing a model file by hand, run makemigrations and migrate again. To remove a model, \
+use delete_model (models that reference it first), then makemigrations and migrate; that drops \
+its table and rows, so ask the user first. Never edit a \
 migration that has been applied; make a new one. Before writing custom code, search the \
 documentation (docs_search, docs_read): admin options are ModelOptions in src/models/mod.rs, \
 settings are in src/settings.rs, your own routes go in src/routes.rs.";
@@ -189,6 +191,20 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "delete_model",
+            "title": "Delete a model",
+            "description": "Removes a model from a project: its file in src/models/ and its two lines in src/models/mod.rs. Refuses, changing nothing, while other code still uses it (such as a model with a foreign key to it): delete those first. Afterwards, makemigrations and migrate drop its table and every row in it, so confirm with the user before running them.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "name": { "type": "string", "description": "Model name in PascalCase, as it was generated, e.g. `BlogPost`." },
+                },
+                "required": ["project", "name"],
+            },
+            "annotations": { "destructiveHint": true },
+        },
+        {
             "name": "run",
             "title": "Run a project command",
             "description": "Runs `cargo run -- <command>` in a project and returns its output. makemigrations writes a migration for model changes (never asking questions: nothing is taken as renamed); migrate applies migrations; showmigrations lists them; sqlmigrate <name> prints a migration's SQL; check validates the configuration; routes lists the URLs; openapi prints the API description; apikey --username U --name N makes an API key. The first run compiles the project, which takes a few minutes.",
@@ -272,6 +288,10 @@ fn call_tool(params: &Value) -> Result<Value, (i64, String)> {
         "generate_model" => (|| {
             let project = project(&required("project")?)?;
             crate::generate_model(&project, &required("name")?, &strings("fields"))
+        })(),
+        "delete_model" => (|| {
+            let project = project(&required("project")?)?;
+            crate::delete_model(&crate::plan_model_deletion(&project, &required("name")?)?)
         })(),
         "run" => (|| {
             let project = project(&required("project")?)?;
@@ -598,6 +618,7 @@ mod tests {
                 "docs_search",
                 "new_project",
                 "generate_model",
+                "delete_model",
                 "run",
                 "create_superuser"
             ]
@@ -644,6 +665,18 @@ mod tests {
         );
         assert!(!error, "{report}");
         assert!(dir.join("shop/src/models/product.rs").is_file());
+        let (error, report) = tool(
+            "delete_model",
+            json!({ "project": project, "name": "Product" }),
+        );
+        assert!(!error, "{report}");
+        assert!(report.contains("drops the table `product`"));
+        assert!(!dir.join("shop/src/models/product.rs").exists());
+        let (error, report) = tool(
+            "delete_model",
+            json!({ "project": project, "name": "Product" }),
+        );
+        assert!(error && report.contains("no model"));
 
         let (error, report) = tool(
             "generate_model",

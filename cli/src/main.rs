@@ -11,6 +11,7 @@
 //! ```
 
 use std::fmt::Write as _;
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -62,6 +63,12 @@ enum Command {
         #[command(subcommand)]
         what: Generate,
     },
+    /// Remove generated code from an existing project.
+    #[command(alias = "destroy")]
+    Delete {
+        #[command(subcommand)]
+        what: Delete,
+    },
     /// Print a random value suitable for SECRET_KEY.
     Secret,
     /// Serve the Model Context Protocol over standard input and output, so AI coding agents
@@ -102,6 +109,19 @@ enum Generate {
     },
 }
 
+#[derive(Subcommand)]
+enum Delete {
+    /// Remove a model: its file and its two lines in src/models/mod.rs. The next
+    /// makemigrations then drops its table.
+    Model {
+        /// Model name in PascalCase, as it was generated, e.g. `BlogPost`.
+        name: String,
+        /// Delete without asking first.
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::New {
@@ -112,6 +132,26 @@ fn main() -> ExitCode {
         Command::Generate {
             what: Generate::Model { name, fields },
         } => generate_model(Path::new("."), &name, &fields),
+        Command::Delete {
+            what: Delete::Model { name, yes },
+        } => (|| {
+            let plan = plan_model_deletion(Path::new("."), &name)?;
+            if !yes {
+                if !std::io::stdin().is_terminal() {
+                    return Err("add --yes to delete without being asked".into());
+                }
+                let question = format!(
+                    "Delete the model {name} ({})? The next makemigrations drops its table `{}` \
+                     and every row in it.",
+                    plan.file.display(),
+                    plan.module
+                );
+                if !confirm(&question) {
+                    return Ok("nothing was deleted".into());
+                }
+            }
+            delete_model(&plan)
+        })(),
         Command::Secret => Ok(secret()),
         Command::Mcp => mcp::serve().map(|()| String::new()),
     };
@@ -329,7 +369,8 @@ gets a database table, admin pages and REST API endpoints.
    text, int, bigint, float, bool, datetime, date, json, file, references; `?` makes a field
    optional.
 2. Or edit a model file by hand. Mark a renamed field `#[sea_orm(renamed_from = "old_name")]`
-   so its data is kept.
+   so its data is kept. To remove a model, `cadmus delete model Book --yes` (models that
+   reference it first); the next migration drops its table and rows.
 3. `cargo run -- makemigrations --no-input`, then `cargo run -- migrate`.
 4. `cargo run -- check` validates the settings; `cargo build` must pass with no warnings.
 5. `cargo run -- serve` starts the site: admin at /admin, API documentation at /api/docs.
@@ -753,6 +794,226 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<Strin
     Ok(report)
 }
 
+/// What `delete model` will change, worked out before anything is touched.
+struct ModelDeletion {
+    name: String,
+    /// The module and table name, e.g. `blog_post`.
+    module: String,
+    file: PathBuf,
+    index: PathBuf,
+    /// `src/models/mod.rs` without the model's `pub mod` line and registration.
+    updated_index: String,
+    /// The registration listed file fields, whose uploads stay in storage.
+    had_files: bool,
+}
+
+/// Checks that a model can be removed cleanly: its file exists, both its entries in
+/// `src/models/mod.rs` are found, and no other code uses it. Changes nothing.
+fn plan_model_deletion(project: &Path, name: &str) -> Result<ModelDeletion, String> {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if !valid {
+        return Err("model names are PascalCase letters and digits, e.g. BlogPost".into());
+    }
+    let module = snake_case(name);
+    let index = project.join("src/models/mod.rs");
+    let existing = std::fs::read_to_string(&index).map_err(|_| {
+        "src/models/mod.rs not found: run this inside a project created by `cadmus new`".to_owned()
+    })?;
+    let file = project.join(format!("src/models/{module}.rs"));
+    if !file.is_file() {
+        return Err(format!(
+            "there is no model `{name}`: src/models/{module}.rs does not exist"
+        ));
+    }
+    let (updated_index, registration) = unregister(&existing, &module).ok_or_else(|| {
+        format!(
+            "src/models/mod.rs: could not find both `pub mod {module};` and \
+             `.model::<{module}::Entity>(...)`; remove them and src/models/{module}.rs by hand"
+        )
+    })?;
+
+    // Anything still naming the module would stop the project from compiling.
+    let mut uses = Vec::new();
+    if let Some(line) = first_use(&updated_index, &module) {
+        uses.push(format!("src/models/mod.rs, line {line}"));
+    }
+    let src = project.join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    files.sort();
+    for path in files {
+        // Migrations describe tables on their own and never name a model.
+        if path == file || path == index || path.starts_with(src.join("migrations")) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(line) = first_use(&text, &module) {
+            let shown = path.strip_prefix(project).unwrap_or(&path);
+            uses.push(format!("{}, line {line}", shown.display()));
+        }
+    }
+    if !uses.is_empty() {
+        return Err(format!(
+            "{name} is still used in:\n  {}\nremove those uses first (for a foreign key to {name}, \
+             delete that field or its model), then run this again",
+            uses.join("\n  ")
+        ));
+    }
+    Ok(ModelDeletion {
+        name: name.to_owned(),
+        had_files: registration.contains(".file_fields("),
+        module,
+        file,
+        index,
+        updated_index,
+    })
+}
+
+/// Removes a model as planned by [`plan_model_deletion`].
+fn delete_model(plan: &ModelDeletion) -> Result<String, String> {
+    // The registration goes first: a model file that is no longer a module is just ignored,
+    // while a module without its file would not compile.
+    std::fs::write(&plan.index, &plan.updated_index)
+        .map_err(|e| format!("{}: {e}", plan.index.display()))?;
+    std::fs::remove_file(&plan.file).map_err(|e| format!("{}: {e}", plan.file.display()))?;
+    let mut report = format!(
+        "deleted {}\nremoved {} from src/models/mod.rs\n",
+        plan.file.display(),
+        plan.name
+    );
+    if plan.had_files {
+        report.push_str("files uploaded to it stay in storage\n");
+    }
+    let _ = write!(
+        report,
+        "next: cargo run -- makemigrations && cargo run -- migrate\n\
+         the migration drops the table `{}` and every row in it",
+        plan.module
+    );
+    Ok(report)
+}
+
+/// `src/models/mod.rs` without `pub mod <module>;` and `.model::<<module>::Entity>(...)`,
+/// with the removed registration; `None` if either is missing.
+fn unregister(source: &str, module: &str) -> Option<(String, String)> {
+    let declaration = format!("pub mod {module};");
+    let mut offset = 0;
+    let mut declared = None;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == declaration {
+            let start = offset + (line.len() - line.trim_start().len());
+            declared = Some((start, start + declaration.len()));
+        }
+        offset += line.len();
+    }
+    let declared = declared?;
+
+    let needle = format!(".model::<{module}::Entity>");
+    let start = source.find(&needle)?;
+    let open = start
+        + needle.len()
+        + (source[start + needle.len()..].len()
+            - source[start + needle.len()..].trim_start().len());
+    if source.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    // The matching `)`, skipping any inside string literals such as labels.
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut end = None;
+    for (i, byte) in source.bytes().enumerate().skip(open) {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let registered = (start, end?);
+    let removed = source[registered.0..registered.1].to_owned();
+
+    // Cut the later span first so the earlier one's offsets stay valid.
+    let (first, second) = if declared.0 < registered.0 {
+        (declared, registered)
+    } else {
+        (registered, declared)
+    };
+    let text = cut(source, second.0, second.1);
+    Some((cut(&text, first.0, first.1), removed))
+}
+
+/// Removes `start..end`, and its whole line when nothing else is on it.
+fn cut(text: &str, start: usize, end: usize) -> String {
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[end..].find('\n').map_or(text.len(), |i| end + i + 1);
+    if text[line_start..start].trim().is_empty() && text[end..line_end].trim().is_empty() {
+        format!("{}{}", &text[..line_start], &text[line_end..])
+    } else {
+        format!("{}{}", &text[..start], &text[end..])
+    }
+}
+
+/// The first line (from 1) that names `<module>::` outside a comment, as in
+/// `super::author::Entity`.
+fn first_use(text: &str, module: &str) -> Option<usize> {
+    let needle = format!("{module}::");
+    text.lines().enumerate().find_map(|(number, line)| {
+        if line.trim_start().starts_with("//") {
+            return None;
+        }
+        let found = line.match_indices(&needle).any(|(at, _)| {
+            !line[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+        found.then_some(number + 1)
+    })
+}
+
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Asks a yes-or-no question on the terminal; anything but yes is no.
+fn confirm(question: &str) -> bool {
+    use std::io::Write as _;
+    print!("{question} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).is_ok()
+        && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -977,5 +1238,75 @@ mod tests {
         assert!(new_project(&dir, "Bad Name", None, Database::Sqlite).is_err());
         assert!(new_project(&dir, "../escape", None, Database::Sqlite).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn delete_model_undoes_generate_model() {
+        let dir = temp("delete");
+        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
+        let root = dir.join("blog");
+        let index_path = root.join("src/models/mod.rs");
+        let fresh = std::fs::read_to_string(&index_path).unwrap();
+        generate_model(&root, "Author", &["name:string".into()]).unwrap();
+        generate_model(
+            &root,
+            "BlogPost",
+            &[
+                "title:string".into(),
+                "author:references".into(),
+                "cover:file".into(),
+            ],
+        )
+        .unwrap();
+        // Hand-edited admin options: several lines, with a `)` inside a string.
+        let edited = std::fs::read_to_string(&index_path).unwrap().replace(
+            ".label(\"Blog posts\")",
+            ".label(\"Posts (all)\")\n            .search_fields([\"title\"])",
+        );
+        std::fs::write(&index_path, &edited).unwrap();
+
+        // Still referenced by a foreign key: refused, nothing changed.
+        let error = plan_model_deletion(&root, "Author").err().unwrap();
+        assert!(error.contains("src/models/blog_post.rs, line"), "{error}");
+        assert!(root.join("src/models/author.rs").is_file());
+        assert_eq!(std::fs::read_to_string(&index_path).unwrap(), edited);
+        // Your own code counts too.
+        let routes = root.join("src/routes.rs");
+        let original_routes = std::fs::read_to_string(&routes).unwrap();
+        std::fs::write(&routes, format!("{original_routes}\n// use crate::models::blog_post;\nfn f(_: crate::models::blog_post::Model) {{}}\n")).unwrap();
+        let error = plan_model_deletion(&root, "BlogPost").err().unwrap();
+        assert!(error.contains("src/routes.rs, line"), "{error}");
+        std::fs::write(&routes, &original_routes).unwrap();
+
+        assert!(
+            plan_model_deletion(&root, "Tag")
+                .err()
+                .unwrap()
+                .contains("no model `Tag`")
+        );
+        assert!(plan_model_deletion(&root, "blog_post").is_err());
+
+        let report = delete_model(&plan_model_deletion(&root, "BlogPost").unwrap()).unwrap();
+        assert!(report.contains("drops the table `blog_post`"), "{report}");
+        assert!(report.contains("stay in storage"), "{report}");
+        assert!(!root.join("src/models/blog_post.rs").exists());
+        let index = std::fs::read_to_string(&index_path).unwrap();
+        assert!(
+            !index.contains("blog_post") && !index.contains("Posts (all)"),
+            "{index}"
+        );
+
+        // In the right order, everything comes back out: mod.rs is as `cadmus new` wrote it.
+        delete_model(&plan_model_deletion(&root, "Author").unwrap()).unwrap();
+        assert_eq!(std::fs::read_to_string(&index_path).unwrap(), fresh);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn first_use_ignores_comments_and_longer_names() {
+        assert_eq!(first_use("use super::post::Entity;", "post"), Some(1));
+        assert_eq!(first_use("// post::Entity\nx", "post"), None);
+        assert_eq!(first_use("blog_post::Entity", "post"), None);
+        assert_eq!(first_use("a\n(post::Model)", "post"), Some(2));
     }
 }

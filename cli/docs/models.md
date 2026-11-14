@@ -80,6 +80,27 @@ Useful SeaORM attributes on a field:
 | `#[sea_orm(column_type = "Text")]` | long text instead of `varchar` |
 | `#[sea_orm(renamed_from = "body")]` | tells `makemigrations` the field was renamed, so the data is kept |
 
+## Deleting a model
+
+`cadmus delete model` undoes `cadmus generate model`: it deletes the model's file and removes
+its two lines from `src/models/mod.rs`, including any admin options you added there. Then make
+and apply a migration, which drops the table:
+
+```sh
+cadmus delete model Post
+cargo run -- makemigrations
+cargo run -- migrate
+```
+
+It asks before deleting anything (`--yes` skips the question). **The migration deletes the
+table and every row in it**, so back up anything you want to keep first. Until you run
+`migrate`, the data is still there, and if the project is in git,
+`git checkout -- src/models` brings the model back.
+
+It refuses, changing nothing, while other code still uses the model, and lists where: for
+example a model with a foreign key to it (`author:references`), or your own routes. Delete or
+change those first. Files uploaded to the model's file fields stay in storage.
+
 ## Admin options
 
 Each model is registered with `ModelOptions`, which decide how it appears in the admin (and

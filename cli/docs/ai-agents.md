@@ -138,6 +138,7 @@ If the client cannot find `cadmus`, give the full path, usually `~/.cargo/bin/ca
 | `docs_search` | finds the sections that match some words |
 | `new_project` | creates a project in a folder |
 | `generate_model` | adds a model with its fields |
+| `delete_model` | removes a model; the next migration drops its table |
 | `run` | runs a project command: `makemigrations`, `migrate`, `showmigrations`, `sqlmigrate`, `check`, `routes`, `openapi` or `apikey` |
 | `create_superuser` | creates an account to log in with |
 

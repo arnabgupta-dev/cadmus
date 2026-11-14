@@ -13,6 +13,7 @@ Installed with `cargo install cadmus-cli`.
 |---|---|
 | `cadmus new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project in a new folder |
 | `cadmus generate model NAME field:type ...` | add a model to the project in the current folder (`cadmus g model` for short) |
+| `cadmus delete model NAME [--yes]` | remove a model: its file and its lines in `src/models/mod.rs` (see [Deleting a model](models.md#deleting-a-model)) |
 | `cadmus secret` | print a new secret key |
 | `cadmus mcp` | serve the MCP protocol for AI agents (see [Building with AI agents](ai-agents.md)) |
 
