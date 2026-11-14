@@ -17,6 +17,9 @@
 .step-title { font-weight: 600; margin-bottom: 4px; }
 .tf form .field + .field { margin-top: 14px; }
 .tf form .btn { margin-top: 18px; }
+.codes { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.codes code { display: block; padding: 8px 10px; border-radius: var(--r-sm); background: var(--sunken); font-size: .95rem; letter-spacing: .02em; user-select: all; }
+.codes-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 </style>
 {% endblock %}
 {% block content %}
@@ -27,6 +30,27 @@
   <section class="panel panel-pad">
     <div class="state on"><span class="dot" aria-hidden="true"><svg class="i"><use href="#i-check"/></svg></span><p><strong>On.</strong> Logging in needs a code from your authenticator app.</p></div>
   </section>
+  {% if recovery_codes %}
+  <section class="panel panel-pad" aria-labelledby="h-codes">
+    <h2 id="h-codes">Save your recovery codes</h2>
+    <p class="muted" style="margin-top:4px">If you lose your phone, each code logs you in once in place of an authenticator code. Keep them somewhere safe, such as a password manager. <strong>They are shown only now.</strong></p>
+    <ol class="codes" data-codes>{% for code in recovery_codes %}<li><code>{{ code }}</code></li>{% endfor %}</ol>
+    <div class="codes-actions">
+      <button class="btn" type="button" data-copy-codes>Copy all</button>
+      <a class="btn ghost" href="{{ base }}/auth/two-factor">I saved them</a>
+    </div>
+  </section>
+  {% else %}
+  <section class="panel panel-pad" aria-labelledby="h-codes">
+    <h2 id="h-codes">Recovery codes</h2>
+    <p class="muted" style="margin-top:4px"><strong>{{ recovery_left }} of {{ recovery_total }} left.</strong> Each one logs you in once if you lose your phone.{% if recovery_left < 3 %} Make new ones soon.{% endif %} New codes replace the old ones.</p>
+    <form method="post" action="{{ base }}/auth/two-factor/recovery" data-busy style="max-width:360px;margin-top:14px">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="field"><label for="f-recovery" class="required">Current code from your app</label><input id="f-recovery" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div>
+      <button class="btn" type="submit" data-busy-text="Making codes…">Make new codes</button>
+    </form>
+  </section>
+  {% endif %}
   {% if required %}
   <div class="alert info"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg><span>This site requires two-factor authentication, so it cannot be turned off here. If you lose your device, ask a superuser to reset it.</span></div>
   {% else %}
@@ -64,4 +88,12 @@
   {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script>var e = document.querySelector("[data-focus]"); if (e) e.focus();</script>{% endblock %}
+{% block scripts %}<script>
+var e = document.querySelector("[data-focus]"); if (e) e.focus();
+document.querySelectorAll("[data-copy-codes]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var text = Array.prototype.map.call(document.querySelectorAll("[data-codes] code"), function (c) { return c.textContent; }).join("\n");
+    navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; });
+  });
+});
+</script>{% endblock %}

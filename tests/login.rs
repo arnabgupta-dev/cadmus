@@ -365,9 +365,14 @@ async fn two_factor_can_be_set_up_used_once_per_code_and_turned_off() {
             &format!("secret={secret}&{}&code={confirm}", password_field()),
         )
         .await;
-    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    // The answer shows the recovery codes, once.
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("Save your recovery codes"));
+    assert_eq!(reply.body.matches("<li><code>").count(), 10);
     let page = root.get(&app, path).await;
     assert!(page.body.contains("<strong>On.</strong>") && !page.body.contains(&secret));
+    assert!(!page.body.contains("Save your recovery codes"));
+    assert!(page.body.contains("10 of 10 left"));
     assert!(
         root.get(&app, "/admin/auth/users")
             .await

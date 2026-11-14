@@ -58,7 +58,7 @@ pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
 pub use users::{
     DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, identity,
-    promote, set_email, user,
+    new_recovery_codes, promote, set_email, user,
 };
 
 /// Template names and their built-in sources.

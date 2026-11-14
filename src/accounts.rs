@@ -55,6 +55,10 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         )
         .route(&format!("{b}/two-factor/disable"), post(two_factor_disable))
         .route(
+            &format!("{b}/two-factor/recovery"),
+            post(two_factor_recovery),
+        )
+        .route(
             &format!("{b}/password"),
             get(password_page).post(password_change),
         )
@@ -795,6 +799,14 @@ async fn own_account(state: &AdminState, session: &Session) -> Result<user::Mode
 }
 
 /// The setup page: a QR code for a secret that is only stored once a code proves it works.
+/// What the two-factor page shows about recovery codes: a fresh set, shown once, or how
+/// many are left.
+#[derive(Default)]
+struct Recovery {
+    codes: Vec<String>,
+    left: u64,
+}
+
 fn render_two_factor(
     state: &AdminState,
     session: &Session,
@@ -802,6 +814,7 @@ fn render_two_factor(
     secret: Option<&str>,
     error: Option<&str>,
     notice: Option<&str>,
+    recovery: &Recovery,
 ) -> Result<Html<String>, AdminError> {
     let fresh;
     let secret = match (enabled, secret) {
@@ -834,6 +847,9 @@ fn render_two_factor(
             uri,
             // Generated here from our own data, so it is safe to insert as markup.
             qr => qr.map(Value::from_safe_string),
+            recovery_codes => &recovery.codes,
+            recovery_left => recovery.left,
+            recovery_total => auth::RECOVERY_CODES,
             error,
         },
     )
@@ -846,6 +862,10 @@ async fn two_factor_page(
 ) -> Result<Html<String>, AdminError> {
     let account = own_account(&state, &session).await?;
     let enabled = account.totp_secret.is_some();
+    let recovery = Recovery {
+        codes: Vec::new(),
+        left: users::recovery_codes_left(database(&state)?, &session.username).await?,
+    };
     render_two_factor(
         &state,
         &session,
@@ -853,6 +873,7 @@ async fn two_factor_page(
         None,
         None,
         query.notice.as_deref(),
+        &recovery,
     )
 }
 
@@ -873,7 +894,15 @@ async fn two_factor_enable(
     let again = |message: &str| -> Result<Response, AdminError> {
         // Keep the same secret, so the code already scanned stays valid.
         let kept = auth::totp_secret_is_strong(secret).then_some(secret);
-        let page = render_two_factor(&state, &session, false, kept, Some(message), None)?;
+        let page = render_two_factor(
+            &state,
+            &session,
+            false,
+            kept,
+            Some(message),
+            None,
+            &Recovery::default(),
+        )?;
         Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
     };
     if !auth::totp_secret_is_strong(secret) {
@@ -887,19 +916,25 @@ async fn two_factor_enable(
     let Some(step) = auth::totp_step_now(secret, code) else {
         return again("That code is not correct. Check the time on your device and try again.");
     };
-    users::store_totp(
-        database(&state)?,
-        &session.username,
-        Some(secret.to_owned()),
-        Some(step),
-    )
-    .await?;
+    let db = database(&state)?;
+    users::store_totp(db, &session.username, Some(secret.to_owned()), Some(step)).await?;
     tracing::info!(username = %session.username, "two-factor authentication enabled");
-    Ok(Redirect::to(&format!(
-        "{}/auth/two-factor?notice=two_factor_on",
-        state.base
-    ))
-    .into_response())
+    // Shown on this response only, never again, so no redirect.
+    let codes = users::new_recovery_codes(db, &session.username).await?;
+    let recovery = Recovery {
+        left: codes.len() as u64,
+        codes,
+    };
+    let page = render_two_factor(
+        &state,
+        &session,
+        true,
+        None,
+        None,
+        Some("two_factor_on"),
+        &recovery,
+    )?;
+    Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], page).into_response())
 }
 
 async fn two_factor_disable(
@@ -916,6 +951,10 @@ async fn two_factor_disable(
     }
     let password = form.get("password").unwrap_or_default();
     if !auth::confirm_password(&state, &session.username, password).await? {
+        let recovery = Recovery {
+            codes: Vec::new(),
+            left: users::recovery_codes_left(database(&state)?, &session.username).await?,
+        };
         let page = render_two_factor(
             &state,
             &session,
@@ -923,6 +962,7 @@ async fn two_factor_disable(
             None,
             Some("The password is not correct."),
             None,
+            &recovery,
         )?;
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
     }
@@ -1012,4 +1052,69 @@ async fn password_change(
         state.base
     ))
     .into_response())
+}
+
+/// Replaces the account's recovery codes. Confirmed with a current authenticator code rather
+/// than the password, so accounts that log in through another site can do it too.
+async fn two_factor_recovery(
+    State(state): Shared,
+    session: Session,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    let form = Submitted::parse(&body);
+    session.check_csrf(form.get("_csrf"))?;
+    let account = own_account(&state, &session).await?;
+    let Some(secret) = account.totp_secret else {
+        return Err(AdminError::Conflict(
+            "two-factor authentication is off, so there are no recovery codes".into(),
+        ));
+    };
+    let db = database(&state)?;
+    state
+        .limiter
+        .attempt(&session.username, None)
+        .map_err(|retry_after_secs| AdminError::RateLimited { retry_after_secs })?;
+    let code = form.get("code").unwrap_or_default();
+    let fresh = match auth::totp_step_now(&secret, code) {
+        Some(step) => {
+            state
+                .users
+                .accept_totp_step(&session.username, step)
+                .await?
+        }
+        None => false,
+    };
+    if !fresh {
+        let recovery = Recovery {
+            codes: Vec::new(),
+            left: users::recovery_codes_left(db, &session.username).await?,
+        };
+        let page = render_two_factor(
+            &state,
+            &session,
+            true,
+            None,
+            Some("That code is not right. Use the current one from your app."),
+            None,
+            &recovery,
+        )?;
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
+    }
+    state.limiter.succeeded(&session.username, None);
+    let codes = users::new_recovery_codes(db, &session.username).await?;
+    tracing::info!(username = %session.username, "new recovery codes made");
+    let recovery = Recovery {
+        left: codes.len() as u64,
+        codes,
+    };
+    let page = render_two_factor(
+        &state,
+        &session,
+        true,
+        None,
+        None,
+        Some("recovery_codes_new"),
+        &recovery,
+    )?;
+    Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], page).into_response())
 }

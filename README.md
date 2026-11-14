@@ -403,6 +403,10 @@ implement `heraapi::Mailer` (one `send` method) and pass it to `App::mailer`.
 - **Forgot your password?** appears under the password field when passwords are on and
   `server.public_url` is set. The link works for an hour, until the password is changed.
 - **Your own password:** the lock button next to your name opens the page to change it.
+- **Invitations:** on the new-account form, "Send an invitation instead" leaves the password
+  out and e-mails a link, valid once for 7 days, where the person chooses their password and
+  is logged in (on sites without passwords, the link just logs them in). The account's page
+  has "Send invitation" to send one again.
 - The reply to "send me a link" is the same whether or not the address has an account, and
   messages are sent in the background, so neither the answer nor its timing reveals who is
   registered. Requests are limited like login attempts.
@@ -415,11 +419,16 @@ in (the form's code field, or `"totp"` in the token request) needs the current c
 
 - Each code works once, so a code that was seen or intercepted cannot be reused.
 - Turning it on or off asks for the password again.
-- Lost device: a superuser ticks "Turn it off" on the user's page, or run
-  `cargo run -- totp --username U --disable`.
+- **Recovery codes:** turning it on shows ten codes, once. Each logs in a single time in
+  place of an authenticator code (anywhere a code is asked for, the API included), for when
+  the phone is lost. The two-factor page shows how many are left and makes a new set, which
+  replaces the old one, after a current code from the app. Only a digest of each code is
+  stored.
+- Lost device and no recovery codes: a superuser ticks "Turn it off" on the user's page, or
+  run `cargo run -- totp --username U --disable`.
 - With `auth.totp_required: true` nobody can log in without it, so set up the first account
-  from the terminal: `cargo run -- totp --username U` prints the QR code. Users then cannot
-  turn it off themselves.
+  from the terminal: `cargo run -- totp --username U` prints the QR code and the recovery
+  codes. Users then cannot turn it off themselves.
 
 ### Login attempt limits
 
@@ -608,8 +617,7 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** passkeys and API keys are planned as further login methods; invitations and
-  two-factor recovery codes are next.
+- **Auth:** passkeys and API keys are planned as further login methods.
   Logins through other sites are for the admin only; API clients cannot use them yet, and
   linking another site to an account goes by e-mail address only (no "connect" button).
   Also missing: per-record (row-level) permissions. Login limits are per process, not shared between instances. Accounts and groups are managed in

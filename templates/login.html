@@ -27,6 +27,7 @@
 .login .ok svg { color: #16a34a; flex: none; margin-top: 2px; }
 .login .label-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .login .label-row a { font-size: .85rem; }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-size: .85rem; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 </style>
 {% endblock %}
 {% block bare %}
@@ -47,7 +48,8 @@
     <form method="post" action="{{ base }}/login/code" data-busy>
       <div class="field">
         <label for="totp">Authenticator code</label>
-        <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6 digits" required autofocus>
+        <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="19" placeholder="6 digits" required autofocus>
+        <p class="muted"><button type="button" class="linkish" data-recovery>Lost your phone? Use a recovery code</button></p>
       </div>
       <button class="btn primary submit" type="submit" data-busy-text="Checking…">Continue</button>
     </form>
@@ -166,7 +168,8 @@
       </div>
       <div class="field">
         <label for="totp">Authenticator code{% if not totp_required %} <span class="muted">(if you set one up)</span>{% endif %}</label>
-        <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6 digits"{% if totp_required %} required{% endif %}>
+        <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="19" placeholder="6 digits"{% if totp_required %} required{% endif %}>
+        <p class="muted"><button type="button" class="linkish" data-recovery>Lost your phone? Use a recovery code</button></p>
       </div>
       <button class="btn primary submit" type="submit" data-busy-text="Logging in…">Log in</button>
     </form>
@@ -178,6 +181,14 @@
 {% endblock %}
 {% block scripts %}
 <script>
+document.querySelectorAll("[data-recovery]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var input = b.closest(".field").querySelector("input");
+    input.inputMode = "text"; input.autocomplete = "off"; input.placeholder = "xxxx-xxxx-xxxx-xxxx"; input.value = "";
+    b.parentNode.textContent = "Each recovery code works once.";
+    input.focus();
+  });
+});
 document.querySelectorAll("[data-reveal]").forEach(function (b) {
   var input = b.parentNode.querySelector("input");
   b.addEventListener("click", function () { var show = input.type === "password"; input.type = show ? "text" : "password"; b.setAttribute("aria-pressed", String(show)); b.setAttribute("aria-label", show ? "Hide password" : "Show password"); });

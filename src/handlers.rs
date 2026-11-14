@@ -418,6 +418,7 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
         "password_changed" => "Your password is changed.",
         "user_invited" => "Account created and invitation sent.",
         "invitation_sent" => "Invitation sent.",
+        "recovery_codes_new" => "New recovery codes made; the old ones no longer work.",
         _ => return None,
     })
 }

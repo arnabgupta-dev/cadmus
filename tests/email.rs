@@ -282,7 +282,16 @@ async fn login_links_ask_for_the_authenticator_code() {
     assert_eq!(used.status, StatusCode::SEE_OTHER);
     assert_eq!(used.location(), "/admin/login/code");
     assert!(used.cookie("admin_token").is_none());
-    assert!(used.cookie("hera_pending").is_some());
+    let pending = format!("hera_pending={}", used.cookie("hera_pending").unwrap());
+
+    // A recovery code does instead of the authenticator code, once.
+    let codes = heraapi::new_recovery_codes(&site.db, "ada").await.unwrap();
+    let body = format!("totp={}", codes[0]);
+    let finished = post(&site.app, "/admin/login/code", &body, Some(&pending)).await;
+    assert_eq!(finished.status, StatusCode::SEE_OTHER, "{}", finished.body);
+    assert!(finished.cookie("admin_token").is_some());
+    let reused = post(&site.app, "/admin/login/code", &body, Some(&pending)).await;
+    assert_eq!(reused.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

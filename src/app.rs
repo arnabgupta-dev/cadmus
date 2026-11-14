@@ -654,6 +654,13 @@ impl App {
                 );
                 println!("  key: {secret}");
                 println!("  uri: {uri}");
+                let codes = crate::users::new_recovery_codes(&self.db, &username).await?;
+                println!();
+                println!("recovery codes: each logs in once if the phone is lost. Keep them safe;");
+                println!("they are not shown again (new ones can be made on the two-factor page):");
+                for code in codes {
+                    println!("  {code}");
+                }
                 Ok(())
             }
             Command::Promote { username } => {

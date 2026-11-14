@@ -217,10 +217,32 @@ pub mod identity {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// Unused recovery codes: what stands in for an authenticator code after a lost phone.
+pub(crate) mod recovery_code {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "auth_recovery_code")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        #[sea_orm(indexed)]
+        pub user_id: i32,
+        /// SHA-256 of the code; the code itself is shown once and never stored.
+        pub digest: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// Registers every account table with `migrate`.
 pub(crate) fn register_schema(builder: SchemaBuilder) -> SchemaBuilder {
     builder
         .register(identity::Entity)
+        .register(recovery_code::Entity)
         .register(user::Entity)
         .register(group::Entity)
         .register(membership::Entity)
@@ -292,6 +314,19 @@ impl UserStore for DbUserStore {
         Ok(updated.rows_affected == 1)
     }
 
+    /// One conditional delete, so a code cannot be used twice even by racing logins.
+    async fn use_recovery_code(&self, username: &str, digest: &str) -> Result<bool, AdminError> {
+        let Some(account) = find_account(&self.db, username).await? else {
+            return Ok(false);
+        };
+        let used = recovery_code::Entity::delete_many()
+            .filter(recovery_code::Column::UserId.eq(account.id))
+            .filter(recovery_code::Column::Digest.eq(digest))
+            .exec(&self.db)
+            .await?;
+        Ok(used.rows_affected == 1)
+    }
+
     /// Read on every request, so a change to an account takes effect at once: a deactivated
     /// or deleted account is locked out even while its token is still valid.
     async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
@@ -351,11 +386,63 @@ pub(crate) async fn store_totp(
     let account = find_account(db, username)
         .await?
         .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    // Codes belong to one setup; a new secret, or none, retires them.
+    recovery_code::Entity::delete_many()
+        .filter(recovery_code::Column::UserId.eq(account.id))
+        .exec(db)
+        .await?;
     let mut account: user::ActiveModel = account.into();
     account.totp_secret = Set(secret);
     account.totp_last_step = Set(used_step.and_then(|step| i64::try_from(step).ok()));
     account.update(db).await?;
     Ok(())
+}
+
+/// Replaces an account's two-factor recovery codes with a new set of ten and returns them, to
+/// be shown once: each logs in once in place of an authenticator code. What the `totp`
+/// command prints after turning two-factor authentication on.
+///
+/// # Errors
+/// [`AdminError::NotFound`] if there is no such account.
+pub async fn new_recovery_codes(
+    db: &DatabaseConnection,
+    username: &str,
+) -> Result<Vec<String>, AdminError> {
+    let account = find_account(db, username)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    let codes = crate::auth::new_recovery_codes();
+    let txn = db.begin().await?;
+    recovery_code::Entity::delete_many()
+        .filter(recovery_code::Column::UserId.eq(account.id))
+        .exec(&txn)
+        .await?;
+    for code in &codes {
+        recovery_code::ActiveModel {
+            user_id: Set(account.id),
+            digest: Set(crate::auth::recovery_digest(code).expect("generated codes are valid")),
+            ..Default::default()
+        }
+        .insert(&txn)
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(codes)
+}
+
+/// How many unused recovery codes an account has.
+pub(crate) async fn recovery_codes_left(
+    db: &DatabaseConnection,
+    username: &str,
+) -> Result<u64, AdminError> {
+    use sea_orm::PaginatorTrait;
+    let Some(account) = find_account(db, username).await? else {
+        return Ok(0);
+    };
+    Ok(recovery_code::Entity::find()
+        .filter(recovery_code::Column::UserId.eq(account.id))
+        .count(db)
+        .await?)
 }
 
 /// The account a login form names: by username, or else by e-mail address. Usernames may
@@ -574,6 +661,12 @@ pub(crate) async fn save_user(
         None => account.insert(&txn).await,
     };
     let user_id = saved.map_err(taken("username", "an account"))?.id;
+    if input.reset_totp {
+        recovery_code::Entity::delete_many()
+            .filter(recovery_code::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+    }
 
     membership::Entity::delete_many()
         .filter(membership::Column::UserId.eq(user_id))
@@ -626,6 +719,10 @@ pub(crate) async fn delete_user(db: &DatabaseConnection, id: i32) -> Result<(), 
         .await?;
     identity::Entity::delete_many()
         .filter(identity::Column::UserId.eq(id))
+        .exec(&txn)
+        .await?;
+    recovery_code::Entity::delete_many()
+        .filter(recovery_code::Column::UserId.eq(id))
         .exec(&txn)
         .await?;
     txn.commit().await?;

@@ -20,6 +20,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
+use sha2::Digest;
 
 use crate::AdminState;
 use crate::access::{Access, Action};
@@ -363,6 +364,16 @@ pub trait UserStore: Send + Sync {
     async fn accept_totp_step(&self, _username: &str, _step: u64) -> Result<bool, AdminError> {
         Ok(true)
     }
+
+    /// Uses up the account's recovery code with this digest, and says whether there was one.
+    /// Recovery codes stand in for an authenticator code once each, after a lost phone. The
+    /// default has none.
+    ///
+    /// # Errors
+    /// Whatever the store fails with; the login is then refused with a `500`.
+    async fn use_recovery_code(&self, _username: &str, _digest: &str) -> Result<bool, AdminError> {
+        Ok(false)
+    }
 }
 
 /// A single admin account defined by environment variables.
@@ -508,10 +519,7 @@ pub(crate) async fn login(
     match &user.totp_secret {
         Some(secret) => {
             let code = credentials.totp.as_deref().unwrap_or_default();
-            let step = totp_step(secret, code, unix_now()).ok_or(AdminError::Unauthorized)?;
-            // Each code works once, so one read over a shoulder or off the wire is useless.
-            if !state.users.accept_totp_step(&user.username, step).await? {
-                tracing::warn!(username = %user.username, "authenticator code reused");
+            if !second_factor(state, &user.username, secret, code).await? {
                 return Err(AdminError::Unauthorized);
             }
         }
@@ -585,6 +593,72 @@ pub(crate) async fn confirm_password(
         state.limiter.succeeded(username, None);
     }
     Ok(matches)
+}
+
+/// Characters of recovery codes: no `0`/`o`, `1`/`l`/`i`, which are easy to misread.
+const RECOVERY_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+const RECOVERY_CHARS: usize = 16;
+/// How many recovery codes an account gets at a time.
+pub(crate) const RECOVERY_CODES: usize = 10;
+
+/// A fresh set of recovery codes, as shown to the person: `xxxx-xxxx-xxxx-xxxx`.
+pub(crate) fn new_recovery_codes() -> Vec<String> {
+    (0..RECOVERY_CODES)
+        .map(|_| {
+            let chars: Vec<char> = (0..RECOVERY_CHARS)
+                .map(|_| {
+                    char::from(RECOVERY_ALPHABET[rand::random_range(0..RECOVERY_ALPHABET.len())])
+                })
+                .collect();
+            chars
+                .chunks(4)
+                .map(|group| group.iter().collect::<String>())
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .collect()
+}
+
+/// What is stored of a recovery code; `None` if `typed` cannot be one. Codes carry about 79
+/// random bits, so a plain SHA-256 cannot be reversed by guessing.
+pub(crate) fn recovery_digest(typed: &str) -> Option<String> {
+    let normalised: String = typed
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if normalised.len() != RECOVERY_CHARS
+        || !normalised.bytes().all(|b| RECOVERY_ALPHABET.contains(&b))
+    {
+        return None;
+    }
+    let digest = sha2::Sha256::digest(format!("heraapi-recovery:{normalised}").as_bytes());
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Checks the second factor of a login: a current authenticator code, used once, or one of
+/// the account's recovery codes, which is used up.
+pub(crate) async fn second_factor(
+    state: &AdminState,
+    username: &str,
+    secret: &str,
+    typed: &str,
+) -> Result<bool, AdminError> {
+    if let Some(step) = totp_step(secret, typed, unix_now()) {
+        // Each code works once, so one read over a shoulder or off the wire is useless.
+        let fresh = state.users.accept_totp_step(username, step).await?;
+        if !fresh {
+            tracing::warn!(%username, "authenticator code reused");
+        }
+        return Ok(fresh);
+    }
+    if let Some(digest) = recovery_digest(typed)
+        && state.users.use_recovery_code(username, &digest).await?
+    {
+        tracing::warn!(%username, "logged in with a recovery code");
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The current time step, for code that needs to compare against [`totp_step`].
@@ -809,6 +883,32 @@ mod tests {
         let other = AuthConfig::new("ffffffffffffffffffffffffffffffff").unwrap();
         assert!(other.verify(&token).is_none());
         assert!(config.verify("not.a.token").is_none());
+    }
+
+    #[test]
+    fn recovery_codes_are_random_readable_and_normalised() {
+        let codes = new_recovery_codes();
+        assert_eq!(codes.len(), RECOVERY_CODES);
+        let mut unique = codes.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), codes.len());
+        for code in &codes {
+            assert_eq!(code.len(), 19);
+            assert_eq!(code.matches('-').count(), 3);
+            assert!(!code.contains(['0', 'o', '1', 'l', 'i']));
+            let digest = recovery_digest(code).unwrap();
+            // Typed in capitals, with spaces, or without dashes: the same code.
+            assert_eq!(recovery_digest(&code.to_uppercase()), Some(digest.clone()));
+            assert_eq!(
+                recovery_digest(&code.replace('-', " ")),
+                Some(digest.clone())
+            );
+            assert_eq!(recovery_digest(&code.replace('-', "")), Some(digest));
+        }
+        assert_eq!(recovery_digest("123456"), None);
+        assert_eq!(recovery_digest("aaaa-aaaa-aaaa-aaa0"), None);
+        assert_eq!(recovery_digest("aaaa-aaaa-aaaa-aaaa-a"), None);
     }
 
     #[test]

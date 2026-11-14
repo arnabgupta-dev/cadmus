@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::AdminState;
-use crate::auth::totp_step_now;
 use crate::error::AdminError;
 use crate::handlers::{Mode, login_page_as, session_cookie};
 use crate::mail::{Email, send_later};
@@ -272,10 +271,9 @@ async fn code_submit(
         );
     };
     let accepted = match &user.totp_secret {
-        Some(secret) => match totp_step_now(secret, &form.totp) {
-            Some(step) => state.users.accept_totp_step(&user.username, step).await?,
-            None => false,
-        },
+        Some(secret) => {
+            crate::auth::second_factor(&state, &user.username, secret, &form.totp).await?
+        }
         // Turned off meanwhile.
         None => !state.auth.totp_required,
     };
