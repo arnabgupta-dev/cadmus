@@ -189,6 +189,13 @@ impl<E: EntityTrait> SeaOrmResource<E> {
             let Some(value) = row.get_mut(&field.name) else {
                 continue;
             };
+            // MySQL stores true/false as a small integer and reads it back as one.
+            if field.kind == FieldKind::Boolean
+                && let serde_json::Value::Number(n) = value
+            {
+                *value = serde_json::Value::Bool(n.as_i64() != Some(0));
+                continue;
+            }
             let serde_json::Value::String(text) = value else {
                 continue;
             };

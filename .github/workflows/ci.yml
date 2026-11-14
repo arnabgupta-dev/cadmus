@@ -67,7 +67,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The same integration tests as above; each test gets its own schema.
-      - run: cargo test --features postgres --locked
+      - run: cargo test --locked
+
+  mysql:
+    name: Test on MySQL
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -ptest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: mysql://root:test@127.0.0.1:3306/mysql
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The same integration tests again; each test gets its own database.
+      - run: cargo test --locked
 
   features:
     name: All features compile
@@ -78,5 +102,5 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # MySQL, S3, Azure and GCS support is only compiled here, not run.
+      # S3, Azure and GCS support is only compiled here, not run.
       - run: cargo clippy --workspace --all-targets --all-features --locked

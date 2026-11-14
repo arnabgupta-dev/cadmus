@@ -369,15 +369,17 @@ async fn older_account_tables_gain_the_new_columns_and_a_unique_address() {
     let db = common::database().await;
     let id = match db.get_database_backend() {
         DbBackend::Postgres => "SERIAL PRIMARY KEY",
+        DbBackend::MySql => "INTEGER PRIMARY KEY AUTO_INCREMENT",
         _ => "INTEGER PRIMARY KEY AUTOINCREMENT",
     };
     // The table as the release before this one created it, with two accounts.
-    db.execute_unprepared(&format!(
+    // One statement at a time: MySQL takes no more in one call.
+    let sql = format!(
         "CREATE TABLE auth_user (
             id {id},
-            username VARCHAR NOT NULL UNIQUE,
-            password_hash VARCHAR NOT NULL,
-            totp_secret VARCHAR,
+            username VARCHAR(255) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            totp_secret VARCHAR(255),
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL DEFAULT FALSE,
@@ -386,9 +388,10 @@ async fn older_account_tables_gain_the_new_columns_and_a_unique_address() {
         INSERT INTO auth_user (username, password_hash, is_active, is_staff, is_superuser)
         VALUES ('old', '{hash}', TRUE, TRUE, TRUE), ('other', '{hash}', TRUE, TRUE, FALSE)",
         hash = hash_password(PASSWORD).unwrap()
-    ))
-    .await
-    .unwrap();
+    );
+    for statement in sql.split(";\n") {
+        db.execute_unprepared(statement).await.unwrap();
+    }
 
     let app = new_app(&db);
     app.migrate().await.unwrap();

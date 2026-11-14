@@ -47,9 +47,26 @@ async fn database() -> DatabaseConnection {
     let db = common::database().await;
     // Hand-written rather than migrated, so the tests also cover a table the app did not
     // create, with a database-side default the entity does not know about.
-    let (id, real, timestamp) = match db.get_database_backend() {
-        DbBackend::Postgres => ("SERIAL PRIMARY KEY", "DOUBLE PRECISION", "TIMESTAMP"),
-        _ => ("INTEGER PRIMARY KEY AUTOINCREMENT", "DOUBLE", "DATETIME"),
+    let (id, real, timestamp, secret) = match db.get_database_backend() {
+        DbBackend::Postgres => (
+            "SERIAL PRIMARY KEY",
+            "DOUBLE PRECISION",
+            "TIMESTAMP",
+            "TEXT",
+        ),
+        // MySQL allows a plain default only on a VARCHAR, not on TEXT.
+        DbBackend::MySql => (
+            "INTEGER PRIMARY KEY AUTO_INCREMENT",
+            "DOUBLE",
+            "DATETIME",
+            "VARCHAR(255)",
+        ),
+        _ => (
+            "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "DOUBLE",
+            "DATETIME",
+            "TEXT",
+        ),
     };
     db.execute_unprepared(&format!(
         "CREATE TABLE post (
@@ -60,7 +77,7 @@ async fn database() -> DatabaseConnection {
             views INTEGER NOT NULL,
             rating {real},
             created_at {timestamp},
-            secret TEXT NOT NULL DEFAULT 'hunter2-default'
+            secret {secret} NOT NULL DEFAULT 'hunter2-default'
         )"
     ))
     .await

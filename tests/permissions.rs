@@ -737,23 +737,26 @@ async fn accounts_created_before_superusers_existed_can_be_promoted() {
     // The table as the first release created it, with one account in it.
     let id = match db.get_database_backend() {
         DbBackend::Postgres => "SERIAL PRIMARY KEY",
+        DbBackend::MySql => "INTEGER PRIMARY KEY AUTO_INCREMENT",
         _ => "INTEGER PRIMARY KEY AUTOINCREMENT",
     };
-    db.execute_unprepared(&format!(
+    // One statement at a time: MySQL takes no more in one call.
+    let sql = format!(
         "CREATE TABLE auth_user (
             id {id},
-            username VARCHAR NOT NULL UNIQUE,
-            password_hash VARCHAR NOT NULL,
-            totp_secret VARCHAR,
+            username VARCHAR(255) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            totp_secret VARCHAR(255),
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL
         );
         INSERT INTO auth_user (username, password_hash, is_active, is_staff)
         VALUES ('old', '{}', TRUE, TRUE)",
         hash_password(PASSWORD).unwrap()
-    ))
-    .await
-    .unwrap();
+    );
+    for statement in sql.split(";\n") {
+        db.execute_unprepared(statement).await.unwrap();
+    }
 
     let app = new_app(&db);
     app.migrate().await.unwrap();
