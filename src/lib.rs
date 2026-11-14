@@ -353,6 +353,7 @@ impl AdminBuilder {
                 )));
             }
             check_actions(resource.as_ref())?;
+            check_file_fields(resource.as_ref(), self.uploads.is_some())?;
         }
 
         let mut templates = minijinja::Environment::new();
@@ -434,6 +435,33 @@ fn check_actions(resource: &dyn Resource) -> Result<(), AdminError> {
                     "`{field}` is not a column the admin can edit"
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Checks a model's file fields: editable integer columns, and uploads turned on.
+fn check_file_fields(resource: &dyn Resource, uploads: bool) -> Result<(), AdminError> {
+    let options = resource.options();
+    for name in &options.file_fields {
+        let error = |message: &str| {
+            AdminError::Config(format!(
+                "model `{}`, file field `{name}`: {message}",
+                resource.slug()
+            ))
+        };
+        let usable = resource.fields().iter().any(|f| {
+            &f.name == name
+                && f.kind == FieldKind::Integer
+                && f.editable
+                && !f.primary_key
+                && !options.hidden_fields.contains(name)
+        });
+        if !usable {
+            return Err(error("must be an integer column the admin can edit"));
+        }
+        if !uploads {
+            return Err(error("file uploads are off; set uploads.storage_url"));
         }
     }
     Ok(())

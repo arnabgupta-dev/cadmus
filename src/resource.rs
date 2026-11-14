@@ -128,6 +128,7 @@ pub struct ModelOptions {
     pub(crate) display_field: Option<String>,
     pub(crate) list_filter: Vec<String>,
     pub(crate) actions: Vec<BulkAction>,
+    pub(crate) file_fields: Vec<String>,
 }
 
 impl ModelOptions {
@@ -268,6 +269,20 @@ impl ModelOptions {
             label: label.into(),
             kind: ActionKind::Custom(run),
         });
+        self
+    }
+
+    /// Integer columns that hold an uploaded file's id: the form shows a file picker (with
+    /// the current file, a preview for images, and "Remove" when the column is nullable),
+    /// and the list shows the file's name. Needs file uploads (`uploads.storage_url`). API
+    /// clients upload to `/api/files` and send the returned id.
+    #[must_use]
+    pub fn file_fields<I, S>(mut self, columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.file_fields = columns.into_iter().map(Into::into).collect();
         self
     }
 

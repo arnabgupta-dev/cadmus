@@ -32,17 +32,31 @@ const CSRF_FIELD: &str = "_csrf";
 
 pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.base.clone();
+    // Forms may carry files, up to the upload limit.
+    let form_limit = state.uploads.as_ref().map_or(2 * 1024 * 1024, |uploads| {
+        usize::try_from(uploads.file_limit())
+            .unwrap_or(usize::MAX)
+            .saturating_add(1024 * 1024)
+    });
+    let limit = axum::extract::DefaultBodyLimit::max(form_limit);
     Router::new()
         .route(&b, get(index))
         .route(&format!("{b}/"), get(index))
         .route(&format!("{b}/login"), get(login_page).post(login_submit))
         .route(&format!("{b}/logout"), post(logout))
         .route(&format!("{b}/{{model}}"), get(list))
-        .route(&format!("{b}/{{model}}/new"), get(new_form).post(create))
+        .route(
+            &format!("{b}/{{model}}/new"),
+            get(new_form).post(create).layer(limit),
+        )
         .route(&format!("{b}/{{model}}/bulk"), post(bulk))
         .route(
             &format!("{b}/{{model}}/{{id}}"),
-            get(edit_form).post(update),
+            get(edit_form).post(update).layer(limit),
+        )
+        .route(
+            &format!("{b}/{{model}}/{{id}}/file/{{field}}"),
+            get(file_content),
         )
         .route(&format!("{b}/{{model}}/{{id}}/delete"), post(delete))
         .with_state(state)
@@ -611,6 +625,8 @@ struct ListCell {
     link: Option<(String, String)>,
     /// For a boolean column: the value, shown as Yes or No.
     flag: Option<bool>,
+    /// A link of its own, such as an uploaded file's download.
+    href: Option<String>,
 }
 
 /// A column heading of a list, with the sort order that clicking it asks for.
@@ -809,6 +825,22 @@ async fn list(
             None => None,
         });
     }
+    // For each file column, the files this page points to: one query per column.
+    let file_columns = &resource.options().file_fields;
+    let mut files: Vec<Option<HashMap<i32, crate::uploads::file::Model>>> = Vec::new();
+    for field in &columns {
+        files.push(match &state.uploads {
+            Some(uploads) if file_columns.contains(&field.name) => {
+                let ids: Vec<i32> = page
+                    .rows
+                    .iter()
+                    .filter_map(|row| display(row.get(&field.name)).parse().ok())
+                    .collect();
+                Some(uploads.files_by_id(&ids).await?)
+            }
+            _ => None,
+        });
+    }
     let pk = pk_name(resource);
     let rows: Vec<ListRow> = page
         .rows
@@ -818,8 +850,28 @@ async fn list(
             cells: columns
                 .iter()
                 .zip(&names)
-                .map(|(f, names)| {
+                .zip(&files)
+                .map(|((f, names), files)| {
                     let value = display(row.get(&f.name));
+                    if let Some(files) = files {
+                        let found = value.parse::<i32>().ok().and_then(|id| files.get(&id));
+                        let row_id = pk.map(|name| display(row.get(name)));
+                        return ListCell {
+                            text: found.map_or_else(String::new, |f| truncate(f.filename.clone())),
+                            link: None,
+                            flag: None,
+                            href: found.zip(row_id).map(|(_, row_id)| {
+                                format!(
+                                    "{}/{}/{}/file/{}",
+                                    state.base,
+                                    resource.slug(),
+                                    url::form_urlencoded::byte_serialize(row_id.as_bytes())
+                                        .collect::<String>(),
+                                    f.name
+                                )
+                            }),
+                        };
+                    }
                     let named = names
                         .as_ref()
                         .and_then(|(target, labels)| Some((target, labels.get(&value)?)));
@@ -828,6 +880,7 @@ async fn list(
                             text: truncate(label.clone()),
                             link: Some((target.slug().to_owned(), value)),
                             flag: None,
+                            href: None,
                         },
                         // Not a foreign key, or one that points at nothing.
                         None => ListCell {
@@ -836,6 +889,7 @@ async fn list(
                                 .flatten(),
                             text: truncate(value),
                             link: None,
+                            href: None,
                         },
                     }
                 })
@@ -905,6 +959,29 @@ struct FormField<'a> {
     choices: Option<Vec<Choice>>,
     /// Extra line under the input.
     hint: Option<String>,
+    /// For a file field: a file picker, and the current file if there is one.
+    file_field: bool,
+    file: Option<FileView>,
+}
+
+/// An uploaded file as a form shows it.
+#[derive(Serialize)]
+struct FileView {
+    filename: String,
+    size: String,
+    url: String,
+    image: bool,
+}
+
+/// `1536` -> `1.5 KB`.
+fn human_size(bytes: i64) -> String {
+    let bytes = bytes.max(0) as f64;
+    match bytes {
+        b if b < 1024.0 => format!("{b} bytes"),
+        b if b < 1024.0 * 1024.0 => format!("{:.1} KB", b / 1024.0),
+        b if b < 1024.0 * 1024.0 * 1024.0 => format!("{:.1} MB", b / (1024.0 * 1024.0)),
+        b => format!("{:.1} GB", b / (1024.0 * 1024.0 * 1024.0)),
+    }
 }
 
 #[derive(Serialize)]
@@ -992,9 +1069,34 @@ async fn form_fields<'a>(
         let value = row
             .map(|r| input_value(f, r.get(&f.name)))
             .unwrap_or_default();
+        let file_field = resource.options().file_fields.contains(&f.name);
         let (choices, hint) = match related(state, session, f) {
-            Some(target) => reference_input(target, &value).await?,
-            None => (None, None),
+            Some(target) if !file_field => reference_input(target, &value).await?,
+            _ => (None, None),
+        };
+        let file = match (file_field, value.parse::<i32>(), &state.uploads, row) {
+            (true, Ok(file_id), Some(uploads), Some(row)) => {
+                let row_id = pk_name(resource).map(|pk| display(row.get(pk)));
+                uploads
+                    .files_by_id(&[file_id])
+                    .await?
+                    .remove(&file_id)
+                    .zip(row_id)
+                    .map(|(found, row_id)| FileView {
+                        url: format!(
+                            "{}/{}/{}/file/{}",
+                            state.base,
+                            resource.slug(),
+                            url::form_urlencoded::byte_serialize(row_id.as_bytes())
+                                .collect::<String>(),
+                            f.name
+                        ),
+                        image: crate::uploads::is_raster_image(&found.content_type),
+                        size: human_size(found.size),
+                        filename: found.filename,
+                    })
+            }
+            _ => None,
         };
         fields.push(FormField {
             name: &f.name,
@@ -1010,6 +1112,8 @@ async fn form_fields<'a>(
             readonly,
             choices,
             hint,
+            file_field,
+            file,
         });
     }
     Ok(fields)
@@ -1037,6 +1141,7 @@ async fn render_form(
             // A new record can always be saved here: the page itself required `add`.
             can_save => id.is_none() || session.can(resource.slug(), Action::Change),
             can_delete => session.can(resource.slug(), Action::Delete),
+            multipart => !resource.options().file_fields.is_empty(),
         },
     )
 }
@@ -1108,17 +1213,149 @@ async fn create(
     State(state): Shared,
     session: Session,
     Path(model): Path<String>,
-    Form(form): Form<FormData>,
+    request: axum::extract::Request,
 ) -> Result<Response, AdminError> {
-    session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Add)?;
+    let (form, stored) = read_form(&state, &session, resource, request).await?;
     match resource.create(&form_input(resource, &form)).await {
         Ok(_) => {
             Ok(Redirect::to(&format!("{}/{model}?notice=created", state.base)).into_response())
         }
-        Err(error) => form_error(&state, &session, resource, None, &form, error).await,
+        Err(error) => {
+            forget_files(&state, &stored).await;
+            form_error(&state, &session, resource, None, &form, error).await
+        }
     }
+}
+
+/// Reads a form, ordinary or multipart. Files picked for file fields are stored and their
+/// new ids put in the form; the ids are returned too, so a rejected form can remove them.
+async fn read_form(
+    state: &AdminState,
+    session: &Session,
+    resource: &dyn Resource,
+    request: axum::extract::Request,
+) -> Result<(FormData, Vec<i32>), AdminError> {
+    use axum::extract::FromRequest;
+    let multipart = request
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("multipart/form-data"));
+    if !multipart {
+        let Form(form) = Form::<FormData>::from_request(request, &())
+            .await
+            .map_err(|e| AdminError::BadInput {
+                field: "form".into(),
+                message: e.body_text(),
+            })?;
+        session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
+        return Ok((form, Vec::new()));
+    }
+    let malformed = |_| AdminError::BadInput {
+        field: "form".into(),
+        message: "the form was cut off or malformed".into(),
+    };
+    let mut parts = axum::extract::Multipart::from_request(request, &())
+        .await
+        .map_err(|e| AdminError::BadInput {
+            field: "form".into(),
+            message: e.body_text(),
+        })?;
+    let file_fields = &resource.options().file_fields;
+    let mut form = FormData::new();
+    let mut stored = Vec::new();
+    let mut uploaded = Vec::new();
+    let mut cleared = Vec::new();
+    let outcome: Result<(), AdminError> = async {
+        while let Some(part) = parts.next_field().await.map_err(malformed)? {
+            let name = part.name().unwrap_or_default().to_owned();
+            if let Some(target) = name
+                .strip_suffix("__upload")
+                .filter(|t| file_fields.iter().any(|f| f == t))
+            {
+                // An empty picker still sends a part, without a file name.
+                if part.file_name().is_none_or(str::is_empty) {
+                    continue;
+                }
+                let uploads = state
+                    .uploads
+                    .as_ref()
+                    .ok_or_else(|| AdminError::Config("file fields need uploads".into()))?;
+                let saved = uploads.store_field(part, &session.username).await?;
+                stored.push(saved.id);
+                uploaded.push((target.to_owned(), saved.id));
+            } else if let Some(target) = name.strip_suffix("__clear") {
+                cleared.push(target.to_owned());
+            } else {
+                let text = part.text().await.map_err(malformed)?;
+                form.insert(name, text);
+            }
+        }
+        session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))
+    }
+    .await;
+    if let Err(error) = outcome {
+        forget_files(state, &stored).await;
+        return Err(error);
+    }
+    for target in cleared {
+        form.insert(target, String::new());
+    }
+    for (target, id) in uploaded {
+        form.insert(target, id.to_string());
+    }
+    Ok((form, stored))
+}
+
+/// Removes files stored for a form that was then rejected.
+async fn forget_files(state: &AdminState, ids: &[i32]) {
+    let Some(uploads) = &state.uploads else {
+        return;
+    };
+    for id in ids {
+        if let Err(error) = uploads.remove(*id).await {
+            tracing::warn!(file = id, %error, "could not remove the file of a rejected form");
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileParams {
+    #[serde(default)]
+    inline: Option<String>,
+}
+
+/// The file a row's file field points to, for anyone who may view the row.
+async fn file_content(
+    State(state): Shared,
+    session: Session,
+    Path((model, id, field)): Path<(String, String, String)>,
+    Query(params): Query<FileParams>,
+) -> Result<Response, AdminError> {
+    let resource = state.resource(&model)?.as_ref();
+    session.require(&model, Action::View)?;
+    if !resource.options().file_fields.contains(&field) {
+        return Err(AdminError::NotFound(format!("file field `{field}`")));
+    }
+    let uploads = state
+        .uploads
+        .as_ref()
+        .ok_or_else(|| AdminError::NotFound("file uploads are off".into()))?;
+    let row = resource
+        .get(&id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("{model} `{id}`")))?;
+    let file_id = display(row.get(&field))
+        .parse::<i32>()
+        .map_err(|_| AdminError::NotFound("no file".into()))?;
+    let found = uploads
+        .files_by_id(&[file_id])
+        .await?
+        .remove(&file_id)
+        .ok_or_else(|| AdminError::NotFound("no file".into()))?;
+    uploads.respond(&found, params.inline.is_some()).await
 }
 
 async fn edit_form(
@@ -1139,17 +1376,20 @@ async fn update(
     State(state): Shared,
     session: Session,
     Path((model, id)): Path<(String, String)>,
-    Form(form): Form<FormData>,
+    request: axum::extract::Request,
 ) -> Result<Response, AdminError> {
-    session.check_csrf(form.get(CSRF_FIELD).map(String::as_str))?;
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Change)?;
+    let (form, stored) = read_form(&state, &session, resource, request).await?;
     match resource
         .update(&id, &form_input(resource, &form), WriteMode::Replace)
         .await
     {
         Ok(()) => Ok(Redirect::to(&format!("{}/{model}?notice=saved", state.base)).into_response()),
-        Err(error) => form_error(&state, &session, resource, Some(&id), &form, error).await,
+        Err(error) => {
+            forget_files(&state, &stored).await;
+            form_error(&state, &session, resource, Some(&id), &form, error).await
+        }
     }
 }
 

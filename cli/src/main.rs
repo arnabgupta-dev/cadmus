@@ -384,6 +384,8 @@ struct FieldSpec {
     nullable: bool,
     /// For a foreign key: the module of the model it points to.
     references: Option<String>,
+    /// Holds an uploaded file's id, shown as a file picker in the admin.
+    file: bool,
 }
 
 /// `blog_post` -> `BlogPost`.
@@ -453,6 +455,18 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             attribute: None,
             nullable,
             references: Some(target.to_owned()),
+            file: false,
+        });
+    }
+    // An uploaded file: its id, always optional, so rows can exist before a file is picked.
+    if kind == "file" {
+        return Ok(FieldSpec {
+            name: name.to_owned(),
+            rust_type: "i32",
+            attribute: None,
+            nullable: true,
+            references: None,
+            file: true,
         });
     }
     let (rust_type, attribute) = match kind {
@@ -467,7 +481,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         "json" => ("Json", None),
         other => {
             return Err(format!(
-                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, references)"
+                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, file, references)"
             ));
         }
     };
@@ -477,6 +491,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         attribute,
         nullable,
         references: None,
+        file: false,
     })
 }
 
@@ -625,6 +640,16 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
         }
     }
 
+    let files: Vec<String> = parsed
+        .iter()
+        .filter(|f| f.file)
+        .map(|f| format!("{:?}", f.name))
+        .collect();
+    let file_option = if files.is_empty() {
+        String::new()
+    } else {
+        format!(".file_fields([{}])", files.join(", "))
+    };
     let updated = existing
         .replace(
             MODULES_MARKER,
@@ -633,7 +658,7 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
         .replace(
             MODELS_MARKER,
             &format!(
-                "    .model::<{module}::Entity>(heraapi::ModelOptions::new().label({:?}))\n    {MODELS_MARKER}",
+                "    .model::<{module}::Entity>(heraapi::ModelOptions::new().label({:?}){file_option})\n    {MODELS_MARKER}",
                 label(name)
             ),
         );
@@ -642,6 +667,9 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
 
     println!("created {}", file.display());
     println!("registered {name} in src/models/mod.rs");
+    if !files.is_empty() {
+        println!("file fields need uploads: set uploads.storage_url in src/settings.rs");
+    }
     println!("next: cargo run -- migrate");
     Ok(())
 }
@@ -667,8 +695,13 @@ mod tests {
                 attribute: None,
                 nullable: false,
                 references: None,
+                file: false,
             }
         );
+        // A file is an optional id, registered as a file field.
+        let photo = parse_field("photo:file").unwrap();
+        assert!(photo.file && photo.nullable);
+        assert_eq!(photo.rust_type, "i32");
         let author = parse_field("author:references").unwrap();
         assert_eq!(
             (
@@ -833,7 +866,12 @@ mod tests {
             &["title:string".into(), "body:text".into()],
         )
         .unwrap();
+        generate_model(&root, "Product", &["photo:file".into()]).unwrap();
         let index = std::fs::read_to_string(root.join("src/models/mod.rs")).unwrap();
+        assert!(
+            index.contains(".label(\"Products\").file_fields([\"photo\"]))"),
+            "{index}"
+        );
         assert!(index.contains("pub mod blog_post;"));
         assert!(index.contains(".model::<blog_post::Entity>("));
         assert!(root.join("src/models/blog_post.rs").is_file());

@@ -94,7 +94,7 @@ tr.picked td { background: var(--accent-soft); }
     {% for row in rows %}
       <tr>
         {% if actions %}<td class="pick" data-label="Select">{% if row.id is not none %}<input type="checkbox" name="ids" value="{{ row.id }}" form="bulk-form" data-pick aria-label="Select row {{ row.id }}">{% endif %}</td>{% endif %}
-        {% for cell in row.cells %}<td data-label="{{ columns[loop.index0].label }}">{% if cell.link %}<a href="{{ base }}/{{ cell.link[0] }}/{{ cell.link[1]|urlencode }}">{{ cell.text }}</a>{% elif cell.flag is true %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>Yes</span>{% elif cell.flag is false %}<span class="badge off">No</span>{% else %}{{ cell.text }}{% endif %}</td>{% endfor %}
+        {% for cell in row.cells %}<td data-label="{{ columns[loop.index0].label }}">{% if cell.href %}<a href="{{ cell.href }}">{{ cell.text }}</a>{% elif cell.link %}<a href="{{ base }}/{{ cell.link[0] }}/{{ cell.link[1]|urlencode }}">{{ cell.text }}</a>{% elif cell.flag is true %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>Yes</span>{% elif cell.flag is false %}<span class="badge off">No</span>{% else %}{{ cell.text }}{% endif %}</td>{% endfor %}
         <td class="act">{% if row.id is not none %}<a class="row-link" href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">{% if can_change %}Edit{% else %}View{% endif %}</a>{% endif %}</td>
       </tr>
     {% endfor %}

@@ -1,5 +1,14 @@
 {% extends "base.html" %}
 {% block title %}{% if id is none %}Add{% elif not can_save %}View{% else %}Edit{% endif %} · {{ model.label }} · {{ site.site_title }}{% endblock %}
+{% block head %}
+<style>
+.file-current { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--sunken); min-width: 0; }
+.file-current img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r-sm); flex: none; background: var(--surface); }
+.file-current div { min-width: 0; overflow-wrap: anywhere; }
+input[type=file] { padding: 8px; min-height: 44px; }
+.file-clear { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-weight: 400; }
+</style>
+{% endblock %}
 {% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/{{ model.slug }}">{{ model.label }}</a><span class="sep">/</span><span class="here">{% if id is none %}New{% else %}#{{ id }}{% endif %}</span>{% endblock %}
 {% block content %}
 {% set locked = not can_save %}
@@ -13,7 +22,7 @@
 {% if locked %}<div class="alert info" role="note"><svg class="i" aria-hidden="true"><use href="#i-eye"/></svg><span>You can view this record, but your account cannot change it.</span></div>{% endif %}
 {% if error %}<div class="error" role="alert" tabindex="-1" data-focus><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
 
-<form class="panel" method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}" data-busy>
+<form class="panel" method="post" action="{{ base }}/{{ model.slug }}/{% if id is not none %}{{ id|urlencode }}{% else %}new{% endif %}"{% if multipart %} enctype="multipart/form-data"{% endif %} data-busy>
   <input type="hidden" name="_csrf" value="{{ csrf }}">
   <div class="fields">
   {% for f in fields %}
@@ -26,7 +35,20 @@
       </div>
     {% else %}
       <label for="f-{{ f.name }}"{% if f.required and not ro %} class="required"{% endif %}>{{ f.label }}</label>
-      {% if f.choices is not none %}
+      {% if f.file_field %}
+        <input type="hidden" name="{{ f.name }}" value="{{ f.value }}">
+        {% if f.file %}
+        <div class="file-current">
+          {% if f.file.image %}<img src="{{ f.file.url }}?inline=1" alt="" loading="lazy">{% endif %}
+          <div><a href="{{ f.file.url }}">{{ f.file.filename }}</a><span class="muted"> · {{ f.file.size }}</span></div>
+        </div>
+        {% elif f.value %}<p class="muted">File #{{ f.value }} (not found)</p>{% endif %}
+        {% if not ro %}
+        <input id="f-{{ f.name }}" name="{{ f.name }}__upload" type="file"{% if f.required and not f.value %} required{% endif %}>
+        {% if f.file %}<p class="muted">Choose a file to replace it.</p>{% endif %}
+        {% if f.value and not f.required %}<label class="file-clear"><input type="checkbox" name="{{ f.name }}__clear" value="true"> Remove the file</label>{% endif %}
+        {% endif %}
+      {% elif f.choices is not none %}
         <select id="f-{{ f.name }}" name="{{ f.name }}"{% if f.required %} required{% endif %}{% if ro %} disabled{% endif %}>
           <option value="">{% if f.required %}Choose…{% else %}— none —{% endif %}</option>
           {% for c in f.choices %}<option value="{{ c.value }}"{% if c.selected %} selected{% endif %}>{{ c.label }}</option>{% endfor %}

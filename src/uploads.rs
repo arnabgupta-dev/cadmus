@@ -190,6 +190,11 @@ impl Uploads {
         self
     }
 
+    /// Largest file accepted, in bytes.
+    pub(crate) fn file_limit(&self) -> u64 {
+        self.max_file_bytes
+    }
+
     /// The storage backend.
     #[must_use]
     pub fn storage(&self) -> &Storage {
@@ -548,6 +553,120 @@ fn created(state: &AdminState, file: &file::Model) -> Response {
     response
 }
 
+impl Uploads {
+    /// Streams one part of a multipart body into storage and records the file.
+    pub(crate) async fn store_field(
+        &self,
+        mut field: axum::extract::multipart::Field<'_>,
+        owner: &str,
+    ) -> Result<file::Model, AdminError> {
+        let filename = clean_filename(field.file_name().unwrap_or(""));
+        let content_type = clean_content_type(field.content_type().unwrap_or(""));
+        let key = new_key(&filename);
+        let mut sink = self.storage.sink(&key);
+        loop {
+            let step = match field.chunk().await {
+                Ok(Some(bytes)) if sink.written() + bytes.len() as u64 > self.max_file_bytes => {
+                    Err(AdminError::TooLarge(format!(
+                        "files may be at most {} bytes",
+                        self.max_file_bytes
+                    )))
+                }
+                Ok(Some(bytes)) => sink.write(&bytes).await,
+                Ok(None) => break,
+                Err(error) => Err(multipart_admin_error(&error)),
+            };
+            if let Err(error) = step {
+                sink.abort().await;
+                return Err(error);
+            }
+        }
+        let size = sink.finish().await?;
+        self.record(key, filename, content_type, size, owner).await
+    }
+
+    /// The files with these ids, by id; ids that name no file are left out.
+    pub(crate) async fn files_by_id(
+        &self,
+        ids: &[i32],
+    ) -> Result<std::collections::HashMap<i32, file::Model>, AdminError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        Ok(file::Entity::find()
+            .filter(file::Column::Id.is_in(ids.iter().copied()))
+            .all(&self.db)
+            .await?
+            .into_iter()
+            .map(|f| (f.id, f))
+            .collect())
+    }
+
+    /// The file's content as a response: always a download, except raster images when
+    /// `inline` is asked for, which may be shown in an `<img>`.
+    pub(crate) async fn respond(
+        &self,
+        found: &file::Model,
+        inline: bool,
+    ) -> Result<Response, AdminError> {
+        let object = self.storage.get(&found.key).await?;
+        let mut response = Body::from_stream(object.into_stream()).into_response();
+        let headers = response.headers_mut();
+        // The media type came from the uploader: serve it as a download and forbid sniffing,
+        // so a hostile HTML or script file can never run in this origin. Only image types
+        // browsers cannot execute (not SVG) may be shown inline.
+        let shown = inline && is_raster_image(&found.content_type);
+        let safe_name: String = found
+            .filename
+            .chars()
+            .map(|c| {
+                let safe = (c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';')) || c == ' ';
+                if safe { c } else { '_' }
+            })
+            .collect();
+        let pairs = [
+            (CONTENT_TYPE, found.content_type.clone()),
+            (CONTENT_LENGTH, found.size.to_string()),
+            (
+                CONTENT_DISPOSITION,
+                format!(
+                    "{}; filename=\"{safe_name}\"",
+                    if shown { "inline" } else { "attachment" }
+                ),
+            ),
+        ];
+        for (name, value) in pairs {
+            if let Ok(value) = HeaderValue::from_str(&value) {
+                headers.insert(name, value);
+            }
+        }
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+        Ok(response)
+    }
+}
+
+/// Image types a browser only displays, never runs.
+pub(crate) fn is_raster_image(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+    )
+}
+
+fn multipart_admin_error(error: &axum::extract::multipart::MultipartError) -> AdminError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        AdminError::TooLarge("the upload exceeds the size limit".into())
+    } else {
+        AdminError::BadInput {
+            field: "file".into(),
+            message: "the upload was cut off or malformed".into(),
+        }
+    }
+}
+
 async fn upload_multipart(
     State(state): Shared,
     session: Session,
@@ -557,7 +676,7 @@ async fn upload_multipart(
     session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
     loop {
-        let mut field = match multipart.next_field().await {
+        let field = match multipart.next_field().await {
             Ok(Some(field)) => field,
             Ok(None) => return Err(bad_request("send the file in a form field named `file`")),
             Err(error) => return Err(multipart_error(&error)),
@@ -565,31 +684,7 @@ async fn upload_multipart(
         if field.name() != Some("file") {
             continue;
         }
-        let filename = clean_filename(field.file_name().unwrap_or(""));
-        let content_type = clean_content_type(field.content_type().unwrap_or(""));
-        let key = new_key(&filename);
-        let mut sink = uploads.storage.sink(&key);
-        loop {
-            let step = match field.chunk().await {
-                Ok(Some(bytes)) if sink.written() + bytes.len() as u64 > uploads.max_file_bytes => {
-                    Err(ApiError::from(AdminError::TooLarge(format!(
-                        "files may be at most {} bytes",
-                        uploads.max_file_bytes
-                    ))))
-                }
-                Ok(Some(bytes)) => sink.write(&bytes).await.map_err(ApiError::from),
-                Ok(None) => break,
-                Err(error) => Err(multipart_error(&error)),
-            };
-            if let Err(error) = step {
-                sink.abort().await;
-                return Err(error);
-            }
-        }
-        let size = sink.finish().await?;
-        let saved = uploads
-            .record(key, filename, content_type, size, &session.username)
-            .await?;
+        let saved = uploads.store_field(field, &session.username).await?;
         return Ok(created(&state, &saved));
     }
 }
@@ -654,37 +749,7 @@ async fn download(
     session.require(FILES, Action::View)?;
     let uploads = service(&state)?;
     let found = uploads.file(id).await?;
-    let object = uploads.storage.get(&found.key).await?;
-    let mut response = Body::from_stream(object.into_stream()).into_response();
-    let headers = response.headers_mut();
-    // The media type came from the uploader: serve it as a download and forbid sniffing, so a
-    // hostile HTML or script file can never run in this origin.
-    let safe_name: String = found
-        .filename
-        .chars()
-        .map(|c| {
-            let safe = (c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';')) || c == ' ';
-            if safe { c } else { '_' }
-        })
-        .collect();
-    let pairs = [
-        (CONTENT_TYPE, found.content_type.clone()),
-        (CONTENT_LENGTH, found.size.to_string()),
-        (
-            CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{safe_name}\""),
-        ),
-    ];
-    for (name, value) in pairs {
-        if let Ok(value) = HeaderValue::from_str(&value) {
-            headers.insert(name, value);
-        }
-    }
-    headers.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
-    Ok(response)
+    Ok(uploads.respond(&found, false).await?)
 }
 
 async fn delete_file(
