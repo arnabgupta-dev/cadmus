@@ -155,4 +155,130 @@
     }, { rootMargin: "-80px 0px -70% 0px" });
     document.querySelectorAll(".prose h2[id], .prose h3[id]").forEach(function (h) { observer.observe(h); });
   }
+
+  // The hero demo: types each step's commands, prints their output, then shows the admin
+  // they make, and starts over. It waits while paused, scrolled away or in a hidden tab.
+  var demo = document.querySelector("[data-demo]");
+  if (demo) setupDemo(demo);
+
+  function setupDemo(demo) {
+    var screen = demo.querySelector("[data-demo-screen]");
+    var buttons = demo.querySelectorAll("[data-step]");
+    var pauseButton = demo.querySelector("[data-demo-pause]");
+    var steps;
+    try { steps = JSON.parse(demo.querySelector("[data-demo-script]").textContent); } catch (e) { return; }
+    var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var run = 0;
+    var paused = false;
+    var visible = false;
+    var started = false;
+    demo.classList.add("live");
+
+    // Resolves after `ms` of running time; rejects once a newer run has started.
+    function wait(ms, id) {
+      return new Promise(function (resolve, reject) {
+        var left = ms;
+        (function tick() {
+          if (id !== run) return reject(new Error("cancelled"));
+          if (paused || !visible || document.hidden) return setTimeout(tick, 200);
+          if (left <= 0) return resolve();
+          var slice = Math.min(left, 50);
+          left -= slice;
+          setTimeout(tick, slice);
+        })();
+      });
+    }
+    function span(cls, text) {
+      var el = document.createElement("span");
+      el.className = cls;
+      el.textContent = text;
+      return el;
+    }
+    async function print(entry, instant, id) {
+      if (screen.childNodes.length) screen.appendChild(document.createTextNode("\n"));
+      if (entry[0] === "cmd") {
+        screen.appendChild(span("t-p", "$"));
+        var typed = document.createTextNode(" ");
+        screen.appendChild(typed);
+        if (instant) { typed.data += entry[1]; return; }
+        var caret = span("demo-caret", "");
+        screen.appendChild(caret);
+        await wait(400, id);
+        for (var i = 0; i < entry[1].length; i++) {
+          typed.data += entry[1][i];
+          await wait(16 + Math.random() * 38, id);
+        }
+        await wait(280, id);
+        caret.remove();
+        return;
+      }
+      if (!instant) await wait(entry[0] === "ok" ? 160 : 260, id);
+      if (entry[0] === "link") {
+        screen.appendChild(span("t-o", entry[1]));
+        screen.appendChild(document.createTextNode(" "));
+        screen.appendChild(span("t-l", entry[2]));
+      } else {
+        screen.appendChild(span(entry[0] === "ok" ? "t-g" : "t-o", entry[1]));
+      }
+    }
+    function mark(current) {
+      buttons.forEach(function (button, i) {
+        button.classList.toggle("done", i < current);
+        if (i === current) button.setAttribute("aria-current", "step");
+        else button.removeAttribute("aria-current");
+      });
+    }
+    async function play(from) {
+      var id = ++run;
+      screen.textContent = "";
+      demo.classList.remove("show-browser");
+      try {
+        for (var s = 0; s < steps.length; s++) {
+          var instant = still || s < from;
+          if (s >= from) mark(s);
+          for (var j = 0; j < steps[s].lines.length; j++) await print(steps[s].lines[j], instant, id);
+          if (instant) continue;
+          if (steps[s].browser) {
+            await wait(700, id);
+            demo.classList.add("show-browser");
+          }
+          await wait(900, id);
+        }
+        mark(steps.length);
+        if (still) return;
+        await wait(6500, id);
+        demo.classList.remove("show-browser");
+        await wait(900, id);
+        play(0);
+      } catch (e) {
+        // A newer run replaced this one.
+      }
+    }
+
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        started = true;
+        play(Number(button.dataset.step));
+      });
+    });
+    if (pauseButton) {
+      pauseButton.addEventListener("click", function () {
+        paused = !paused;
+        pauseButton.textContent = paused ? "Play" : "Pause";
+        pauseButton.setAttribute("aria-label", paused ? "Play the demo" : "Pause the demo");
+      });
+    }
+    function start() {
+      if (!started) { started = true; play(0); }
+    }
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) {
+        visible = entries[0].isIntersecting;
+        if (visible) start();
+      }, { threshold: 0.25 }).observe(demo);
+    } else {
+      visible = true;
+      start();
+    }
+  }
 })();

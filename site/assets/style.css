@@ -163,10 +163,41 @@ svg.filled { fill: currentColor; stroke: none; }
 .terminal pre { margin: 0; padding: 18px 20px 22px; overflow-x: auto; color: var(--code-ink); font-size: .86rem; line-height: 1.75; }
 .t-p { color: #8b85ff; } .t-o { color: #aab2c8; } .t-g { color: #4ade80; } .t-l { color: #7dd3fc; } .t-c { color: #6b7391; }
 
+/* The hero demo: the terminal types the commands, then the admin they make slides in.
+   Without JavaScript, the whole transcript shows instead. */
+.demo { position: relative; min-width: 0; }
+.demo .terminal pre { display: grid; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
+.demo-sizer, .demo-screen { grid-area: 1 / 1; min-width: 0; }
+.demo-screen { display: none; }
+.demo.live .demo-sizer { visibility: hidden; }
+.demo.live .demo-screen { display: block; }
+.demo-caret { display: inline-block; width: .55em; height: 1.15em; margin-left: 2px; vertical-align: -.22em; background: #8b85ff; animation: demo-blink 1s steps(1) infinite; }
+@keyframes demo-blink { 50% { opacity: 0; } }
+.demo-browser { display: none; position: absolute; left: 10%; right: -4%; bottom: 58px; border-radius: var(--radius); overflow: hidden; background: var(--code-bg); border: 1px solid var(--line-strong); box-shadow: var(--shadow-lg); opacity: 0; transform: translateY(28px) scale(.96); transform-origin: bottom center; transition: opacity .55s ease, transform .55s cubic-bezier(.2, .8, .2, 1); pointer-events: none; }
+.demo-browser img { display: block; width: 100%; height: auto; }
+.demo.live .demo-browser { display: block; }
+.demo.show-browser .demo-browser { opacity: 1; transform: none; }
+.demo-controls { display: none; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.demo.live .demo-controls { display: flex; }
+.demo-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.demo-steps button, .demo-pause { height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--muted); font: 500 .82rem var(--font); cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.demo-steps button:hover, .demo-pause:hover { color: var(--ink); border-color: var(--brand); }
+.demo-steps button.done { color: var(--ink-2); }
+.demo-steps button.done::before { content: "✓ "; color: var(--ok); }
+.demo-steps button[aria-current="step"] { background: var(--brand); border-color: var(--brand); color: #fff; }
+
 /* ---- landing: screenshot ---- */
 .showcase { padding: 24px 0 40px; }
 .browser { border-radius: var(--radius); overflow: hidden; background: var(--code-bg); border: 1px solid var(--line-strong); box-shadow: var(--shadow-lg); }
 .browser img { width: 100%; }
+/* Screenshots follow the site's theme, including the light/dark switch. */
+.shot-dark { display: none !important; }
+:root[data-theme="dark"] .shot-dark { display: block !important; }
+:root[data-theme="dark"] .shot-light { display: none !important; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shot-dark { display: block !important; }
+  :root:not([data-theme="light"]) .shot-light { display: none !important; }
+}
 
 /* ---- landing: sections ---- */
 .section { padding: 88px 0; }
@@ -337,7 +368,10 @@ svg.filled { fill: currentColor; stroke: none; }
   .pager { grid-template-columns: 1fr; }
   .pager-next { grid-column: 1; }
   .steps li { padding: 16px; gap: 14px; }
+  .demo-browser { left: 4%; right: 4%; }
+  .demo-pause { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+  .demo-caret { animation: none; }
 }

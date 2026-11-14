@@ -56,21 +56,45 @@
           <button type="button" class="copy" data-copy="cargo install cadmus-cli" aria-label="Copy the install command">Copy</button>
         </div>
       </div>
-      <div class="terminal" aria-label="Creating a project in a terminal">
-        <div class="terminal-bar"><span></span><span></span><span></span><p>~/code</p></div>
-<pre><code><span class="t-p">$</span> cadmus new blog && cd blog
-<span class="t-o">created blog</span>
-<span class="t-p">$</span> cadmus generate model Post title:string body:text published:bool
-<span class="t-o">created src/models/post.rs</span>
+      <div class="demo" data-demo>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><p>~/code</p></div>
+<pre aria-label="Building a library app in a terminal"><code class="demo-sizer"><span class="t-p">$</span> cadmus new library &amp;&amp; cd library
+<span class="t-o">created ./library</span>
+<span class="t-p">$</span> cadmus g model Author name:string
+<span class="t-o">created ./src/models/author.rs</span>
+<span class="t-p">$</span> cadmus g model Book title:string author:references published_on:date pages:int published:bool
+<span class="t-o">created ./src/models/book.rs</span>
 <span class="t-p">$</span> cargo run -- makemigrations
 <span class="t-o">wrote src/migrations/m0001_initial.rs</span>
-<span class="t-g">  + table post</span>
+<span class="t-g">  + table author</span>
+<span class="t-g">  + table book</span>
 <span class="t-p">$</span> cargo run -- migrate
 <span class="t-g">applied app.0001_initial</span>
 <span class="t-p">$</span> cargo run -- serve
-<span class="t-o">listening on</span> <span class="t-l">http://127.0.0.1:3000</span>
-<span class="t-c"># /admin   the admin site</span>
-<span class="t-c"># /api     the REST API, documented at /api/docs</span></code></pre>
+<span class="t-o">listening on</span> <span class="t-l">http://127.0.0.1:3000</span></code><code class="demo-screen" data-demo-screen aria-hidden="true"></code></pre>
+        </div>
+        <div class="demo-browser" aria-hidden="true">
+          <div class="browser-bar"><span></span><span></span><span></span><p>localhost:3000/admin/book</p></div>
+          <img class="shot-light" src="assets/admin-light.png" alt="" width="1280" height="760" loading="lazy"><img class="shot-dark" src="assets/admin-dark.png" alt="" width="1280" height="760" loading="lazy">
+        </div>
+        <div class="demo-controls">
+          <ol class="demo-steps">
+            <li><button type="button" data-step="0">Create</button></li>
+            <li><button type="button" data-step="1">Models</button></li>
+            <li><button type="button" data-step="2">Migrate</button></li>
+            <li><button type="button" data-step="3">Serve</button></li>
+          </ol>
+          <button type="button" class="demo-pause" data-demo-pause aria-label="Pause the demo">Pause</button>
+        </div>
+<script type="application/json" data-demo-script>[
+  {"lines": [["cmd", "cadmus new library && cd library"], ["out", "created ./library"]]},
+  {"lines": [["cmd", "cadmus g model Author name:string"], ["out", "created ./src/models/author.rs"],
+             ["cmd", "cadmus g model Book title:string author:references published_on:date pages:int published:bool"], ["out", "created ./src/models/book.rs"]]},
+  {"lines": [["cmd", "cargo run -- makemigrations"], ["out", "wrote src/migrations/m0001_initial.rs"], ["ok", "  + table author"], ["ok", "  + table book"],
+             ["cmd", "cargo run -- migrate"], ["ok", "applied app.0001_initial"]]},
+  {"lines": [["cmd", "cargo run -- serve"], ["link", "listening on", "http://127.0.0.1:3000"]], "browser": true}
+]</script>
       </div>
     </div>
   </section>
@@ -79,10 +103,7 @@
     <div class="wrap">
       <div class="browser">
         <div class="browser-bar"><span></span><span></span><span></span><p>localhost:3000/admin/book</p></div>
-        <picture>
-          <source srcset="assets/admin-dark.png" media="(prefers-color-scheme: dark)">
-          <img src="assets/admin-light.png" alt="The Cadmus admin site: a list of books with search, filters by author and date, and bulk actions" width="1280" height="760" loading="lazy">
-        </picture>
+        <img class="shot-light" src="assets/admin-light.png" alt="The Cadmus admin site: a list of books with search, filters by author and date, and bulk actions" width="1280" height="760" loading="lazy"><img class="shot-dark" src="assets/admin-dark.png" alt="The Cadmus admin site: a list of books with search, filters by author and date, and bulk actions" width="1280" height="760" loading="lazy">
       </div>
     </div>
   </section>
@@ -123,7 +144,7 @@
       <div class="features">
         <a class="feature" href="docs/admin.html">
           <span class="feature-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11"/></svg></span>
-          <h3>Admin site</h3><p>Lists, search, filters, bulk actions and forms. Responsive, light and dark, keyboard-friendly.</p>
+          <h3>Admin site</h3><p>Lists, search, filters, bulk actions, many-to-many checkboxes and related records. Responsive, light and dark.</p>
         </a>
         <a class="feature" href="docs/rest-api.html">
           <span class="feature-icon"><svg viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg></span>
@@ -135,7 +156,7 @@
         </a>
         <a class="feature" href="docs/accounts.html">
           <span class="feature-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/></svg></span>
-          <h3>Accounts &amp; permissions</h3><p>Users, groups, staff and superusers, with view, add, change and delete per model.</p>
+          <h3>Accounts &amp; permissions</h3><p>Users, groups and superusers, with view, add, change and delete per model, or only their own rows.</p>
         </a>
         <a class="feature" href="docs/login-methods.html">
           <span class="feature-icon"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></span>
