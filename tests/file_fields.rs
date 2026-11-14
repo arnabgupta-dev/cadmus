@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use heraapi::{AdminError, App, AuthConfig, ModelOptions, Storage, Uploads, create_superuser};
+use herapi::{AdminError, App, AuthConfig, ModelOptions, Storage, Uploads, create_superuser};
 use http_body_util::BodyExt;
 use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use tower::ServiceExt;
@@ -181,7 +181,7 @@ async fn product(db: &DatabaseConnection, id: i32) -> product::Model {
 }
 
 async fn file_count(db: &DatabaseConnection) -> u64 {
-    heraapi::file::Entity::find().count(db).await.unwrap()
+    herapi::file::Entity::find().count(db).await.unwrap()
 }
 
 #[tokio::test]

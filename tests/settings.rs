@@ -4,8 +4,8 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use heraapi::settings::*;
-use heraapi::{AdminError, App};
+use herapi::settings::*;
+use herapi::{AdminError, App};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 

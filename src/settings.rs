@@ -246,8 +246,8 @@ pub use tracing::Level as LogLevel;
 /// `..Default::default()`; secrets come from the environment through [`env()`]:
 ///
 /// ```no_run
-/// use heraapi::AdminError;
-/// use heraapi::settings::*;
+/// use herapi::AdminError;
+/// use herapi::settings::*;
 ///
 /// fn settings() -> Result<Settings, AdminError> {
 ///     Ok(Settings {
@@ -397,8 +397,8 @@ pub struct AuthSettings {
     /// How people log in, in the order the login page offers them (default: password only).
     ///
     /// ```no_run
-    /// # use heraapi::settings::*;
-    /// # fn f() -> Result<Vec<AuthMethod>, heraapi::AdminError> { Ok(
+    /// # use herapi::settings::*;
+    /// # fn f() -> Result<Vec<AuthMethod>, herapi::AdminError> { Ok(
     /// vec![
     ///     AuthMethod::Password,
     ///     AuthMethod::Google(OAuthClient::from_env("GOOGLE")?),

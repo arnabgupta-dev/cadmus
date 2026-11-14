@@ -1,4 +1,4 @@
-//! `hera`: creates projects and models for heraapi.
+//! `hera`: creates projects and models for herapi.
 //!
 //! ```text
 //! hera new blog
@@ -17,14 +17,14 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Where generated projects get the framework from until it is on crates.io.
-const REPOSITORY: &str = "https://github.com/arnabgupta-dev/heraapi";
+const REPOSITORY: &str = "https://github.com/arnabgupta-dev/herapi";
 const MODULES_MARKER: &str = "// hera:modules (generated modules are added above this line)";
 const MODELS_MARKER: &str = "// hera:models (generated models are registered above this line)";
 
 #[derive(Parser)]
 #[command(
     name = "hera",
-    about = "Project and model generator for heraapi",
+    about = "Project and model generator for herapi",
     version
 )]
 struct Cli {
@@ -174,7 +174,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
-heraapi = {framework}
+herapi = {framework}
 sea-orm = {{ version = "2", default-features = false, features = ["macros", "with-json", "with-chrono"] }}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 "#
@@ -187,7 +187,7 @@ mod models;
 mod routes;
 mod settings;
 
-use heraapi::{AdminError, App};
+use herapi::{AdminError, App};
 
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
@@ -206,7 +206,7 @@ async fn main() -> Result<(), AdminError> {
 //! `cargo run -- makemigrations` adds a file here and rewrites this list;
 //! `cargo run -- migrate` applies the migrations the database has not had yet.
 
-use heraapi::migrations::Migration;
+use herapi::migrations::Migration;
 
 /// Every migration, in the order they apply.
 pub fn all() -> Vec<Migration> {
@@ -231,7 +231,7 @@ pub fn router() -> Router {
         &format!(
             r"//! Models. `hera generate model` adds a module and a registration line here.
 
-use heraapi::App;
+use herapi::App;
 
 {MODULES_MARKER}
 
@@ -299,10 +299,10 @@ fn settings_source(name: &str) -> String {
 //! on your machine, the host's variables in production), read with `env(...)`.
 //!
 //! Every field is documented: hover over it in your editor, or see the `Settings` type in
-//! the heraapi documentation. Anything left out keeps its default.
+//! the herapi documentation. Anything left out keeps its default.
 
-use heraapi::AdminError;
-use heraapi::settings::*;
+use herapi::AdminError;
+use herapi::settings::*;
 
 pub fn settings() -> Result<Settings, AdminError> {{
     // `DEBUG=true` in .env on your machine; unset in production.
@@ -680,7 +680,7 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
         .replace(
             MODELS_MARKER,
             &format!(
-                "    .model::<{module}::Entity>(heraapi::ModelOptions::new().label({:?}){file_option})\n    {MODELS_MARKER}",
+                "    .model::<{module}::Entity>(herapi::ModelOptions::new().label({:?}){file_option})\n    {MODELS_MARKER}",
                 label(name)
             ),
         );
@@ -814,7 +814,7 @@ mod tests {
 
         new_project(&dir, "lite", None, Database::Sqlite).unwrap();
         assert!(
-            read("lite", "Cargo.toml").contains(&format!("heraapi = {{ git = {REPOSITORY:?} }}"))
+            read("lite", "Cargo.toml").contains(&format!("herapi = {{ git = {REPOSITORY:?} }}"))
         );
         assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
 

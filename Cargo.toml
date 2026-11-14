@@ -1,10 +1,10 @@
 [package]
-name = "heraapi"
+name = "herapi"
 version = "0.1.0"
 edition = "2024"
 description = "Django-style admin, REST API, auth and file uploads for axum and SeaORM"
 license = "MIT"
-repository = "https://github.com/arnabgupta-dev/heraapi"
+repository = "https://github.com/arnabgupta-dev/herapi"
 readme = "README.md"
 keywords = ["axum", "sea-orm", "admin", "rest", "crud"]
 categories = ["web-programming", "web-programming::http-server", "database"]

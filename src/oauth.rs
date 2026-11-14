@@ -207,7 +207,7 @@ fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .timeout(HTTP_TIMEOUT)
-        .user_agent(concat!("heraapi/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("herapi/", env!("CARGO_PKG_VERSION")))
         // Providers answer directly; following redirects would only hide mistakes.
         .redirect(reqwest::redirect::Policy::none())
         .build()

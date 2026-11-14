@@ -1,8 +1,8 @@
-# heraapi
+# herapi
 
-[![CI](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/heraapi/actions/workflows/ci.yml)
+[![CI](https://github.com/arnabgupta-dev/herapi/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/herapi/actions/workflows/ci.yml)
 
-**Django-style web framework for Rust.** Describe your data once, as a model, and heraapi
+**Django-style web framework for Rust.** Describe your data once, as a model, and herapi
 gives you:
 
 - **a database table** for it, kept up to date with migrations;
@@ -40,14 +40,14 @@ databases, but details may still change between versions.
   [deploying](#deploying)
 - [Reference](#reference): [commands](#management-commands), [settings](#all-settings),
   [migrations in detail](#migrations-in-detail)
-- [Not done yet](#not-done-yet) · [Working on heraapi](#working-on-heraapi) ·
+- [Not done yet](#not-done-yet) · [Working on herapi](#working-on-herapi) ·
   [License](#license)
 
 ## Coming from Django?
 
 Most ideas carry over directly:
 
-| In Django | In heraapi |
+| In Django | In herapi |
 |---|---|
 | `django-admin startproject` | `hera new` |
 | `models.py` and a model class | `src/models/post.rs`, a SeaORM entity (`hera generate model` writes it) |
@@ -77,7 +77,7 @@ file.
 **1. Install the `hera` command**, which creates projects and models:
 
 ```sh
-cargo install --git https://github.com/arnabgupta-dev/heraapi heraapi-cli
+cargo install --git https://github.com/arnabgupta-dev/herapi herapi-cli
 ```
 
 **2. Create a project:**
@@ -182,7 +182,7 @@ async fn main() -> Result<(), AdminError> {
 
 ### Models
 
-A model describes one kind of record: its fields and their types. heraapi uses SeaORM
+A model describes one kind of record: its fields and their types. herapi uses SeaORM
 entities as models; `hera generate model` writes one for you:
 
 ```rust
@@ -337,7 +337,7 @@ use.
   account superuser again.
 - Accounts also have an e-mail address (unique; it can be used to log in), first and last
   name and phone, and record when they joined and last logged in. For fields of your own, add
-  a model linked to `heraapi::user::Entity` (one profile row per account).
+  a model linked to `herapi::user::Entity` (one profile row per account).
 - Passwords are stored as Argon2id hashes, never in plain text.
 
 ### People log in, programs use keys
@@ -404,8 +404,8 @@ plain Rust, so the compiler catches a misspelt setting, and your editor complete
 and shows what each one does. Anything left out keeps its default:
 
 ```rust
-use heraapi::AdminError;
-use heraapi::settings::*;
+use herapi::AdminError;
+use herapi::settings::*;
 
 pub fn settings() -> Result<Settings, AdminError> {
     let debug = env_or("DEBUG", false)?;
@@ -549,7 +549,7 @@ mail: MailSettings {
 `smtps://` (TLS, port 465) and `smtp://...?tls=required` (STARTTLS, port 587) work with any
 provider's SMTP service. Unencrypted `smtp://` is accepted only to this machine, e.g. a test
 inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
-implement `heraapi::Mailer` (one `send` method) and pass it to `App::mailer`.
+implement `herapi::Mailer` (one `send` method) and pass it to `App::mailer`.
 
 - **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
   link that works once, within 15 minutes. Opening it shows a button rather than logging in
@@ -706,13 +706,13 @@ ISO 8601 (`2026-03-04T05:06:07`), JSON fields come back as JSON, and `?q=` searc
 case.
 
 **Smaller builds:** a project that only uses one database can leave the other drivers out, to
-compile faster: `heraapi = { ..., default-features = false, features = ["postgres"] }` (the
+compile faster: `herapi = { ..., default-features = false, features = ["postgres"] }` (the
 features are `sqlite`, `postgres` and `mysql`).
 
 ### Errors and your own code
 
 `src/routes.rs` holds your own axum routes, served next to the generated ones. Every failure
-in heraapi is an `AdminError`, shown in the right form for where the request went:
+in herapi is an `AdminError`, shown in the right form for where the request went:
 
 | Request to | An error looks like |
 |---|---|
@@ -932,10 +932,10 @@ unless you implement `UserStore::access`, API keys work only if you implement
 - **Untested services:** S3, Azure and Google Cloud Storage compile but have not been run
   against the real services.
 
-## Working on heraapi
+## Working on herapi
 
-To use a local copy of heraapi in a project: `cargo install --path cli`, then
-`hera new blog --framework-path /path/to/heraapi`.
+To use a local copy of herapi in a project: `cargo install --path cli`, then
+`hera new blog --framework-path /path/to/herapi`.
 
 Running the tests:
 
@@ -955,5 +955,5 @@ TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 
 [MIT](LICENSE). Free to use and change, commercially or otherwise. Copies must keep the
 copyright notice; beyond that, a link back to
-[this repository](https://github.com/arnabgupta-dev/heraapi) wherever you use it is
+[this repository](https://github.com/arnabgupta-dev/herapi) wherever you use it is
 appreciated.

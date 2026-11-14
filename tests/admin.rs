@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
-use heraapi::{
+use herapi::{
     Admin, AdminError, AdminUser, App, AuthConfig, EnvUserStore, ModelOptions, SeaOrmResource,
     UiSettings, change_password, create_superuser, hash_password,
 };
@@ -540,7 +540,7 @@ async fn totp_required_refuses_users_without_a_second_factor() {
 
 #[tokio::test]
 async fn ui_settings_from_env_style_lookup_change_the_page() {
-    let dir = std::env::temp_dir().join(format!("heraapi-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("herapi-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("index.html"),

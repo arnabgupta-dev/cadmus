@@ -253,6 +253,7 @@ impl AuthConfig {
     fn purpose_key(&self, purpose: &str) -> Vec<u8> {
         let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&self.jwt_secret)
             .expect("HMAC accepts keys of any length");
+        // The framework's former name. Changing it would sign everything differently.
         mac.update(b"heraapi:");
         mac.update(purpose.as_bytes());
         mac.finalize().into_bytes().to_vec()
@@ -654,6 +655,7 @@ pub(crate) fn api_key_digest(key: &str) -> Option<String> {
     if random.len() != API_KEY_CHARS || !random.bytes().all(|b| API_KEY_ALPHABET.contains(&b)) {
         return None;
     }
+    // "heraapi" is the framework's former name; changing it would invalidate every stored key.
     let digest = sha2::Sha256::digest(format!("heraapi-api-key:{key}").as_bytes());
     Some(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -689,6 +691,8 @@ pub(crate) fn recovery_digest(typed: &str) -> Option<String> {
     {
         return None;
     }
+    // "heraapi" is the framework's former name; changing it would invalidate every stored
+    // recovery code.
     let digest = sha2::Sha256::digest(format!("heraapi-recovery:{normalised}").as_bytes());
     Some(digest.iter().map(|b| format!("{b:02x}")).collect())
 }

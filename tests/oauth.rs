@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use heraapi::settings::*;
-use heraapi::{AdminError, App, EnvUserStore, create_superuser, enable_totp, set_email};
+use herapi::settings::*;
+use herapi::{AdminError, App, EnvUserStore, create_superuser, enable_totp, set_email};
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -331,13 +331,13 @@ fn totp_code(secret: &str) -> String {
     )
 }
 
-async fn identities(db: &DatabaseConnection) -> Vec<heraapi::identity::Model> {
-    heraapi::identity::Entity::find().all(db).await.unwrap()
+async fn identities(db: &DatabaseConnection) -> Vec<herapi::identity::Model> {
+    herapi::identity::Entity::find().all(db).await.unwrap()
 }
 
-async fn account(db: &DatabaseConnection, username: &str) -> Option<heraapi::user::Model> {
-    heraapi::user::Entity::find()
-        .filter(heraapi::user::Column::Username.eq(username))
+async fn account(db: &DatabaseConnection, username: &str) -> Option<herapi::user::Model> {
+    herapi::user::Entity::find()
+        .filter(herapi::user::Column::Username.eq(username))
         .one(db)
         .await
         .unwrap()
@@ -502,7 +502,7 @@ async fn signup_admits_allowed_domains_into_the_signup_groups() {
         s.auth.signup_groups = vec!["Editors".into(), "Missing".into()];
     })
     .await;
-    heraapi::group::ActiveModel {
+    herapi::group::ActiveModel {
         name: Set("Editors".into()),
         ..Default::default()
     }
@@ -608,7 +608,7 @@ async fn required_two_factor_and_inactive_accounts_are_enforced() {
 
     let site = self::site(|_| {}).await;
     let ada = account(&site.db, "ada").await.unwrap();
-    let mut ada: heraapi::user::ActiveModel = ada.into();
+    let mut ada: herapi::user::ActiveModel = ada.into();
     ada.is_active = Set(false);
     ada.update(&site.db).await.unwrap();
     let reply = login_as(
@@ -702,7 +702,7 @@ async fn providers_need_the_built_in_accounts() {
     let db = common::database().await;
     let store = EnvUserStore::from_lookup(|key| match key {
         "ADMIN_USERNAME" => Some("root".into()),
-        "ADMIN_PASSWORD_HASH" => Some(heraapi::hash_password("whatever-long").unwrap()),
+        "ADMIN_PASSWORD_HASH" => Some(herapi::hash_password("whatever-long").unwrap()),
         _ => None,
     })
     .unwrap();

@@ -3,7 +3,7 @@
 //! It can be edited until it has been applied somewhere, for instance to change data
 //! with `.sql_reversible(...)` or `.run(...)`.
 
-use heraapi::migrations::*;
+use herapi::migrations::*;
 
 pub fn migration() -> Migration {
     Migration::new("0001_initial")

@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use heraapi::migrations::{Column, Migration, MigrationEvent, Type};
-use heraapi::{App, AuthConfig, ModelOptions};
+use herapi::migrations::{Column, Migration, MigrationEvent, Type};
+use herapi::{App, AuthConfig, ModelOptions};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 mod common;
@@ -567,7 +567,7 @@ async fn databases_from_before_migrations_get_the_built_in_tables_brought_up_to_
     let db = common::database().await;
     // An old database: accounts, but not the tables added since.
     db.get_schema_builder()
-        .register(heraapi::user::Entity)
+        .register(herapi::user::Entity)
         .sync(&db)
         .await
         .unwrap();

@@ -203,7 +203,7 @@ impl DocsConfig {
     /// your own:
     ///
     /// ```
-    /// use heraapi::DocsConfig;
+    /// use herapi::DocsConfig;
     /// use serde_json::json;
     ///
     /// let docs = DocsConfig::new().extend(|document| {

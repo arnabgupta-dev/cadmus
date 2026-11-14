@@ -1,10 +1,10 @@
 [package]
-name = "heraapi-cli"
+name = "herapi-cli"
 version = "0.1.0"
 edition = "2024"
-description = "Project and model generator for heraapi"
+description = "Project and model generator for herapi"
 license = "MIT"
-repository = "https://github.com/arnabgupta-dev/heraapi"
+repository = "https://github.com/arnabgupta-dev/herapi"
 keywords = ["axum", "sea-orm", "admin", "generator", "cli"]
 categories = ["command-line-utilities", "web-programming"]
 

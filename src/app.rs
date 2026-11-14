@@ -1223,8 +1223,8 @@ fn check_database_url(setting: &str, url: &str) -> Result<(), AdminError> {
         return Ok(());
     }
     Err(AdminError::Config(format!(
-        "{setting} is a {feature} address, but heraapi was built without its `{feature}` \
-         feature. In Cargo.toml: heraapi = {{ ..., default-features = false, features = \
+        "{setting} is a {feature} address, but herapi was built without its `{feature}` \
+         feature. In Cargo.toml: herapi = {{ ..., default-features = false, features = \
          [\"{feature}\"] }}"
     )))
 }

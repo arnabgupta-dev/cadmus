@@ -9,7 +9,7 @@
 //! A generated migration looks like this, and can be edited before it is applied anywhere:
 //!
 //! ```
-//! use heraapi::migrations::*;
+//! use herapi::migrations::*;
 //!
 //! pub fn migration() -> Migration {
 //!     Migration::new("0002_post_slug")
@@ -231,7 +231,7 @@ impl Migration {
     /// Runs Rust code inside the migration's transaction, for changes to the data:
     ///
     /// ```
-    /// # use heraapi::migrations::*;
+    /// # use herapi::migrations::*;
     /// use sea_orm::ConnectionTrait;
     ///
     /// Migration::new("0003_titles").run(|db| {

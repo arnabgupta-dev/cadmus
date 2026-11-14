@@ -5,7 +5,7 @@
 //! throwaway secret and password and prints the password once.
 
 use axum::Router;
-use heraapi::{
+use herapi::{
     Admin, AdminUser, AuthConfig, EnvUserStore, ModelOptions, SeaOrmResource, UiSettings,
     hash_password,
 };
