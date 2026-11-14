@@ -116,7 +116,8 @@ impl std::fmt::Debug for BulkAction {
     }
 }
 
-/// Per-model UI customisation, in the spirit of Django's `ModelAdmin`.
+/// How a model appears in the admin: list columns, search, filters, read-only and hidden
+/// fields, actions and more.
 #[derive(Debug, Clone, Default)]
 pub struct ModelOptions {
     pub(crate) label: Option<String>,
@@ -198,7 +199,7 @@ impl ModelOptions {
         self
     }
 
-    /// Columns the list page offers filters for, in order, as Django's `list_filter`: yes/no
+    /// Columns the list page offers filters for, in order, each as a dropdown: yes/no
     /// for booleans, the related rows for foreign keys, periods such as "past 7 days" for
     /// dates, and the values present for other columns.
     #[must_use]

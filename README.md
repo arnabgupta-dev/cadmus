@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml)
 
-**Django-style web framework for Rust.** Describe your data once, as a model, and Cadmus
-gives you:
+**A batteries-included web framework for Rust.** Describe your data once, as a model, and
+Cadmus gives you:
 
 - **a database table** for it, kept up to date with migrations;
 - **an admin site** where people log in and add, edit, search and delete records;
@@ -21,7 +21,7 @@ databases, but details may still change between versions.
 
 ## Contents
 
-- [Coming from Django?](#coming-from-django)
+- [Why Cadmus](#why-cadmus)
 - [Your first project, step by step](#your-first-project-step-by-step)
 - [What is in a project](#what-is-in-a-project)
 - [Core ideas](#core-ideas)
@@ -43,30 +43,17 @@ databases, but details may still change between versions.
 - [Not done yet](#not-done-yet) · [Working on Cadmus](#working-on-cadmus) ·
   [License](#license)
 
-## Coming from Django?
+## Why Cadmus
 
-Most ideas carry over directly:
-
-| In Django | In Cadmus |
-|---|---|
-| `django-admin startproject` | `cadmus new` |
-| `models.py` and a model class | `src/models/post.rs`, a SeaORM entity (`cadmus generate model` writes it) |
-| `admin.site.register(Post, PostAdmin)` | `app.model::<post::Entity>(ModelOptions::new()...)` |
-| `list_display`, `search_fields`, `list_filter`, `readonly_fields`, `actions` | the same names on `ModelOptions` |
-| `settings.py` | `src/settings.rs` |
-| `DATABASES` | `database.url` in the settings |
-| `manage.py makemigrations` / `migrate` | `cargo run -- makemigrations` / `migrate` |
-| `manage.py createsuperuser` | `cargo run -- createsuperuser` |
-| `manage.py runserver` | `cargo run -- serve` |
-| users, groups, `is_staff`, `is_superuser`, view/add/change/delete permissions | the same |
-| Django REST Framework: viewsets and routers | generated for every model, no code needed |
-| DRF's SimpleJWT and TokenAuthentication | login tokens and [API keys](#people-log-in-programs-use-keys) |
-| drf-spectacular (Swagger) | built in at `/api/docs` |
-
-What is different: it is Rust, so mistakes such as a misspelt setting or field are caught
-when the project compiles, before anything runs, and the result is one fast program with no
-interpreter to install on the server. There are no HTML templates to write for the admin or
-views for the API: both are generated from the models.
+- **Batteries included.** Accounts, permissions, an admin site, an API with documentation,
+  migrations and file uploads come with the framework, configured in one settings file. There
+  is nothing to choose and wire together before you can start.
+- **Little code to write.** There are no HTML templates for the admin and no handlers for the
+  API: both are generated from the models. Your own code goes where the generated parts stop.
+- **Caught early.** It is Rust, so a misspelt setting, field or model is reported when the
+  project compiles, before anything runs.
+- **One program to deploy.** The result is a single fast executable, with no interpreter or
+  runtime to install on the server.
 
 ## Your first project, step by step
 
@@ -153,7 +140,7 @@ blog/
 ├── .env.example            the same without the secrets, to share
 └── src/
     ├── main.rs             starts the app: settings, migrations, models, your routes
-    ├── settings.rs         how the site behaves, like Django's settings.py
+    ├── settings.rs         how the site behaves: every setting in one place
     ├── models/
     │   ├── mod.rs          lists the models, with the admin options for each
     │   └── post.rs         one file per model
@@ -226,7 +213,7 @@ desktops, has light and dark themes, and shows each account only what it may do.
   account may do with them.
 - **Lists:** search, sorting by clicking a column heading, and pages of results. On phones
   each row becomes a card.
-- **Filters** (`list_filter`): a dropdown per column above the list, as in Django: Yes/No for
+- **Filters** (`list_filter`): a dropdown per column above the list: Yes/No for
   true/false fields, names for links to other models, periods ("Past 7 days", "This month")
   for dates, the values present for other columns, and "(empty)" for optional ones. Filters
   combine with search, and sorting and paging keep them.
@@ -280,7 +267,7 @@ same permissions as the admin. Its interactive documentation is at `/api/docs`
 
 The database's tables must match your models. *Migrations* are the steps that get them there,
 saved as files so every copy of the project (your laptop, a colleague's, the server) goes
-through the same steps. They work as in Django:
+through the same steps:
 
 ```sh
 cargo run -- makemigrations   # compares the models with the migrations so far, writes the difference
@@ -313,7 +300,7 @@ The details, including data changes and rollbacks, are under
 
 ### Accounts and permissions
 
-Accounts work as in Django. Each account has three switches:
+Each account has three switches:
 
 | Switch | Meaning |
 |---|---|
@@ -399,7 +386,7 @@ carries a CSRF token. The API never accepts that cookie, only a token or a key.
 
 ### Settings
 
-Like Django's `settings.py`, a project is configured in one file, `src/settings.rs`. It is
+A project is configured in one file, `src/settings.rs`. It is
 plain Rust, so the compiler catches a misspelt setting, and your editor completes the names
 and shows what each one does. Anything left out keeps its default:
 
@@ -649,7 +636,7 @@ In your own code, `Storage` (`put`, `get`, `delete`, `sink`) and `Uploads` are a
 
 ### API documentation
 
-Every project documents its own API, as FastAPI does:
+Every project documents its own API:
 
 | Address | What it is |
 |---|---|
@@ -689,7 +676,7 @@ documentation entirely.
 
 ### Databases
 
-The address in `database.url` chooses the database, as `DATABASES` does in Django. Every
+The address in `database.url` chooses the database. Every
 driver is built in, so switching is a change to `.env`, not to the code:
 
 | Database | `DATABASE_URL` |
@@ -959,3 +946,6 @@ TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 copyright notice; beyond that, a link back to
 [this repository](https://github.com/arnabgupta-dev/cadmus) wherever you use it is
 appreciated.
+
+The admin uses three icons from [Lucide](https://lucide.dev), under the ISC license; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

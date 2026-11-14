@@ -1,7 +1,8 @@
-//! A Django-admin-style panel for axum, generated from your SeaORM entities.
+//! Cadmus: a batteries-included web framework for axum and SeaORM.
 //!
-//! Register entities and the crate serves list, search, create, edit and delete pages for
-//! each one, behind password + TOTP login with JWT sessions. A project is configured with one
+//! Register SeaORM entities as models and the crate serves admin pages (list, search,
+//! create, edit, delete) and REST endpoints for each one, behind accounts with permissions,
+//! and keeps their tables up to date with migrations. A project is configured with one
 //! [`Settings`] value (see [`settings`]) and [`App::from_settings`]; the pieces below can also
 //! be put together by hand. Look and feel
 //! ([`UiSettings`]) and authentication ([`AuthConfig`], [`EnvUserStore`]) can be configured

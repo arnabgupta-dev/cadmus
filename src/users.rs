@@ -1,8 +1,7 @@
 //! Built-in accounts: the `auth_*` tables, a [`UserStore`] over them, and the functions behind
 //! the account commands and the Users and Groups pages.
 //!
-//! The model follows Django's: an account is active or not, staff or not, and possibly a
-//! superuser. Staff who are not superusers can do what their own permissions and those of
+//! An account is active or not, staff or not, and possibly a superuser. Staff who are not superusers can do what their own permissions and those of
 //! their groups allow.
 
 use async_trait::async_trait;

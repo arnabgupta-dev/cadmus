@@ -298,7 +298,7 @@ PUBLIC_URL=http://localhost:3000
 /// The generated `src/settings.rs`.
 fn settings_source(name: &str) -> String {
     format!(
-        r##"//! Project settings, like Django's settings.py.
+        r##"//! Project settings: how the site behaves, in one place.
 //!
 //! How the project behaves is decided here, in code, where the compiler checks every name.
 //! Only secrets and values that differ between machines come from the environment (`.env`

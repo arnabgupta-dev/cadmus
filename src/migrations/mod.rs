@@ -1,4 +1,4 @@
-//! Versioned migrations, in the style of Django.
+//! Versioned migrations.
 //!
 //! `cargo run -- makemigrations` compares the models with the tables the existing migrations
 //! build up, and writes the difference as a new Rust file in `src/migrations/`. `cargo run --
@@ -487,7 +487,7 @@ impl Operation {
             Self::DropTable(table) => Self::CreateTable(table),
             Self::RenameTable { from, to } => Self::RenameTable { from: to, to: from },
             Self::AddColumn { table, column, .. } => Self::DropColumn { table, column },
-            // Rows get an empty value of the column's type, as Django does.
+            // Rows get an empty value of the column's type.
             Self::DropColumn { table, column } => Self::AddColumn {
                 fill: if column.needs_fill() {
                     column.kind.empty_value()

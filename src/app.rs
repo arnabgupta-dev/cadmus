@@ -1152,7 +1152,7 @@ fn slug(name: &str) -> String {
     }
 }
 
-/// A migration name made up from its changes, as Django does.
+/// A migration name made up from its changes.
 fn auto_name(initial: bool, operations: &[Operation]) -> String {
     if initial {
         return "initial".into();

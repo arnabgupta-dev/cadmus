@@ -1,12 +1,12 @@
 [package]
 name = "cadmus"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-description = "Django-style web framework for Rust: models, admin site, REST API, migrations and accounts, on axum and SeaORM"
+description = "A batteries-included web framework for Rust: models, admin site, REST API, migrations and accounts, on axum and SeaORM"
 license = "MIT"
 repository = "https://github.com/arnabgupta-dev/cadmus"
 readme = "README.md"
-keywords = ["web", "framework", "django", "admin", "axum"]
+keywords = ["web", "framework", "admin", "rest", "axum"]
 categories = ["web-programming", "web-programming::http-server", "database"]
 # CI settings are for this repository only.
 exclude = [".github/"]
