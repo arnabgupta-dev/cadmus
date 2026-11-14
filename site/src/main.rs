@@ -96,6 +96,32 @@ fn main() {
         &out.join("docs/search.json"),
         &serde_json::to_string(&search).unwrap(),
     );
+    // Every page with its sections, read by the hosted MCP server (see `mcp/`), so it always
+    // serves the docs that are on the site.
+    let all: Vec<_> = pages
+        .iter()
+        .map(|page| {
+            let parts: Vec<_> = sections(page)
+                .into_iter()
+                .map(|(heading, text, anchor)| {
+                    json!({ "heading": heading, "anchor": anchor, "text": text.trim() })
+                })
+                .collect();
+            json!({
+                "slug": page.slug,
+                "title": page.title,
+                "section": page.section,
+                "summary": page.summary,
+                "url": format!("{SITE_URL}/docs/{}.html", page.slug),
+                "markdown": page.body,
+                "sections": parts,
+            })
+        })
+        .collect();
+    write(
+        &out.join("docs/pages.json"),
+        &serde_json::to_string(&json!({ "version": version, "pages": all })).unwrap(),
+    );
     let first = pages.first().expect("at least one page");
     write(
         &out.join("docs/index.html"),

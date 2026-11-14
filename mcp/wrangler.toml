@@ -1,0 +1,9 @@
+# The hosted Cadmus docs MCP server, on Cloudflare Workers (free plan).
+# Deploy: npx wrangler@4 login, then npx wrangler@4 deploy
+name = "cadmus-mcp"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+[vars]
+# The docs the server reads; written by `cargo run -p cadmus-site` and published with the site.
+DOCS_URL = "https://arnabgupta-dev.github.io/cadmus/docs/pages.json"

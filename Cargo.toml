@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["web", "framework", "admin", "rest", "axum"]
 categories = ["web-programming", "web-programming::http-server", "database"]
 # CI settings are for this repository only.
-exclude = [".github/"]
+exclude = [".github/", "mcp/"]
 
 [package.metadata.docs.rs]
 # Document the S3, Azure and Google Cloud storage support too.

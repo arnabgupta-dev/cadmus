@@ -104,3 +104,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # S3, Azure and GCS support is only compiled here, not run.
       - run: cargo clippy --workspace --all-targets --all-features --locked
+
+  mcp:
+    name: Hosted MCP server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Against a small fixture, then against the docs as the website publishes them.
+      - run: node --test
+        working-directory: mcp
+      - run: cargo run -p cadmus-site --locked -- _site
+      - run: node --test
+        working-directory: mcp
+        env:
+          DOCS_FILE: ${{ github.workspace }}/_site/docs/pages.json

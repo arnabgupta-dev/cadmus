@@ -1,0 +1,11 @@
+{
+  "name": "cadmus-mcp",
+  "private": true,
+  "type": "module",
+  "description": "The Cadmus documentation as a remote MCP server",
+  "scripts": {
+    "test": "node --test",
+    "dev": "npx wrangler@4 dev",
+    "deploy": "npx wrangler@4 deploy"
+  }
+}
