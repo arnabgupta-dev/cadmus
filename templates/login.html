@@ -17,6 +17,12 @@
 .pw button { position: absolute; right: 2px; top: 2px; bottom: 2px; width: 46px; border: 0; background: transparent; color: var(--muted); border-radius: var(--r-sm); cursor: pointer; display: grid; place-items: center; }
 .login .submit { width: 100%; margin-top: 22px; }
 .login .note { margin-top: 18px; text-align: center; color: var(--muted); font-size: .85rem; }
+.providers { display: grid; gap: 10px; }
+.provider { width: 100%; justify-content: center; font-weight: 600; }
+.provider svg { width: 20px; height: 20px; flex: none; }
+.divider { display: flex; align-items: center; gap: 12px; margin: 22px 0 18px; color: var(--muted); font-size: .85rem; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.login .alt { margin-top: 16px; text-align: center; font-size: .9rem; }
 </style>
 {% endblock %}
 {% block bare %}
@@ -26,13 +32,42 @@
     <span>{{ site.site_title }}</span>
   </div>
   <div class="panel">
-    <h1>Log in</h1>
-    <p class="lede">Use the account an administrator gave you.</p>
+    {% if code_step %}
+    <h1>One more step</h1>
+    <p class="lede">Enter the code from your authenticator app.</p>
     {% if error %}<div class="error" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+    <form method="post" action="{{ base }}/login/code" data-busy>
+      <div class="field">
+        <label for="totp">Authenticator code</label>
+        <input id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6 digits" required autofocus>
+      </div>
+      <button class="btn primary submit" type="submit" data-busy-text="Checking…">Continue</button>
+    </form>
+    <p class="alt"><a href="{{ base }}/login">Start over</a></p>
+    {% else %}
+    <h1>Log in</h1>
+    <p class="lede">{% if password_login %}Use the account an administrator gave you.{% else %}Choose how to log in.{% endif %}</p>
+    {% if error %}<div class="error" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{ error }}</span></div>{% endif %}
+    {% if providers %}
+    <div class="providers">
+      {% for p in providers %}
+      <a class="btn provider" href="{{ base }}/auth/{{ p.name }}/start" data-provider="{{ p.name }}">
+        {%- if p.name == "google" %}<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2A11.9 11.9 0 0 1 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3a12 12 0 0 1-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
+        {%- elif p.name == "microsoft" %}<svg viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+        {%- elif p.name == "github" %}<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        {%- elif p.name == "facebook" %}<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#1877F2" d="M24 12.07C24 5.41 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.04V9.41c0-3.02 1.8-4.7 4.54-4.7 1.31 0 2.68.24 2.68.24v2.97h-1.5c-1.5 0-1.96.93-1.96 1.89v2.26h3.32l-.53 3.5h-2.8V24C19.62 23.1 24 18.1 24 12.07"/></svg>
+        {%- else %}<svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>{% endif %}
+        <span>Continue with {{ p.label }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% if password_login %}<div class="divider"><span>or with a password</span></div>{% endif %}
+    {% endif %}
+    {% if password_login %}
     <form method="post" action="{{ base }}/login" data-busy>
       <div class="field">
         <label for="username">Username or email</label>
-        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required{% if not providers %} autofocus{% endif %}>
       </div>
       <div class="field">
         <label for="password">Password</label>
@@ -47,8 +82,10 @@
       </div>
       <button class="btn primary submit" type="submit" data-busy-text="Logging in…">Log in</button>
     </form>
+    {% endif %}
+    {% endif %}
   </div>
-  <p class="note">Too many wrong attempts lock the account for a few minutes.</p>
+  {% if password_login and not code_step %}<p class="note">Too many wrong attempts lock the account for a few minutes.</p>{% endif %}
 </div>
 {% endblock %}
 {% block scripts %}

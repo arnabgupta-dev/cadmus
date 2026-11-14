@@ -26,6 +26,7 @@ mod error;
 mod handlers;
 mod home;
 mod limit;
+mod oauth;
 mod resource;
 mod seaorm;
 mod server;
@@ -53,8 +54,8 @@ pub use settings::{NavLink, Settings, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
 pub use users::{
-    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, promote,
-    set_email, user,
+    DbUserStore, change_password, create_superuser, disable_totp, enable_totp, group, identity,
+    promote, set_email, user,
 };
 
 /// Template names and their built-in sources.
@@ -188,6 +189,9 @@ impl Admin {
         if self.state.docs.is_some() {
             router = router.merge(docs::router(Arc::clone(&self.state)));
         }
+        if !self.state.auth.methods.providers.is_empty() {
+            router = router.merge(oauth::router(Arc::clone(&self.state)));
+        }
         if self.state.accounts.is_some() {
             router.merge(accounts::router(Arc::clone(&self.state)))
         } else {
@@ -295,6 +299,14 @@ impl AdminBuilder {
                 "call .auth(...): the admin cannot be served without authentication".into(),
             )
         })?;
+
+        if !auth.methods.providers.is_empty() && self.accounts.is_none() {
+            return Err(AdminError::Config(
+                "auth.methods: logging in through other sites links them to the built-in \
+                 accounts, which a custom UserStore replaces"
+                    .into(),
+            ));
+        }
 
         let base = base_path(self.base, "/admin")?;
         let api_base = base_path(self.api_base, "/api")?;

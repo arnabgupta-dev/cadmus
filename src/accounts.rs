@@ -34,6 +34,10 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             get(user_edit).post(user_update),
         )
         .route(&format!("{b}/users/{{id}}/delete"), post(user_delete))
+        .route(
+            &format!("{b}/users/{{id}}/identities/{{identity}}/delete"),
+            post(identity_delete),
+        )
         .route(&format!("{b}/groups"), get(group_list))
         .route(
             &format!("{b}/groups/new"),
@@ -333,6 +337,24 @@ async fn render_user(
             name: g.name,
         })
         .collect();
+    let identities: Vec<LinkedView> = match id {
+        Some(id) => users::user_identities(database(state)?, id)
+            .await?
+            .into_iter()
+            .map(|link| LinkedView {
+                id: link.id,
+                label: state
+                    .auth
+                    .methods
+                    .provider(&link.provider)
+                    .map_or_else(|| link.provider.clone(), |p| p.label.clone()),
+                email: link.email,
+                linked: when(Some(link.date_linked)).unwrap_or_default(),
+                last_used: when(link.last_used),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     render(
         state,
         "user_form.html",
@@ -354,9 +376,37 @@ async fn render_user(
             groups => Value::from(Serde(&groups)),
             actions => action_names(),
             permissions => Value::from(Serde(permission_grid(state, &view.grants))),
+            identities => Value::from(Serde(&identities)),
             error,
         },
     )
+}
+
+/// A link to another site, as the user form lists it.
+#[derive(Serialize)]
+struct LinkedView {
+    id: i32,
+    label: String,
+    email: Option<String>,
+    linked: String,
+    last_used: Option<String>,
+}
+
+async fn identity_delete(
+    State(state): Shared,
+    session: Session,
+    Path((id, identity)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Redirect, AdminError> {
+    session.check_csrf(Submitted::parse(&body).get("_csrf"))?;
+    session.require_superuser()?;
+    let id = parse_id("user", &id)?;
+    let identity = parse_id("link", &identity)?;
+    users::unlink_identity(database(&state)?, id, identity).await?;
+    Ok(Redirect::to(&format!(
+        "{}/auth/users/{id}?notice=user_saved",
+        state.base
+    )))
 }
 
 fn user_input(state: &AdminState, form: &Submitted) -> AccountInput {

@@ -248,6 +248,11 @@ SECRET_KEY=
 # On your own machine: lets the login cookie work over plain http://.
 # Leave it unset in production.
 DEBUG=true
+# Where people reach the site; needed to log in with Google and the like.
+PUBLIC_URL=http://localhost:3000
+# Apps registered with the login providers enabled in settings.rs:
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
 # LOG_LEVEL=debug
 # Credentials for the storage backend named in settings.rs, if any:
 # AWS_ACCESS_KEY_ID=
@@ -308,9 +313,31 @@ pub fn settings() -> Result<Settings, AdminError> {{
             // cors_origins: vec!["https://app.example.com".into()],
             // Behind a reverse proxy, the header it puts the client's address in:
             // client_ip_header: Some("X-Forwarded-For".into()),
+            // Where people reach the site; needed to log in with Google and the like.
+            public_url: env_opt("PUBLIC_URL"),
             ..Default::default()
         }},
         auth: AuthSettings {{
+            // How people log in, in the order the login page shows them. Each other site
+            // needs an app registered with it, whose redirect URI is
+            // <PUBLIC_URL>/admin/auth/<name>/callback, e.g. .../admin/auth/google/callback.
+            methods: vec![
+                AuthMethod::Password,
+                // AuthMethod::Google(OAuthClient::from_env("GOOGLE")?),
+                // AuthMethod::Microsoft {{
+                //     client: OAuthClient::from_env("MICROSOFT")?,
+                //     tenant: "common".into(),
+                // }},
+                // AuthMethod::GitHub(OAuthClient::from_env("GITHUB")?),
+                // AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
+                // AuthMethod::Oidc(OidcProvider::new(
+                //     "okta", "Okta", "https://acme.okta.com", OAuthClient::from_env("OKTA")?,
+                // )),
+            ],
+            // Who may get an account by logging in through another site. By default only
+            // existing accounts, matched by e-mail address, may log in.
+            // signup: Signup::Domains(vec!["acme.com".into()]),
+            // signup_groups: vec!["Editors".into()],
             // The login cookie needs HTTPS, except on your own machine.
             cookie_secure: !debug,
             // Require two-factor authentication for every account:

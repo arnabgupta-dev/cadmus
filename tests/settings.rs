@@ -143,7 +143,7 @@ async fn mistakes_name_the_setting() {
 async fn from_settings_checks_before_connecting() {
     // An unreachable database must not hide the real mistake, nor make the check wait.
     let mut custom = settings();
-    custom.database.url = "postgres://nobody@127.0.0.1:1/none".into();
+    custom.database.url = "sqlite:///nonexistent/dir/db.sqlite3".into();
     custom.admin.accent_color = "blue".into();
     let message = config_error(App::from_settings(custom).await);
     assert!(message.starts_with("admin.accent_color: "), "{message}");
@@ -157,6 +157,23 @@ async fn from_settings_checks_before_connecting() {
     custom.admin.path = "no-slash".into();
     let message = config_error(App::from_settings(custom).await);
     assert!(message.starts_with("admin.path: "), "{message}");
+
+    let mut custom = settings();
+    custom.database.url = "oracle://scott:tiger@db/orcl".into();
+    let message = config_error(App::from_settings(custom).await);
+    assert!(
+        message.contains("`oracle` is not a supported database"),
+        "{message}"
+    );
+}
+
+#[cfg(not(feature = "mysql"))]
+#[tokio::test]
+async fn a_database_whose_driver_is_not_built_in_is_explained() {
+    let mut custom = settings();
+    custom.database.url = "mysql://root@localhost/shop".into();
+    let message = config_error(App::from_settings(custom).await);
+    assert!(message.contains("without its `mysql` feature"), "{message}");
 }
 
 #[test]

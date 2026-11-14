@@ -107,8 +107,8 @@ server with the setting it is about, e.g. `admin.accent_color: accent colour mus
 |---|---|
 | `secret_key` | Signs login tokens; at least 32 bytes (`hera secret` prints one) |
 | `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
-| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header` |
-| `auth` | `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min) |
+| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
+| `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min) |
 | `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
 | `api` | `path` (`/api`) |
 | `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
@@ -318,6 +318,64 @@ Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); 
 - The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
   `HttpOnly`, `SameSite=Strict` cookie, and every admin form carries a CSRF token.
 
+### Login methods
+
+Each project picks how people log in, in `src/settings.rs`. The login page shows the
+methods in the order given, and only those:
+
+```rust
+// Project A: password, or Facebook
+auth: AuthSettings {
+    methods: vec![
+        AuthMethod::Password,
+        AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
+    ],
+    ..Default::default()
+},
+
+// Project B: Google only, and anyone at acme.com gets an account
+auth: AuthSettings {
+    methods: vec![AuthMethod::Google(OAuthClient::from_env("GOOGLE")?)],
+    signup: Signup::Domains(vec!["acme.com".into()]),
+    signup_groups: vec!["Staff".into()],
+    ..Default::default()
+},
+```
+
+| Method | What it needs |
+|---|---|
+| `AuthMethod::Password` | nothing; leave it out to turn password login off everywhere, the API's token endpoint included |
+| `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
+| `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
+| `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
+| `AuthMethod::Facebook(client)` | an app at developers.facebook.com with Facebook Login |
+| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, … |
+
+`OAuthClient::from_env("GOOGLE")` reads `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` from
+`.env`. Set `server.public_url` to where people reach the site (`PUBLIC_URL` in a generated
+project) and register this *redirect URI* with each provider:
+`<public_url>/admin/auth/<name>/callback`, e.g.
+`https://shop.example.com/admin/auth/google/callback`.
+
+**Who gets in.** A login through another site is matched to the account with the e-mail
+address that site vouches for, and the two are linked, so later logins work even if the
+address changes. Addresses the site has not verified are never used. Nobody else gets in,
+unless `signup` allows it: `Signup::Domains(vec!["acme.com".into()])` or `Signup::Open`
+create an account at the first login, as staff without permissions of their own, in
+`signup_groups`. The user page lists each account's links, and a superuser can remove one.
+
+- Accounts with two-factor authentication enter their code after coming back, and
+  `totp_required` applies as it does to passwords. Inactive accounts cannot log in.
+- To start a project without passwords, run `createsuperuser --username you --email
+  you@example.com`; it asks for no password and the account logs in through the provider.
+- Microsoft's shared directories (`common`, `organizations`, `consumers`) let people choose
+  any address, so their addresses only count if the app sends the optional `xms_edov`
+  claim. With your own directory's ID as `tenant`, its addresses are trusted.
+- GitHub uses the account's primary verified address. For an OpenID Connect provider that
+  does not say whether addresses are verified, `trust_email: true` trusts them; only do that
+  for a directory whose users cannot pick their own address.
+- These logins are for the admin. API clients still get a token from `POST /api/auth/token`.
+
 ### Two-factor authentication
 
 Each user turns it on for themselves: click your name in the admin header, scan the QR code
@@ -485,6 +543,16 @@ from environment variables. It still works; to move to settings, run `hera new` 
 
 ## Databases
 
+| Database | Cargo feature | `DATABASE_URL` |
+|---|---|---|
+| SQLite | `sqlite` (default) | `sqlite://db.sqlite3?mode=rwc` |
+| PostgreSQL | `postgres` | `postgres://user:password@host:5432/name` |
+| MySQL and MariaDB | `mysql` | `mysql://user:password@host:3306/name` |
+
+Oracle and SQL Server are not supported: open-source SeaORM, the database layer, has no driver for them.
+If `DATABASE_URL` names a database the project was not built for, start-up says which
+feature to turn on.
+
 Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`. `hera new
 --database` picks one for a new project; to switch an existing project, change the dependency
 to `heraapi = { ..., default-features = false, features = ["postgres"] }` and its
@@ -507,9 +575,10 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** password login only for now. Planned, chosen per project in `src/settings.rs`: single sign-on
-  (Google, Microsoft, GitHub, Facebook and any OpenID Connect provider), e-mail magic links,
-  passkeys and API keys. Also missing: per-record (row-level) permissions, recovery codes for
+- **Auth:** e-mail magic links, passkeys and API keys are planned as further login methods.
+  Logins through other sites are for the admin only; API clients cannot use them yet, and
+  linking another site to an account goes by e-mail address only (no "connect" button).
+  Also missing: per-record (row-level) permissions, recovery codes for
   two-factor authentication, and a page for users to change their own password. Login
   limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.

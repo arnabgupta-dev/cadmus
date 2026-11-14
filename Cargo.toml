@@ -36,14 +36,20 @@ minijinja = { version = "3", features = ["serde", "urlencode"] }
 object_store = "0.14.2"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.10.3"
+# Talks to Google, Facebook and the other login providers. TLS uses `ring`, which the
+# database driver already brings, rather than a second crypto library.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "rustls-no-provider"] }
 rpassword = "7.5.5"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7.1"
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "schema-sync"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # `preserve_order` keeps columns and API operations in the order they are declared.
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1 = "0.11.0"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["net", "signal", "rt", "time"] }
+tokio = { version = "1.54.1", features = ["net", "signal", "rt", "sync", "time"] }
 tower-http = { version = "0.7.1", features = ["cors"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3"

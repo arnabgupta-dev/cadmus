@@ -182,9 +182,45 @@ pub(crate) mod group_permission {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// The `auth_identity` entity: which account each login through another site belongs to.
+pub mod identity {
+    use sea_orm::entity::prelude::*;
+
+    /// One account at another site, linked to one account here.
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "auth_identity")]
+    pub struct Model {
+        /// Primary key.
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        /// The account here.
+        #[sea_orm(indexed)]
+        pub user_id: i32,
+        /// The login method's name, e.g. `google`.
+        #[sea_orm(unique_key = "auth_identity_provider_subject")]
+        pub provider: String,
+        /// The other site's permanent identifier for the person.
+        #[sea_orm(unique_key = "auth_identity_provider_subject")]
+        pub subject: String,
+        /// The address the other site last gave.
+        pub email: Option<String>,
+        /// When the link was made.
+        pub date_linked: DateTimeUtc,
+        /// When it was last used to log in.
+        pub last_used: Option<DateTimeUtc>,
+    }
+
+    /// No relations.
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// Registers every account table with `migrate`.
 pub(crate) fn register_schema(builder: SchemaBuilder) -> SchemaBuilder {
     builder
+        .register(identity::Entity)
         .register(user::Entity)
         .register(group::Entity)
         .register(membership::Entity)
@@ -577,8 +613,172 @@ pub(crate) async fn delete_user(db: &DatabaseConnection, id: i32) -> Result<(), 
         .filter(user_permission::Column::UserId.eq(id))
         .exec(&txn)
         .await?;
+    identity::Entity::delete_many()
+        .filter(identity::Column::UserId.eq(id))
+        .exec(&txn)
+        .await?;
     txn.commit().await?;
     Ok(())
+}
+
+/// The other sites an account logs in through, oldest link first.
+pub(crate) async fn user_identities(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<Vec<identity::Model>, AdminError> {
+    Ok(identity::Entity::find()
+        .filter(identity::Column::UserId.eq(user_id))
+        .order_by_asc(identity::Column::Id)
+        .all(db)
+        .await?)
+}
+
+/// Removes one link between an account and another site.
+pub(crate) async fn unlink_identity(
+    db: &DatabaseConnection,
+    user_id: i32,
+    identity_id: i32,
+) -> Result<(), AdminError> {
+    identity::Entity::delete_many()
+        .filter(identity::Column::Id.eq(identity_id))
+        .filter(identity::Column::UserId.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// The account someone who logged in through another site gets, or the message saying why
+/// there is none:
+///
+/// 1. the account this identity was linked to before;
+/// 2. otherwise the account with the address the site vouches for, which is then linked;
+/// 3. otherwise a new account, if [`crate::settings::Signup`] allows the address.
+pub(crate) async fn resolve_identity(
+    db: &DatabaseConnection,
+    methods: &crate::oauth::Methods,
+    label: &str,
+    found: &crate::oauth::Identity,
+) -> Result<Result<user::Model, String>, AdminError> {
+    let now = chrono::Utc::now();
+    let link = identity::Entity::find()
+        .filter(identity::Column::Provider.eq(found.provider.as_str()))
+        .filter(identity::Column::Subject.eq(found.subject.as_str()))
+        .one(db)
+        .await?;
+    if let Some(link) = link {
+        if let Some(account) = user::Entity::find_by_id(link.user_id).one(db).await? {
+            let mut link: identity::ActiveModel = link.into();
+            link.email = Set(found.email.clone());
+            link.last_used = Set(Some(now));
+            link.update(db).await?;
+            return Ok(Ok(account));
+        }
+        // The account was removed some other way; forget the link.
+        identity::Entity::delete_by_id(link.id).exec(db).await?;
+    }
+
+    let Some(email) = found
+        .email
+        .as_deref()
+        .filter(|_| found.email_verified)
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| email.contains('@'))
+    else {
+        return Ok(Err(format!(
+            "{label} did not confirm an e-mail address for this account, so it cannot be              matched to an account here."
+        )));
+    };
+    let existing = user::Entity::find()
+        .filter(user::Column::Email.eq(email.as_str()))
+        .one(db)
+        .await?;
+    let account = match existing {
+        Some(account) => account,
+        None if methods.signup_allows(&email) => {
+            signup(db, &email, found, &methods.signup_groups).await?
+        }
+        None => {
+            return Ok(Err(format!(
+                "No account here uses {email}. Ask an administrator to add you."
+            )));
+        }
+    };
+    identity::ActiveModel {
+        user_id: Set(account.id),
+        provider: Set(found.provider.clone()),
+        subject: Set(found.subject.clone()),
+        email: Set(Some(email)),
+        date_linked: Set(now),
+        last_used: Set(Some(now)),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+    Ok(Ok(account))
+}
+
+/// Creates the account of someone who logged in through another site for the first time:
+/// active staff without permissions of its own, in `groups`, with a password nobody knows.
+async fn signup(
+    db: &DatabaseConnection,
+    email: &str,
+    found: &crate::oauth::Identity,
+    groups: &[String],
+) -> Result<user::Model, AdminError> {
+    // The address is the username, unless an older account already has that name.
+    let mut username = email.to_owned();
+    let mut suffix = 2;
+    while find_account(db, &username).await?.is_some() {
+        username = format!("{email}-{suffix}");
+        suffix += 1;
+    }
+    let unguessable: String = rand::random::<[u8; 32]>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let password_hash = hash_password_async(&unguessable).await?;
+    let txn = db.begin().await?;
+    let account = user::ActiveModel {
+        username: Set(username),
+        password_hash: Set(password_hash),
+        totp_secret: Set(None),
+        is_active: Set(true),
+        is_staff: Set(true),
+        is_superuser: Set(false),
+        totp_last_step: Set(None),
+        email: Set(Some(email.to_owned())),
+        first_name: Set(found.first_name.clone()),
+        last_name: Set(found.last_name.clone()),
+        phone: Set(None),
+        last_login: Set(None),
+        date_joined: Set(Some(chrono::Utc::now())),
+        ..Default::default()
+    }
+    .insert(&txn)
+    .await?;
+    for name in groups {
+        match group::Entity::find()
+            .filter(group::Column::Name.eq(name.as_str()))
+            .one(&txn)
+            .await?
+        {
+            Some(group) => {
+                membership::ActiveModel {
+                    user_id: Set(account.id),
+                    group_id: Set(group.id),
+                    ..Default::default()
+                }
+                .insert(&txn)
+                .await?;
+            }
+            None => {
+                tracing::warn!(group = %name, "auth.signup_groups names a group that does not exist")
+            }
+        }
+    }
+    txn.commit().await?;
+    tracing::info!(username = %account.username, provider = %found.provider, "account created at first login");
+    Ok(account)
 }
 
 /// Creates (`id == None`) or updates a group and replaces its permissions.

@@ -152,6 +152,12 @@ impl App {
             .totp_required(auth.totp_required)
             .cookie_secure(auth.cookie_secure)
             .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1));
+        auth_config = auth_config.with_methods(crate::oauth::Methods::new(
+            auth.methods,
+            auth.signup,
+            auth.signup_groups,
+            server.public_url.as_deref(),
+        )?);
         if let Some(header) = server.client_ip_header.as_deref().filter(|h| !h.is_empty()) {
             auth_config = auth_config
                 .client_ip_header(header)
@@ -255,6 +261,7 @@ impl App {
         let _ = dotenvy::dotenv();
         let url = std::env::var("DATABASE_URL")
             .map_err(|_| AdminError::Config("DATABASE_URL is not set".into()))?;
+        check_database_url("DATABASE_URL", &url)?;
         let db = Database::connect(pool_options(url)?).await?;
         let uploads = Uploads::from_env(db.clone())?;
         let mut app = Self::new(db, AuthConfig::from_env()?).settings(UiSettings::from_env()?);
@@ -556,12 +563,38 @@ impl App {
                 email,
                 password_stdin,
             } => {
-                let password = read_password(password_stdin)?;
+                // Without password login the account logs in through another site, matched by
+                // its e-mail address, so it gets a password nobody knows.
+                let methods = &self.auth.methods;
+                let password = if methods.password || password_stdin {
+                    read_password(password_stdin)?
+                } else {
+                    if email.is_none() {
+                        return Err(AdminError::BadInput {
+                            field: "email".into(),
+                            message: "password login is turned off, so give the address the \
+                                      account logs in with: --email you@example.com"
+                                .into(),
+                        });
+                    }
+                    rand::random::<[u8; 32]>()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect()
+                };
                 create_superuser(&self.db, &username, &password).await?;
                 if let Some(email) = email {
                     set_email(&self.db, &username, &email).await?;
                 }
                 println!("created superuser `{username}`");
+                if !methods.password {
+                    let names: Vec<&str> =
+                        methods.providers.iter().map(|p| p.label.as_str()).collect();
+                    println!(
+                        "it logs in with {} using that e-mail address",
+                        names.join(" or ")
+                    );
+                }
                 Ok(())
             }
             Command::Changepassword {
@@ -656,6 +689,7 @@ fn check_settings(settings: &Settings) -> Result<(), AdminError> {
                 .into(),
         ));
     }
+    check_database_url("database.url", &settings.database.url)?;
     AuthConfig::new(settings.secret_key.clone()).map_err(|e| setting_error("secret_key", e))?;
     settings.admin.ui()?;
     base_path(Some(settings.admin.path.clone()), "/admin")
@@ -665,6 +699,34 @@ fn check_settings(settings: &Settings) -> Result<(), AdminError> {
         server::parse_origins(origin).map_err(|e| setting_error("server.cors_origins", e))?;
     }
     Ok(())
+}
+
+/// Checks that the database `url` names is one this build can talk to: the drivers are
+/// Cargo features, chosen when the project is compiled.
+fn check_database_url(setting: &str, url: &str) -> Result<(), AdminError> {
+    let scheme = url
+        .split_once(':')
+        .map_or("", |(scheme, _)| scheme)
+        .to_ascii_lowercase();
+    let (feature, built) = match scheme.as_str() {
+        "sqlite" => ("sqlite", cfg!(feature = "sqlite")),
+        "postgres" | "postgresql" => ("postgres", cfg!(feature = "postgres")),
+        "mysql" | "mariadb" => ("mysql", cfg!(feature = "mysql")),
+        _ => {
+            return Err(AdminError::Config(format!(
+                "{setting}: `{scheme}` is not a supported database; use sqlite://, \
+                 postgres:// or mysql:// (MariaDB too)"
+            )));
+        }
+    };
+    if built {
+        return Ok(());
+    }
+    Err(AdminError::Config(format!(
+        "{setting} is a {feature} address, but heraapi was built without its `{feature}` \
+         feature. In Cargo.toml: heraapi = {{ ..., default-features = false, features = \
+         [\"{feature}\"] }}"
+    )))
 }
 
 /// Prefixes a configuration error with the setting it is about.

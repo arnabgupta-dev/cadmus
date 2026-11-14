@@ -151,12 +151,74 @@ fn pk_name(resource: &dyn Resource) -> Option<&str> {
 
 // ---- login -------------------------------------------------------------------------------
 
+/// A provider's button on the login page.
+#[derive(Serialize)]
+struct LoginButton<'a> {
+    name: &'a str,
+    label: &'a str,
+}
+
+/// What the login page shows: the password form, provider buttons, or the code step.
+fn login_context(state: &AdminState, error: Option<String>, code_step: bool) -> Value {
+    let methods = &state.auth.methods;
+    let buttons: Vec<LoginButton<'_>> = methods
+        .providers
+        .iter()
+        .map(|p| LoginButton {
+            name: &p.name,
+            label: &p.label,
+        })
+        .collect();
+    context! {
+        totp_required => state.auth.totp_required,
+        password_login => methods.password,
+        providers => Serde(buttons),
+        code_step => code_step,
+        error => error,
+    }
+}
+
+/// The login page with a message, e.g. after a refused login through a provider.
+pub(crate) fn login_error(
+    state: &AdminState,
+    status: StatusCode,
+    message: String,
+) -> Result<Response, AdminError> {
+    let page = render(
+        state,
+        "login.html",
+        None,
+        login_context(state, Some(message), false),
+    )?;
+    Ok((status, page).into_response())
+}
+
+/// The page that asks for the authenticator code after a login through a provider.
+pub(crate) fn code_form(
+    state: &AdminState,
+    status: StatusCode,
+    error: Option<String>,
+) -> Result<Response, AdminError> {
+    let page = render(state, "login.html", None, login_context(state, error, true))?;
+    Ok((status, page).into_response())
+}
+
+/// The admin session cookie.
+pub(crate) fn session_cookie(state: &AdminState, token: String) -> Cookie<'static> {
+    Cookie::build((COOKIE, token))
+        .path(state.base.clone())
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .secure(state.auth.cookie_secure)
+        .build()
+}
+
 async fn login_page(State(state): Shared) -> Result<Html<String>, AdminError> {
     render(
         &state,
         "login.html",
         None,
-        context! { totp_required => state.auth.totp_required },
+        login_context(&state, None, false),
     )
 }
 
@@ -166,46 +228,39 @@ async fn login_submit(
     parts: Parts,
     Form(form): Form<auth::Credentials>,
 ) -> Result<Response, AdminError> {
+    if !state.auth.methods.password {
+        return login_error(
+            &state,
+            StatusCode::FORBIDDEN,
+            "Logging in with a password is turned off on this site.".into(),
+        );
+    }
     let attempt = auth::login(&state, &form, state.auth.client_ip(&parts)).await;
     match attempt {
         Ok(token) => {
-            let cookie = Cookie::build((COOKIE, token))
-                .path(state.base.clone())
-                .http_only(true)
-                .same_site(SameSite::Strict)
-                .secure(state.auth.cookie_secure)
-                .build();
+            let cookie = session_cookie(&state, token);
             Ok((jar.add(cookie), Redirect::to(&format!("{}/", state.base))).into_response())
         }
         Err(AdminError::Unauthorized) => {
             tracing::warn!(username = %form.username, "admin login failed");
-            let page = render(
+            login_error(
                 &state,
-                "login.html",
-                None,
-                context! {
-                    totp_required => state.auth.totp_required,
-                    error => "Invalid credentials.",
-                },
-            )?;
-            Ok((StatusCode::UNAUTHORIZED, page).into_response())
+                StatusCode::UNAUTHORIZED,
+                "Invalid credentials.".into(),
+            )
         }
         Err(AdminError::RateLimited { retry_after_secs }) => {
             let minutes = retry_after_secs.div_ceil(60);
-            let page = render(
+            let page = login_error(
                 &state,
-                "login.html",
-                None,
-                context! {
-                    totp_required => state.auth.totp_required,
-                    error => format!(
-                        "Too many attempts. Try again in {minutes} minute{}.",
-                        if minutes == 1 { "" } else { "s" }
-                    ),
-                },
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Too many attempts. Try again in {minutes} minute{}.",
+                    if minutes == 1 { "" } else { "s" }
+                ),
             )?;
             let retry = [(RETRY_AFTER, retry_after_secs.to_string())];
-            Ok((StatusCode::TOO_MANY_REQUESTS, retry, page).into_response())
+            Ok((retry, page).into_response())
         }
         Err(other) => Err(other),
     }

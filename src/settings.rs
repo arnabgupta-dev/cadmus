@@ -369,6 +369,10 @@ pub struct ServerSettings {
     /// Behind a reverse proxy, the header it puts the client's address in, e.g.
     /// `X-Forwarded-For`; login limits then count per client rather than per proxy.
     pub client_ip_header: Option<String>,
+    /// The address people reach the site at, e.g. `https://shop.example.com` (or
+    /// `http://localhost:3000` on your machine). Needed by login methods that send people to
+    /// another site and back, such as Google.
+    pub public_url: Option<String>,
 }
 
 impl Default for ServerSettings {
@@ -378,6 +382,7 @@ impl Default for ServerSettings {
             request_timeout: Some(Duration::from_secs(30)),
             cors_origins: Vec::new(),
             client_ip_header: None,
+            public_url: None,
         }
     }
 }
@@ -385,6 +390,25 @@ impl Default for ServerSettings {
 /// Login sessions and their protection.
 #[derive(Debug, Clone)]
 pub struct AuthSettings {
+    /// How people log in, in the order the login page offers them (default: password only).
+    ///
+    /// ```no_run
+    /// # use heraapi::settings::*;
+    /// # fn f() -> Result<Vec<AuthMethod>, heraapi::AdminError> { Ok(
+    /// vec![
+    ///     AuthMethod::Password,
+    ///     AuthMethod::Google(OAuthClient::from_env("GOOGLE")?),
+    ///     AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
+    /// ]
+    /// # ) }
+    /// ```
+    pub methods: Vec<AuthMethod>,
+    /// Whether someone without an account may get one by logging in through another site
+    /// (default: no, only existing accounts may log in).
+    pub signup: Signup,
+    /// Groups that accounts created by [`Signup`] are put in, by name. New accounts are staff
+    /// without permissions of their own, so these groups decide what they may do.
+    pub signup_groups: Vec<String>,
     /// How long a login lasts (default 1 hour).
     pub token_lifetime: Duration,
     /// Refuse accounts without two-factor authentication (default `false`).
@@ -401,6 +425,9 @@ pub struct AuthSettings {
 impl Default for AuthSettings {
     fn default() -> Self {
         Self {
+            methods: vec![AuthMethod::Password],
+            signup: Signup::Closed,
+            signup_groups: Vec::new(),
             token_lifetime: Duration::from_secs(3600),
             totp_required: false,
             cookie_secure: true,
@@ -408,6 +435,144 @@ impl Default for AuthSettings {
             login_lockout: Duration::from_secs(300),
         }
     }
+}
+
+/// A way to log in.
+///
+/// Logging in through another site matches the account by the e-mail address that site
+/// vouches for, and remembers the link, so later logins work even if the address changes.
+/// Each site needs an app registered with it; its *redirect URI* is
+/// `<server.public_url><admin.path>/auth/<name>/callback`, e.g.
+/// `https://shop.example.com/admin/auth/google/callback`.
+#[derive(Debug, Clone)]
+pub enum AuthMethod {
+    /// Username or e-mail address and password.
+    Password,
+    /// Sign in with Google (OpenID Connect).
+    Google(OAuthClient),
+    /// Sign in with a Microsoft account (OpenID Connect).
+    Microsoft {
+        /// The registered app.
+        client: OAuthClient,
+        /// `common` (work, school and personal accounts), `organizations`, `consumers`, or
+        /// your directory's ID to admit only its members. With one directory its e-mail
+        /// addresses are trusted; with the shared ones, only if the app is set up to send
+        /// the optional `xms_edov` claim.
+        tenant: String,
+    },
+    /// Sign in with GitHub. The account's primary, verified e-mail address is used.
+    GitHub(OAuthClient),
+    /// Log in with Facebook.
+    Facebook(OAuthClient),
+    /// Any other OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, Apple, …
+    Oidc(OidcProvider),
+}
+
+impl AuthMethod {
+    /// The name used in URLs, e.g. `google`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Password => "password",
+            Self::Google(_) => "google",
+            Self::Microsoft { .. } => "microsoft",
+            Self::GitHub(_) => "github",
+            Self::Facebook(_) => "facebook",
+            Self::Oidc(provider) => &provider.name,
+        }
+    }
+}
+
+/// An app registered with another site, which lets this one ask it who is logging in.
+#[derive(Clone)]
+pub struct OAuthClient {
+    /// The app's public identifier.
+    pub client_id: String,
+    /// The app's secret; keep it in the environment.
+    pub client_secret: String,
+}
+
+impl OAuthClient {
+    /// An app with this identifier and secret.
+    #[must_use]
+    pub fn new(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
+        Self {
+            client_id: client_id.into(),
+            client_secret: client_secret.into(),
+        }
+    }
+
+    /// Reads `<PREFIX>_CLIENT_ID` and `<PREFIX>_CLIENT_SECRET` from the environment, e.g.
+    /// `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` for `from_env("GOOGLE")`.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] naming the variable that is missing.
+    pub fn from_env(prefix: &str) -> Result<Self, AdminError> {
+        Ok(Self {
+            client_id: env(&format!("{prefix}_CLIENT_ID"))?,
+            client_secret: env(&format!("{prefix}_CLIENT_SECRET"))?,
+        })
+    }
+}
+
+// Hand-written so the secret can never reach a log line.
+impl std::fmt::Debug for OAuthClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthClient")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<hidden>")
+            .finish()
+    }
+}
+
+/// An OpenID Connect provider not built in.
+#[derive(Debug, Clone)]
+pub struct OidcProvider {
+    /// Used in URLs: lowercase letters, digits and `-`, e.g. `okta`.
+    pub name: String,
+    /// Shown on the login button: "Continue with `label`".
+    pub label: String,
+    /// The provider's issuer URL, e.g. `https://acme.okta.com`; its settings are read from
+    /// `<issuer>/.well-known/openid-configuration`.
+    pub issuer: String,
+    /// The registered app.
+    pub client: OAuthClient,
+    /// Whether the provider's e-mail addresses may be trusted when it does not say they
+    /// were verified (no `email_verified` claim). Only for providers whose users cannot
+    /// choose their own address, such as your company's directory.
+    pub trust_email: bool,
+}
+
+impl OidcProvider {
+    /// A provider named `name` (in URLs) and `label` (on the button).
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        label: impl Into<String>,
+        issuer: impl Into<String>,
+        client: OAuthClient,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            label: label.into(),
+            issuer: issuer.into(),
+            client,
+            trust_email: false,
+        }
+    }
+}
+
+/// Who may get an account by logging in through another site.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Signup {
+    /// Nobody: only existing accounts may log in (the default). Give people an account with
+    /// their e-mail address first, on the Users page.
+    #[default]
+    Closed,
+    /// People whose verified address is at one of these domains, e.g. `acme.com`.
+    Domains(Vec<String>),
+    /// Anyone with a verified address.
+    Open,
 }
 
 /// The admin's address and look.

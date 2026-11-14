@@ -39,6 +39,8 @@ pub struct AuthConfig {
     pub(crate) login_max_attempts: u32,
     pub(crate) login_lockout_secs: u64,
     pub(crate) client_ip_header: Option<HeaderName>,
+    /// How people may log in: password, other sites, or both.
+    pub(crate) methods: Arc<crate::oauth::Methods>,
 }
 
 // Hand-written so the signing secret can never reach a log line.
@@ -52,6 +54,16 @@ impl std::fmt::Debug for AuthConfig {
             .field("login_max_attempts", &self.login_max_attempts)
             .field("login_lockout_secs", &self.login_lockout_secs)
             .field("client_ip_header", &self.client_ip_header)
+            .field("password_login", &self.methods.password)
+            .field(
+                "providers",
+                &self
+                    .methods
+                    .providers
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -79,6 +91,7 @@ impl AuthConfig {
             login_max_attempts: 5,
             login_lockout_secs: 300,
             client_ip_header: None,
+            methods: Arc::new(crate::oauth::Methods::password_only()),
         })
     }
 
@@ -214,6 +227,51 @@ impl AuthConfig {
             &EncodingKey::from_secret(&self.jwt_secret),
         )
         .map_err(|e| AdminError::Config(format!("could not sign token: {e}")))
+    }
+
+    /// Sets the login methods (see [`crate::settings::AuthSettings::methods`]).
+    pub(crate) fn with_methods(mut self, methods: crate::oauth::Methods) -> Self {
+        self.methods = Arc::new(methods);
+        self
+    }
+
+    /// A key for one purpose, derived from the secret, so a token made for one purpose (such
+    /// as a login in progress) can never pass for another (such as a session).
+    fn purpose_key(&self, purpose: &str) -> Vec<u8> {
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&self.jwt_secret)
+            .expect("HMAC accepts keys of any length");
+        mac.update(b"heraapi:");
+        mac.update(purpose.as_bytes());
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    /// Signs `claims` (which must include `exp`) for `purpose`.
+    pub(crate) fn seal<T: Serialize>(
+        &self,
+        purpose: &str,
+        claims: &T,
+    ) -> Result<String, AdminError> {
+        jsonwebtoken::encode(
+            &Header::new(Algorithm::HS256),
+            claims,
+            &EncodingKey::from_secret(&self.purpose_key(purpose)),
+        )
+        .map_err(|e| AdminError::Config(format!("could not sign token: {e}")))
+    }
+
+    /// Reads claims signed by [`AuthConfig::seal`] for `purpose`, if they are unexpired.
+    pub(crate) fn open<T: serde::de::DeserializeOwned>(
+        &self,
+        purpose: &str,
+        token: &str,
+    ) -> Option<T> {
+        jsonwebtoken::decode::<T>(
+            token,
+            &DecodingKey::from_secret(&self.purpose_key(purpose)),
+            &Validation::new(Algorithm::HS256),
+        )
+        .ok()
+        .map(|data| data.claims)
     }
 
     fn verify(&self, token: &str) -> Option<Claims> {
@@ -416,6 +474,11 @@ pub(crate) async fn login(
     credentials: &Credentials,
     address: Option<IpAddr>,
 ) -> Result<String, AdminError> {
+    if !state.auth.methods.password {
+        return Err(AdminError::Forbidden(
+            "password login is turned off on this site".into(),
+        ));
+    }
     let typed = credentials.username.trim();
     // Look the account up first, so that its username and its e-mail address share one
     // attempt count; a name that matches nothing is counted as typed.

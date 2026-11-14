@@ -71,6 +71,20 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
     {% if id is not none %}<p class="muted" style="padding:0 24px 20px">{% if date_joined %}Joined {{ date_joined }}. {% endif %}{% if last_login %}Last logged in {{ last_login }}.{% else %}Has not logged in yet.{% endif %}</p>{% endif %}
   </section>
 
+  {% if identities %}
+  <section class="panel panel-pad" aria-labelledby="h-linked">
+    <h2 id="h-linked">Logs in with</h2>
+    <p class="muted">Accounts at other sites linked to this one. Removing a link makes the next login there match by e-mail address again.</p>
+    <ul class="linked">
+      {% for i in identities %}
+      <li><span><strong>{{ i.label }}</strong>{% if i.email %} · {{ i.email }}{% endif %}<br><span class="muted">Linked {{ i.linked }}{% if i.last_used %}, last used {{ i.last_used }}{% endif %}</span></span>
+        <button class="btn ghost" type="submit" form="unlink-{{ i.id }}">Remove</button></li>
+      {% endfor %}
+    </ul>
+  </section>
+  <style>.linked { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; } .linked li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }</style>
+  {% endif %}
+
   <section class="panel panel-pad" aria-labelledby="h-status">
     <h2 id="h-status">Status</h2>
     <label class="option"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}><span><strong>Active</strong><span>Can log in. Untick to lock the account out without deleting it.</span></span></label>
@@ -105,6 +119,7 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
 </form>
 {% if id is not none %}
 <form id="delete-form" method="post" action="{{ base }}/auth/users/{{ id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>
+{% for i in identities %}<form id="unlink-{{ i.id }}" method="post" action="{{ base }}/auth/users/{{ id }}/identities/{{ i.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
 <dialog id="confirm-delete" aria-labelledby="confirm-title">
   <div class="dialog-body"><h2 id="confirm-title">Delete {{ username }}?</h2><p class="muted">The account can no longer log in, and its tokens stop working at once. This cannot be undone; to lock it out for now, untick Active instead.</p></div>
   <div class="dialog-actions"><button class="btn ghost" type="button" data-cancel autofocus>Keep it</button><button class="btn solid-danger" type="submit" form="delete-form">Delete</button></div>
