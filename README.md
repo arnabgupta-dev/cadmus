@@ -1,6 +1,13 @@
 # Cadmus
 
 [![CI](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml/badge.svg)](https://github.com/arnabgupta-dev/cadmus/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/cadmus.svg)](https://crates.io/crates/cadmus)
+[![docs.rs](https://img.shields.io/docsrs/cadmus)](https://docs.rs/cadmus)
+
+**[Website and documentation](https://arnabgupta-dev.github.io/cadmus/)** ·
+[crates.io](https://crates.io/crates/cadmus) ·
+[API reference](https://docs.rs/cadmus) ·
+[Building with AI agents](https://arnabgupta-dev.github.io/cadmus/docs/ai-agents.html)
 
 **A batteries-included web framework for Rust.** Describe your data once, as a model, and
 Cadmus gives you:
@@ -38,6 +45,7 @@ databases, but details may still change between versions.
   [API documentation](#api-documentation), [databases](#databases),
   [errors and your own code](#errors-and-your-own-code), [home page](#home-page),
   [deploying](#deploying)
+- [Building with AI agents](#building-with-ai-agents)
 - [Reference](#reference): [commands](#management-commands), [settings](#all-settings),
   [migrations in detail](#migrations-in-detail)
 - [Not done yet](#not-done-yet) · [Working on Cadmus](#working-on-cadmus) ·
@@ -773,6 +781,26 @@ Responses are not compressed, on purpose: admin pages contain a security token n
 the visitor controls (the search box), which is what the BREACH attack on compressed HTTPS
 needs.
 
+## Building with AI agents
+
+The `cadmus` command includes an [MCP](https://modelcontextprotocol.io) server, so coding
+agents such as Claude Code, Cursor or VS Code's can read the documentation, create projects,
+add models and run migrations. Connect it with:
+
+```sh
+claude mcp add cadmus -- cadmus mcp                 # Claude Code
+```
+
+or, for clients with an `mcpServers` list (Claude Desktop, Cursor):
+
+```json
+{ "mcpServers": { "cadmus": { "command": "cadmus", "args": ["mcp"] } } }
+```
+
+Every project made by `cadmus new` also has an `AGENTS.md` guide, and the website offers
+[llms.txt](https://arnabgupta-dev.github.io/cadmus/llms.txt). Details:
+[Building with AI agents](https://arnabgupta-dev.github.io/cadmus/docs/ai-agents.html).
+
 ## Reference
 
 ### Management commands
@@ -803,6 +831,7 @@ And the `cadmus` command:
 | `cadmus new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project |
 | `cadmus generate model NAME field:type ...` | add a model to the project in the current folder |
 | `cadmus secret` | print a new secret key |
+| `cadmus mcp` | serve the MCP protocol for AI agents |
 
 ### All settings
 

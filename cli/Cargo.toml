@@ -1,10 +1,11 @@
 [package]
 name = "cadmus-cli"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "The `cadmus` command: creates Cadmus projects and models"
 license = "MIT"
 repository = "https://github.com/arnabgupta-dev/cadmus"
+homepage = "https://arnabgupta-dev.github.io/cadmus/"
 readme = "../README.md"
 keywords = ["axum", "sea-orm", "admin", "generator", "cli"]
 categories = ["command-line-utilities", "web-programming"]
@@ -16,3 +17,4 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 rand = "0.10"
+serde_json = "1"

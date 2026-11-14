@@ -16,6 +16,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod docs;
+mod mcp;
+
 /// The framework version generated projects ask for: this generator's own `major.minor`, as
 /// the two are released together.
 fn framework_version() -> String {
@@ -61,6 +64,9 @@ enum Command {
     },
     /// Print a random value suitable for SECRET_KEY.
     Secret,
+    /// Serve the Model Context Protocol over standard input and output, so AI coding agents
+    /// can read the documentation and create projects, models and migrations.
+    Mcp,
 }
 
 /// A database the framework has a driver for.
@@ -106,13 +112,16 @@ fn main() -> ExitCode {
         Command::Generate {
             what: Generate::Model { name, fields },
         } => generate_model(Path::new("."), &name, &fields),
-        Command::Secret => {
-            println!("{}", secret());
-            Ok(())
-        }
+        Command::Secret => Ok(secret()),
+        Command::Mcp => mcp::serve().map(|()| String::new()),
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(report) => {
+            if !report.is_empty() {
+                println!("{report}");
+            }
+            ExitCode::SUCCESS
+        }
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::FAILURE
@@ -144,7 +153,7 @@ fn new_project(
     name: &str,
     framework_path: Option<&Path>,
     database: Database,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name
             .chars()
@@ -277,22 +286,62 @@ PUBLIC_URL=http://localhost:3000
         &root.join(".env"),
         &env_example.replace("SECRET_KEY=", &format!("SECRET_KEY={}", secret())),
     )?;
+    write_new(&root.join("AGENTS.md"), &agents_guide(name))?;
     write_new(
         &root.join(".gitignore"),
         "/target\n.env\n*.sqlite3\n/media\n",
     )?;
 
-    println!("created {}", root.display());
-    println!("next:");
-    println!("  cd {name}");
-    println!("  cadmus generate model Post title:string body:text published:bool");
-    println!("  cargo run -- makemigrations");
-    println!("  cargo run -- migrate");
-    println!("  cargo run -- createsuperuser --username admin");
-    println!(
-        "  cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs"
-    );
-    Ok(())
+    Ok(format!(
+        "created {}\n\
+         next:\n  \
+         cd {name}\n  \
+         cadmus generate model Post title:string body:text published:bool\n  \
+         cargo run -- makemigrations\n  \
+         cargo run -- migrate\n  \
+         cargo run -- createsuperuser --username admin\n  \
+         cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs",
+        root.display()
+    ))
+}
+
+/// The generated `AGENTS.md`: how to work on the project, for AI coding agents.
+fn agents_guide(name: &str) -> String {
+    format!(
+        r#"# {name}
+
+A [Cadmus](https://arnabgupta-dev.github.io/cadmus/) project: a Rust web app where each model
+gets a database table, admin pages and REST API endpoints.
+
+## Layout
+
+- `src/models/`: one file per model (a SeaORM entity). `mod.rs` registers each model with its
+  admin options (`ModelOptions`); keep the two `// cadmus:` marker comments in it.
+- `src/migrations/`: written by `makemigrations`. Never edit a migration that has been applied;
+  make a new one.
+- `src/settings.rs`: every setting. Secrets come from `.env`, which is not in git.
+- `src/routes.rs`: your own axum routes, next to the generated ones.
+
+## Workflow
+
+1. Add a model: `cadmus generate model Book title:string isbn:string? author:references`
+   (generate a referenced model before the models that point to it). Field types: string,
+   text, int, bigint, float, bool, datetime, date, json, file, references; `?` makes a field
+   optional.
+2. Or edit a model file by hand. Mark a renamed field `#[sea_orm(renamed_from = "old_name")]`
+   so its data is kept.
+3. `cargo run -- makemigrations --no-input`, then `cargo run -- migrate`.
+4. `cargo run -- check` validates the settings; `cargo build` must pass with no warnings.
+5. `cargo run -- serve` starts the site: admin at /admin, API documentation at /api/docs.
+
+## Documentation
+
+- Guides: https://arnabgupta-dev.github.io/cadmus/docs/
+- Everything in one file: https://arnabgupta-dev.github.io/cadmus/llms-full.txt
+- API reference: https://docs.rs/cadmus
+- With the MCP server (`cadmus mcp`), search the docs with the `docs_search` tool.
+"#
+    )
 }
 
 /// The generated `src/settings.rs`.
@@ -627,7 +676,7 @@ impl ActiveModelBehavior for ActiveModel {{}}
     )
 }
 
-fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), String> {
+fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<String, String> {
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         && name.chars().all(|c| c.is_ascii_alphanumeric());
     if !valid {
@@ -693,13 +742,15 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<(), S
     write_new(&file, &render_model(&module, &parsed))?;
     std::fs::write(&index, updated).map_err(|e| format!("{}: {e}", index.display()))?;
 
-    println!("created {}", file.display());
-    println!("registered {name} in src/models/mod.rs");
+    let mut report = format!(
+        "created {}\nregistered {name} in src/models/mod.rs\n",
+        file.display()
+    );
     if !files.is_empty() {
-        println!("file fields need uploads: set uploads.storage_url in src/settings.rs");
+        report.push_str("file fields need uploads: set uploads.storage_url in src/settings.rs\n");
     }
-    println!("next: cargo run -- makemigrations && cargo run -- migrate");
-    Ok(())
+    report.push_str("next: cargo run -- makemigrations && cargo run -- migrate");
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -860,6 +911,7 @@ mod tests {
             "src/models/mod.rs",
             "src/settings.rs",
             "src/migrations/mod.rs",
+            "AGENTS.md",
             ".env",
             ".env.example",
             ".gitignore",

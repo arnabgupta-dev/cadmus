@@ -797,12 +797,7 @@ impl App {
         // Connection addresses are what the login limiter counts attempts by.
         let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
         axum::serve(listener, service)
-            .with_graceful_shutdown(async {
-                // If the signal handler cannot be installed, keep serving rather than exit.
-                if tokio::signal::ctrl_c().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            })
+            .with_graceful_shutdown(shutdown_signal())
             .await?;
         Ok(())
     }
@@ -1059,6 +1054,30 @@ impl App {
             }
         }
     }
+}
+
+/// Finishes when the server should stop: on Ctrl-C, or on the termination signal that
+/// `docker stop`, systemd and Kubernetes send. Requests in progress then complete.
+async fn shutdown_signal() {
+    // If a handler cannot be installed, keep serving rather than exit.
+    let interrupt = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    futures_util::future::select(Box::pin(interrupt), Box::pin(terminate)).await;
+    println!("shutting down: finishing requests in progress");
 }
 
 /// Where `makemigrations` writes: `src/migrations` of the crate being run.

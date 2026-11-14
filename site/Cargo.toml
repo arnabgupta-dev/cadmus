@@ -1,0 +1,11 @@
+[package]
+name = "cadmus-site"
+version = "0.0.0"
+edition = "2024"
+description = "Builds the Cadmus website from cli/docs"
+license = "MIT"
+publish = false
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+serde_json = "1"

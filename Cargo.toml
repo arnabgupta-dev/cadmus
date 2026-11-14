@@ -1,10 +1,12 @@
 [package]
 name = "cadmus"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A batteries-included web framework for Rust: models, admin site, REST API, migrations and accounts, on axum and SeaORM"
 license = "MIT"
 repository = "https://github.com/arnabgupta-dev/cadmus"
+homepage = "https://arnabgupta-dev.github.io/cadmus/"
+documentation = "https://docs.rs/cadmus"
 readme = "README.md"
 keywords = ["web", "framework", "admin", "rest", "axum"]
 categories = ["web-programming", "web-programming::http-server", "database"]
@@ -71,4 +73,4 @@ tokio = { version = "1.54.1", features = ["full"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 [workspace]
-members = ["cli"]
+members = ["cli", "site"]
