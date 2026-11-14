@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Cadmus doesn't work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report this. The more detail you give, the faster it gets fixed.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we reproduce it?
+      description: The smallest model, settings or commands that show the problem.
+      placeholder: |
+        1. cadmus new blog
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Any error message or log lines. This box is formatted as code automatically.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Cadmus version
+      placeholder: "0.1.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options: [SQLite, PostgreSQL, MySQL, Not related to the database]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Rust version
+      placeholder: "Ubuntu 24.04, rustc 1.91"

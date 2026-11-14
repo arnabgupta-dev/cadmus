@@ -969,6 +969,13 @@ docker run -d --rm -e MYSQL_ROOT_PASSWORD=test -p 3306:3306 mysql:8.4
 TEST_DATABASE_URL=mysql://root:test@localhost:3306/mysql cargo test
 ```
 
+## Feedback
+
+Found a bug or have an idea? Open an issue:
+
+- [Report a bug](https://github.com/arnabgupta-dev/cadmus/issues/new?template=bug_report.yml)
+- [Suggest something](https://github.com/arnabgupta-dev/cadmus/issues/new?template=suggestion.yml)
+
 ## License
 
 [MIT](LICENSE). Free to use and change, commercially or otherwise. Copies must keep the
