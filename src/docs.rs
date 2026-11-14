@@ -25,10 +25,12 @@ use crate::resource::{Field, FieldKind, Resource};
 use crate::settings::UiSettings;
 use crate::uploads::FILES;
 
-const SWAGGER_JS: &str =
+pub(crate) const SWAGGER_JS: &str =
     "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js";
-const SWAGGER_CSS: &str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css";
-const REDOC_JS: &str = "https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js";
+pub(crate) const SWAGGER_CSS: &str =
+    "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css";
+pub(crate) const REDOC_JS: &str =
+    "https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js";
 
 type Extend = Arc<dyn Fn(&mut Value) + Send + Sync>;
 

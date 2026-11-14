@@ -1,7 +1,9 @@
 //! A Django-admin-style panel for axum, generated from your SeaORM entities.
 //!
 //! Register entities and the crate serves list, search, create, edit and delete pages for
-//! each one, behind password + TOTP login with JWT sessions. Look and feel
+//! each one, behind password + TOTP login with JWT sessions. A project is configured with one
+//! [`Settings`] value (see [`settings`]) and [`App::from_settings`]; the pieces below can also
+//! be put together by hand. Look and feel
 //! ([`UiSettings`]) and authentication ([`AuthConfig`], [`EnvUserStore`]) can be configured
 //! entirely from environment variables.
 //!
@@ -27,7 +29,7 @@ mod limit;
 mod resource;
 mod seaorm;
 mod server;
-mod settings;
+pub mod settings;
 mod storage;
 mod uploads;
 mod users;
@@ -47,7 +49,7 @@ pub use resource::{
     Field, FieldKind, Input, ListQuery, ModelOptions, Page, Reference, Resource, Row, WriteMode,
 };
 pub use seaorm::SeaOrmResource;
-pub use settings::{NavLink, Theme, UiSettings};
+pub use settings::{NavLink, Settings, Theme, UiSettings};
 pub use storage::{Sink, Storage};
 pub use uploads::{Progress, Uploads, file, session};
 pub use users::{

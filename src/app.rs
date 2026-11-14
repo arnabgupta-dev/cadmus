@@ -19,7 +19,7 @@ use crate::error::AdminError;
 use crate::home::{self, Home, HomeConfig};
 use crate::resource::{ModelOptions, Resource};
 use crate::seaorm::SeaOrmResource;
-use crate::settings::UiSettings;
+use crate::settings::{Settings, UiSettings};
 use crate::storage::Storage;
 use crate::uploads::Uploads;
 use crate::users::{
@@ -63,6 +63,8 @@ pub struct App {
     cors_origins: Vec<String>,
     docs: DocsConfig,
     home: HomeConfig,
+    /// `None` reads `LOG_LEVEL` when the server starts.
+    log_level: Option<tracing::Level>,
 }
 
 impl App {
@@ -86,11 +88,148 @@ impl App {
             cors_origins: Vec::new(),
             docs: DocsConfig::new(),
             home: HomeConfig::new(),
+            log_level: None,
         }
     }
 
-    /// Builds an app from the environment (a `.env` file in the working directory is loaded
-    /// first, without overriding variables that are already set).
+    /// Builds an app from the project's [`Settings`], connecting to its database. This is how
+    /// a project made by `hera new` starts:
+    ///
+    /// ```ignore
+    /// let app = App::from_settings(settings::settings()?).await?;
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] naming the first invalid setting, and [`AdminError::Db`]
+    /// if the database cannot be reached.
+    pub async fn from_settings(settings: Settings) -> Result<Self, AdminError> {
+        // Check everything that needs no connection first, so a typo is reported before a
+        // slow or failing connection attempt.
+        check_settings(&settings)?;
+        let database = &settings.database;
+        let mut options = ConnectOptions::new(database.url.clone());
+        if let Some(max) = database.max_connections {
+            options.max_connections(max);
+        }
+        if let Some(min) = database.min_connections {
+            options.min_connections(min);
+        }
+        if let Some(wait) = database.acquire_timeout {
+            options.acquire_timeout(wait);
+        }
+        let db = Database::connect(options).await?;
+        Self::with_settings(db, settings)
+    }
+
+    /// Same as [`App::from_settings`] over a connection you opened yourself;
+    /// `settings.database` is then ignored.
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] naming the first invalid setting.
+    pub fn with_settings(db: DatabaseConnection, settings: Settings) -> Result<Self, AdminError> {
+        if settings.secret_key.is_empty() {
+            return Err(AdminError::Config(
+                "secret_key is empty: set it in settings.rs, e.g. `secret_key: env(\"SECRET_KEY\")?`"
+                    .into(),
+            ));
+        }
+        let Settings {
+            secret_key,
+            database: _,
+            server,
+            auth,
+            admin,
+            api,
+            docs,
+            home,
+            uploads,
+            log_level,
+        } = settings;
+
+        let mut auth_config = AuthConfig::new(secret_key)
+            .map_err(|e| setting_error("secret_key", e))?
+            .token_ttl_secs(auth.token_lifetime.as_secs().max(1))
+            .totp_required(auth.totp_required)
+            .cookie_secure(auth.cookie_secure)
+            .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1));
+        if let Some(header) = server.client_ip_header.as_deref().filter(|h| !h.is_empty()) {
+            auth_config = auth_config
+                .client_ip_header(header)
+                .map_err(|e| setting_error("server.client_ip_header", e))?;
+        }
+
+        let ui = admin.ui()?;
+        let mut app = Self::new(db, auth_config).settings(ui);
+        app.bind = server.bind;
+        app.admin_base = Some(admin.path);
+        app.api_base = Some(api.path);
+        app.request_timeout = server.request_timeout.filter(|limit| !limit.is_zero());
+        app = app
+            .cors_origins(&server.cors_origins)
+            .map_err(|e| setting_error("server.cors_origins", e))?;
+
+        let mut docs_config = DocsConfig::new()
+            .enabled(docs.enabled)
+            .version(docs.version);
+        match (docs.username, docs.password) {
+            (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+                docs_config = docs_config.protect(username, password);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(AdminError::Config(
+                    "docs.username and docs.password must be set together".into(),
+                ));
+            }
+        }
+        if let Some(title) = docs.title {
+            docs_config = docs_config.title(title);
+        }
+        if let Some(description) = docs.description {
+            docs_config = docs_config.description(description);
+        }
+        if docs.swagger_js_url.is_some()
+            || docs.swagger_css_url.is_some()
+            || docs.redoc_js_url.is_some()
+        {
+            docs_config = docs_config.assets(
+                docs.swagger_js_url
+                    .unwrap_or_else(|| crate::docs::SWAGGER_JS.to_owned()),
+                docs.swagger_css_url
+                    .unwrap_or_else(|| crate::docs::SWAGGER_CSS.to_owned()),
+                docs.redoc_js_url
+                    .unwrap_or_else(|| crate::docs::REDOC_JS.to_owned()),
+            );
+        }
+        app.docs = docs_config;
+
+        let mut home_config = HomeConfig::new().enabled(home.enabled);
+        if let Some(title) = home.title {
+            home_config = home_config.title(title);
+        }
+        if let Some(tagline) = home.tagline {
+            home_config = home_config.tagline(tagline);
+        }
+        app.home = home_config;
+
+        if let Some(url) = uploads.storage_url.filter(|url| !url.is_empty()) {
+            let storage = Storage::from_url(&url, std::env::vars())
+                .map_err(|e| setting_error("uploads.storage_url", e))?;
+            app.uploads = Some(
+                Uploads::new(app.db.clone(), storage)
+                    .max_file_bytes(uploads.max_file_bytes)
+                    .max_chunk_bytes(
+                        usize::try_from(uploads.max_chunk_bytes).unwrap_or(usize::MAX),
+                    ),
+            );
+        }
+        app.log_level = Some(log_level);
+        Ok(app)
+    }
+
+    /// Builds an app from environment variables alone; new projects use
+    /// [`App::from_settings`] instead. A `.env` file in the working directory is loaded
+    /// first, without overriding variables that are already set.
     ///
     /// | Variable | Meaning |
     /// |---|---|
@@ -401,7 +540,7 @@ impl App {
     /// Returns whatever the chosen command fails with.
     pub async fn run(self) -> Result<(), AdminError> {
         let command = Cli::parse().command;
-        init_logging()?;
+        init_logging(self.log_level)?;
         match command {
             Command::Serve { bind } => match bind {
                 Some(address) => self.bind(address).serve().await,
@@ -503,21 +642,55 @@ impl App {
     }
 }
 
+/// The checks of [`App::with_settings`] that need no database, run before connecting.
+fn check_settings(settings: &Settings) -> Result<(), AdminError> {
+    if settings.database.url.is_empty() {
+        return Err(AdminError::Config(
+            "database.url is empty: set it in settings.rs, e.g. `url: env(\"DATABASE_URL\")?`"
+                .into(),
+        ));
+    }
+    if settings.secret_key.is_empty() {
+        return Err(AdminError::Config(
+            "secret_key is empty: set it in settings.rs, e.g. `secret_key: env(\"SECRET_KEY\")?`"
+                .into(),
+        ));
+    }
+    AuthConfig::new(settings.secret_key.clone()).map_err(|e| setting_error("secret_key", e))?;
+    settings.admin.ui()?;
+    base_path(Some(settings.admin.path.clone()), "/admin")
+        .map_err(|e| setting_error("admin.path", e))?;
+    base_path(Some(settings.api.path.clone()), "/api").map_err(|e| setting_error("api.path", e))?;
+    for origin in &settings.server.cors_origins {
+        server::parse_origins(origin).map_err(|e| setting_error("server.cors_origins", e))?;
+    }
+    Ok(())
+}
+
+/// Prefixes a configuration error with the setting it is about.
+fn setting_error(setting: &str, error: AdminError) -> AdminError {
+    match error {
+        AdminError::Config(message) => AdminError::Config(format!("{setting}: {message}")),
+        other => other,
+    }
+}
+
 /// Prints the framework's log messages (failed requests, panics, rejected logins) to standard
 /// error. Does nothing if the application has already installed a `tracing` subscriber.
 ///
 /// `LOG_LEVEL` is `error`, `warn`, `info` (default), `debug` or `trace`. SQL statements are
 /// logged from `debug` up.
-fn init_logging() -> Result<(), AdminError> {
+fn init_logging(configured: Option<tracing::Level>) -> Result<(), AdminError> {
     use tracing::Level;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let level = match std::env::var("LOG_LEVEL") {
-        Ok(text) => text.parse::<Level>().map_err(|_| {
+    let level = match (configured, std::env::var("LOG_LEVEL")) {
+        (Some(level), _) => level,
+        (None, Ok(text)) => text.parse::<Level>().map_err(|_| {
             AdminError::Config("LOG_LEVEL must be error, warn, info, debug or trace".into())
         })?,
-        Err(_) => Level::INFO,
+        (None, Err(_)) => Level::INFO,
     };
     let sql = if level >= Level::DEBUG {
         level

@@ -198,16 +198,18 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         &root.join("src/main.rs"),
         r"mod models;
 mod routes;
+mod settings;
 
 use heraapi::{AdminError, App};
 
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
-    let app = App::from_env().await?;
+    let app = App::from_settings(settings::settings()?).await?;
     models::register(app).routes(routes::router()).run().await
 }
 ",
     )?;
+    write_new(&root.join("src/settings.rs"), &settings_source(name))?;
     write_new(
         &root.join("src/routes.rs"),
         r#"//! Your own routes, served next to the generated admin and REST API.
@@ -238,35 +240,25 @@ pub fn register(app: App) -> App {{
         ),
     )?;
     let env_example = &format!(
-        r"# Copy to .env and fill in. Never commit .env.
+        r"# Secrets and values that differ between machines. Everything else is in
+# src/settings.rs. Copy to .env and fill in; never commit .env.
 DATABASE_URL={url}
-ADMIN_JWT_SECRET=
-# Set to true (the default) once you serve over HTTPS.
-ADMIN_COOKIE_SECURE=false
-ADMIN_SITE_TITLE=Administration
-# The public status page at /.
-HOME_TITLE={title}
-# Enable file uploads: file:///absolute/path, s3://bucket/prefix, az://container/prefix
-# STORAGE_URL=
-# Let a browser app on another origin call the API (comma-separated, or *).
-# CORS_ALLOWED_ORIGINS=https://app.example.com
-# API documentation is at /api/docs. Ask for a password before showing it, or turn it off.
-# DOCS_USERNAME=docs
-# DOCS_PASSWORD=
-# DOCS_ENABLED=false
-# Behind a reverse proxy, name the header it puts the client address in.
-# ADMIN_CLIENT_IP_HEADER=X-Forwarded-For
+# Signs login tokens. `hera secret` prints a new one.
+SECRET_KEY=
+# On your own machine: lets the login cookie work over plain http://.
+# Leave it unset in production.
+DEBUG=true
+# LOG_LEVEL=debug
+# Credentials for the storage backend named in settings.rs, if any:
+# AWS_ACCESS_KEY_ID=
+# AWS_SECRET_ACCESS_KEY=
 ",
         url = database.url(name),
-        title = name
     );
     write_new(&root.join(".env.example"), env_example)?;
     write_new(
         &root.join(".env"),
-        &env_example.replace(
-            "ADMIN_JWT_SECRET=",
-            &format!("ADMIN_JWT_SECRET={}", secret()),
-        ),
+        &env_example.replace("SECRET_KEY=", &format!("SECRET_KEY={}", secret())),
     )?;
     write_new(
         &root.join(".gitignore"),
@@ -283,6 +275,79 @@ HOME_TITLE={title}
         "  cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs"
     );
     Ok(())
+}
+
+/// The generated `src/settings.rs`.
+fn settings_source(name: &str) -> String {
+    format!(
+        r##"//! Project settings, like Django's settings.py.
+//!
+//! How the project behaves is decided here, in code, where the compiler checks every name.
+//! Only secrets and values that differ between machines come from the environment (`.env`
+//! on your machine, the host's variables in production), read with `env(...)`.
+//!
+//! Every field is documented: hover over it in your editor, or see the `Settings` type in
+//! the heraapi documentation. Anything left out keeps its default.
+
+use heraapi::AdminError;
+use heraapi::settings::*;
+
+pub fn settings() -> Result<Settings, AdminError> {{
+    // `DEBUG=true` in .env on your machine; unset in production.
+    let debug = env_or("DEBUG", false)?;
+
+    Ok(Settings {{
+        secret_key: env("SECRET_KEY")?,
+        database: DatabaseSettings {{
+            url: env("DATABASE_URL")?,
+            ..Default::default()
+        }},
+        server: ServerSettings {{
+            bind: env_or("APP_BIND", "127.0.0.1:3000".to_owned())?,
+            // Browser apps on other origins that may call the API:
+            // cors_origins: vec!["https://app.example.com".into()],
+            // Behind a reverse proxy, the header it puts the client's address in:
+            // client_ip_header: Some("X-Forwarded-For".into()),
+            ..Default::default()
+        }},
+        auth: AuthSettings {{
+            // The login cookie needs HTTPS, except on your own machine.
+            cookie_secure: !debug,
+            // Require two-factor authentication for every account:
+            // totp_required: true,
+            ..Default::default()
+        }},
+        admin: AdminSettings {{
+            site_title: "{name}".into(),
+            // accent_color: "#0a7f5a".into(),
+            // theme: Theme::Dark,
+            ..Default::default()
+        }},
+        docs: DocsSettings {{
+            // API documentation at /api/docs. Ask for a password before showing it:
+            // username: Some("docs".into()),
+            // password: Some(env("DOCS_PASSWORD")?),
+            // or turn it off:
+            // enabled: false,
+            ..Default::default()
+        }},
+        home: HomeSettings {{
+            // The public status page at /.
+            title: Some("{name}".into()),
+            ..Default::default()
+        }},
+        uploads: UploadSettings {{
+            // Turn on file uploads: file:///absolute/path, s3://bucket/prefix,
+            // az://container/prefix or gs://bucket/prefix.
+            // storage_url: Some("file:///var/lib/{name}/media".into()),
+            ..Default::default()
+        }},
+        log_level: env_or("LOG_LEVEL", LogLevel::INFO)?,
+        ..Default::default()
+    }})
+}}
+"##
+    )
 }
 
 /// One parsed `name:type[?]` field.
@@ -705,6 +770,7 @@ mod tests {
             "src/main.rs",
             "src/routes.rs",
             "src/models/mod.rs",
+            "src/settings.rs",
             ".env",
             ".env.example",
             ".gitignore",
@@ -713,15 +779,20 @@ mod tests {
         }
         // The real secret is only in the ignored file.
         let env = std::fs::read_to_string(root.join(".env")).unwrap();
-        let secret_line = env
-            .lines()
-            .find(|l| l.starts_with("ADMIN_JWT_SECRET="))
-            .unwrap();
-        assert_eq!(secret_line.len(), "ADMIN_JWT_SECRET=".len() + 64);
+        let secret_line = env.lines().find(|l| l.starts_with("SECRET_KEY=")).unwrap();
+        assert_eq!(secret_line.len(), "SECRET_KEY=".len() + 64);
         assert!(
             std::fs::read_to_string(root.join(".env.example"))
                 .unwrap()
-                .contains("ADMIN_JWT_SECRET=\n")
+                .contains("SECRET_KEY=\n")
+        );
+        let settings = std::fs::read_to_string(root.join("src/settings.rs")).unwrap();
+        assert!(settings.contains(r#"site_title: "blog".into(),"#));
+        assert!(settings.contains(r#"secret_key: env("SECRET_KEY")?,"#));
+        assert!(
+            std::fs::read_to_string(root.join("src/main.rs"))
+                .unwrap()
+                .contains("App::from_settings(settings::settings()?)")
         );
         assert!(
             std::fs::read_to_string(root.join(".gitignore"))

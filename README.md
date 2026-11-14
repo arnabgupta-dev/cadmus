@@ -23,7 +23,8 @@ cargo run -- serve                  # status page at /, admin at /admin, API doc
 Generated projects depend on this repository through a Cargo `git` dependency. From a local
 checkout, use `cargo install --path cli` and `hera new blog --framework-path /path/to/checkout`.
 
-`hera new` writes a `.env` with a generated signing secret (git-ignored) and a `.env.example`.
+`hera new` writes `src/settings.rs` (see [Settings](#settings)), a `.env` with the database URL
+and a generated signing secret (git-ignored), and a `.env.example`.
 `hera new blog --database postgres` (or `mysql`) sets the project up for that database instead
 of SQLite: it selects the driver and writes a matching `DATABASE_URL` to edit.
 
@@ -35,7 +36,7 @@ A project's `main.rs` is this:
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), AdminError> {
-    let app = App::from_env().await?;
+    let app = App::from_settings(settings::settings()?).await?;
     models::register(app).routes(routes::router()).run().await
 }
 ```
@@ -52,6 +53,75 @@ app.model::<post::Entity>(
         .hidden_fields(["internal_note"]),
 )
 ```
+
+## Settings
+
+Like Django's `settings.py`, a project is configured in one file, `src/settings.rs`. It is
+plain Rust, so the compiler catches a misspelt setting and your editor completes the names
+and shows what each one does. Anything left out keeps its default:
+
+```rust
+use heraapi::AdminError;
+use heraapi::settings::*;
+
+pub fn settings() -> Result<Settings, AdminError> {
+    let debug = env_or("DEBUG", false)?;
+
+    Ok(Settings {
+        secret_key: env("SECRET_KEY")?,
+        database: DatabaseSettings {
+            url: env("DATABASE_URL")?,
+            ..Default::default()
+        },
+        auth: AuthSettings {
+            cookie_secure: !debug,
+            totp_required: true,
+            ..Default::default()
+        },
+        admin: AdminSettings {
+            site_title: "Acme".into(),
+            accent_color: "#0a7f5a".into(),
+            ..Default::default()
+        },
+        docs: DocsSettings {
+            username: Some("docs".into()),
+            password: Some(env("DOCS_PASSWORD")?),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+}
+```
+
+**Secrets stay in the environment.** The database URL, the signing key and passwords are read
+with `env("NAME")?` from `.env` on your machine (loaded automatically) or the host's variables
+in production, so they never land in git. `env_or("NAME", default)?` reads an optional value
+of any type (`bool` accepts `true/false`, `1/0`, `yes/no`), and `env_opt("NAME")` gives an
+`Option<String>`. A missing or malformed variable stops start-up with its name.
+
+**Values are checked at start-up**, before connecting to the database: a mistake stops the
+server with the setting it is about, e.g. `admin.accent_color: accent colour must be #rgb or
+#rrggbb, got `red``. `cargo run -- check` runs the same checks without serving.
+
+| Section | What it holds |
+|---|---|
+| `secret_key` | Signs login tokens; at least 32 bytes (`hera secret` prints one) |
+| `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
+| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header` |
+| `auth` | `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min) |
+| `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
+| `api` | `path` (`/api`) |
+| `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
+| `home` | `enabled`, `title`, `tagline` |
+| `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
+| `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
+
+Durations are written `Duration::from_secs(600)`. Different values per machine are ordinary
+code: `bind: env_or("APP_BIND", "127.0.0.1:3000".to_owned())?`, or `if debug { … }`.
+
+What a settings value cannot hold (your own routes added to the API documentation, a custom
+account store) is set on the `App` after it is built, e.g.
+`App::from_settings(settings()?).await?.docs(DocsConfig::new().extend(...))`.
 
 ## The admin
 
@@ -71,9 +141,9 @@ system, with a toggle). It shows each account exactly what it may do:
 - **Keyboard:** <kbd>/</kbd> jumps to the search box, and every control is reachable by
   keyboard with a visible focus ring.
 
-The pages load the Fira Sans typeface from Google Fonts; set `ADMIN_WEB_FONTS=false` to use the
-system typeface and make no request to another site. `ADMIN_ACCENT_COLOR`, `ADMIN_LOGO_URL`,
-`ADMIN_THEME` and the other `ADMIN_*` settings still apply.
+The pages load the Fira Sans typeface from Google Fonts; set `admin.web_fonts: false` to use
+the system typeface and make no request to another site. The colour, logo, theme and the rest
+of the look are set in the `admin` section of [Settings](#settings).
 
 ## Home page
 
@@ -90,9 +160,9 @@ links nowhere, so it does not point visitors at the admin or the API documentati
   tools like `curl` reach the API as usual. The documentation pages under `/api` are
   exempt.
 - **Your own page:** a `/` route in `src/routes.rs` takes precedence automatically. To turn the
-  home page off entirely, set `HOME_PAGE_ENABLED=false`; do that too if your routes set their
+  home page off entirely, set `home.enabled: false`; do that too if your routes set their
   own `Router::fallback`.
-- `HOME_TITLE` (default: the site title) and `HOME_TAGLINE` set what it says.
+- `home.title` (default: the site title) and `home.tagline` set what it says.
 
 ## Relations
 
@@ -176,23 +246,27 @@ and password. Accounts with two-factor authentication get a token from `POST /ap
 and paste it under `bearer` instead.
 
 **Protecting it.** The documentation is public by default; it reveals model and field names,
-never data. To ask for a username and password first (the browser's own prompt), set both:
+never data. To ask for a username and password first (the browser's own prompt), set both in
+`src/settings.rs`, with the password in `.env`:
 
-```sh
-DOCS_USERNAME=docs
-DOCS_PASSWORD=choose-something-long
+```rust
+docs: DocsSettings {
+    username: Some("docs".into()),
+    password: Some(env("DOCS_PASSWORD")?),
+    ..Default::default()
+},
 ```
 
 These only open the documentation; they are not an account and cannot call the API. Guesses
-are limited like logins. `DOCS_ENABLED=false` removes the documentation entirely.
+are limited like logins. `enabled: false` removes the documentation entirely.
 
 - **Without the server:** `cargo run -- openapi > openapi.json` prints the document.
 - **Your own routes** are not discovered. Add them with
-  `App::docs(DocsConfig::from_env()?.extend(|doc| { doc["paths"]["/health"] = json!({...}); }))`.
-- **Title and version:** `DOCS_TITLE`, `DOCS_VERSION`, `DOCS_DESCRIPTION` (Markdown).
+  `app.docs(DocsConfig::new().extend(|doc| { doc["paths"]["/health"] = json!({...}); }))`.
+- **Title and version:** `docs.title`, `docs.version`, `docs.description` (Markdown).
 - **The viewers load from a CDN** (jsDelivr, pinned versions), so the two pages need internet
-  access in the browser. To host them yourself, set `DOCS_SWAGGER_JS_URL`,
-  `DOCS_SWAGGER_CSS_URL` and `DOCS_REDOC_JS_URL`. `openapi.json` needs nothing external.
+  access in the browser. To host them yourself, set `docs.swagger_js_url`,
+  `docs.swagger_css_url` and `docs.redoc_js_url`. `openapi.json` needs nothing external.
 
 ## Errors
 
@@ -238,7 +312,7 @@ Built in, not a plugin. Accounts live in the `auth_user` table (`DbUserStore`); 
   add a model with a `belongs_to` relation to `heraapi::user::Entity` (one profile row per
   account).
 - Optional two-factor authentication with any authenticator app (TOTP);
-  `ADMIN_TOTP_REQUIRED=true` makes it mandatory. See below.
+  `auth.totp_required: true` makes it mandatory. See below.
 - `POST /api/auth/token` with `{"username", "password", "totp"}` (JSON or a form) returns a
   JWT as `access_token`.
 - The API accepts only `Authorization: Bearer <token>`. The admin uses the same JWT in an
@@ -254,7 +328,7 @@ in (the form's code field, or `"totp"` in the token request) needs the current c
 - Turning it on or off asks for the password again.
 - Lost device: a superuser ticks "Turn it off" on the user's page, or run
   `cargo run -- totp --username U --disable`.
-- With `ADMIN_TOTP_REQUIRED=true` nobody can log in without it, so set up the first account
+- With `auth.totp_required: true` nobody can log in without it, so set up the first account
   from the terminal: `cargo run -- totp --username U` prints the QR code. Users then cannot
   turn it off themselves.
 
@@ -264,22 +338,22 @@ After 5 login attempts on one account within 5 minutes, further attempts on that
 `429 Too Many Requests` with a `Retry-After` header until the 5 minutes are over, whether or
 not the password is right. A successful login clears the count. One client address gets four
 times as many attempts across all accounts. Change the numbers with
-`ADMIN_LOGIN_MAX_ATTEMPTS` (`0` turns the limit off) and `ADMIN_LOGIN_LOCKOUT_SECS`.
+`auth.login_max_attempts` (`0` turns the limit off) and `auth.login_lockout`.
 
 - **Behind a reverse proxy**, every request appears to come from the proxy. Set
-  `ADMIN_CLIENT_IP_HEADER` to the header your proxy sets (e.g. `X-Forwarded-For`), but only
+  `server.client_ip_header` to the header your proxy sets (e.g. `X-Forwarded-For`), but only
   if the proxy always sets it; otherwise clients could choose their own address.
 - The counts are kept in memory, per process: several instances each count separately, and a
   restart clears them.
 - Someone who knows a username can keep that account locked by guessing. That is the usual
-  trade-off of per-account limits; lower `ADMIN_LOGIN_LOCKOUT_SECS` if it becomes a problem.
+  trade-off of per-account limits; shorten `auth.login_lockout` if it becomes a problem.
 
 ## Deploying
 
 A generated project is ready to run behind HTTPS as it is:
 
 - **Time limit:** a request that takes longer than 30 seconds gets `503` (code `timeout`) and
-  is abandoned. Change it with `REQUEST_TIMEOUT_SECS` (`0` for no limit). File uploads and
+  is abandoned. Change it with `server.request_timeout` (`None` for no limit). File uploads and
   downloads are exempt, and streamed responses are not cut short.
 - **Request log:** one line per request with method, path, status and duration, at `info`
   level. The query string is not logged.
@@ -287,17 +361,19 @@ A generated project is ready to run behind HTTPS as it is:
   (clickjacking), no content-type guessing, no caching of pages that needed a login, and
   admin URLs are not sent as referrer to other sites.
 - **Cross-origin access (CORS)** is off by default. To let a browser app on another origin
-  call the API, set `CORS_ALLOWED_ORIGINS=https://app.example.com` (comma-separated, or `*`).
+  call the API, set `server.cors_origins: vec!["https://app.example.com".into()]` (or `"*"`).
   Such clients use the bearer token; cookies are never accepted across origins.
 - **Graceful shutdown** on Ctrl-C.
 
 Before going live, check these:
 
-1. Serve over HTTPS and remove `ADMIN_COOKIE_SECURE=false` from `.env` (it is there for local
-   development only).
-2. Behind a reverse proxy, set `ADMIN_CLIENT_IP_HEADER` (see
-   [Login attempt limits](#login-attempt-limits)).
-3. Keep `.env` out of version control, and use a different `ADMIN_JWT_SECRET` per environment.
+1. Serve over HTTPS and leave `DEBUG` unset in production: the generated settings turn
+   `auth.cookie_secure` off only when `DEBUG=true`.
+2. Behind a reverse proxy, set `server.client_ip_header` (see
+   [Login attempt limits](#login-attempt-limits)), and `server.bind` to `0.0.0.0:3000` if
+   the proxy runs on another machine or container.
+3. Set `DATABASE_URL` and `SECRET_KEY` on the host, keep `.env` out of version control, and
+   use a different `SECRET_KEY` per environment.
 
 Responses are not compressed, on purpose: admin pages contain a CSRF token next to text the
 visitor controls (the search box), which is the situation the BREACH attack on compressed
@@ -333,7 +409,7 @@ links and buttons an account cannot use.
 
 ## File uploads
 
-Set `STORAGE_URL` to turn them on. The backend is chosen by URL:
+Set `uploads.storage_url` to turn them on. The backend is chosen by URL:
 
 | URL | Backend | Cargo feature |
 |---|---|---|
@@ -342,7 +418,7 @@ Set `STORAGE_URL` to turn them on. The backend is chosen by URL:
 | `az://container/prefix` | Azure Blob Storage | `azure` |
 | `gs://bucket/prefix` | Google Cloud Storage | `gcs` |
 
-Backend credentials use the usual variables (`AWS_ACCESS_KEY_ID`, `AWS_REGION`,
+Backend credentials are read from the environment, under the usual names (`AWS_ACCESS_KEY_ID`, `AWS_REGION`,
 `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, …).
 
 | Request | Result |
@@ -368,7 +444,16 @@ client's filename is kept only as metadata.
 In code, `Storage` (`put`, `get`, `delete`, `sink`) and `Uploads` are available for your own
 handlers.
 
-## Configuration (environment or `.env`)
+## Configuration from the environment only
+
+Projects made before `src/settings.rs` start with `App::from_env()`, which reads everything
+from environment variables. It still works; to move to settings, run `hera new` for a fresh
+`src/settings.rs`, copy it in, and replace `App::from_env()` with
+`App::from_settings(settings::settings()?)`. Rename `ADMIN_JWT_SECRET` to `SECRET_KEY` in
+`.env` (or read the old name in settings.rs).
+
+<details>
+<summary>The variables <code>App::from_env</code> reads</summary>
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -396,6 +481,10 @@ handlers.
 | `HOME_PAGE_ENABLED` | Serve the status page at `/` | `true` |
 | `HOME_TITLE`, `HOME_TAGLINE` | What the status page says | site title, none |
 
+</details>
+
+## Databases
+
 Database drivers are Cargo features: `sqlite` (default), `postgres`, `mysql`. `hera new
 --database` picks one for a new project; to switch an existing project, change the dependency
 to `heraapi = { ..., default-features = false, features = ["postgres"] }` and its
@@ -418,7 +507,7 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
 
 ## Not done yet
 
-- **Auth:** password login only for now. Planned, chosen per project in `.env`: single sign-on
+- **Auth:** password login only for now. Planned, chosen per project in `src/settings.rs`: single sign-on
   (Google, Microsoft, GitHub, Facebook and any OpenID Connect provider), e-mail magic links,
   passkeys and API keys. Also missing: per-record (row-level) permissions, recovery codes for
   two-factor authentication, and a page for users to change their own password. Login
