@@ -51,7 +51,8 @@ app.model::<post::Entity>(
         .search_fields(["title"])
         .readonly_fields(["views"])
         .hidden_fields(["internal_note"])
-        .list_filter(["published", "author_id", "created_at"]),
+        .list_filter(["published", "author_id", "created_at"])
+        .set_action("publish", "Mark as published", "published", "true"),
 )
 ```
 
@@ -59,6 +60,13 @@ app.model::<post::Entity>(
 the related rows by name for foreign keys, periods ("Past 7 days", "This month") for dates,
 the values present for other columns, and "(empty)" for nullable ones. Filters combine with
 search, and sorting and paging keep them.
+
+**Bulk actions.** Rows on a list page can be selected (one by one, or all on the page) and
+acted on together. "Delete selected" is offered to accounts that may delete; it asks first,
+and keeps rows that other rows point to, saying how many. `set_action(name, label, column,
+value)` adds an action that sets a column in every selected row, as editing them would.
+`action(name, label, |ids| async move { ... })` runs your own code with the selected primary
+keys. Both need the `change` permission; at most 1000 rows are done at a time.
 
 ## Settings
 
@@ -637,8 +645,8 @@ TEST_DATABASE_URL=postgres://postgres:test@localhost:5432/postgres \
   linking another site to an account goes by e-mail address only (no "connect" button).
   Also missing: per-record (row-level) permissions. Login limits are per process, not shared between instances. Accounts and groups are managed in
   the admin only; there is no REST API for them.
-- **Admin:** uploaded files are not editable in the admin; no filters or bulk actions; no
-  file-upload field on model forms. Relations: no many-to-many widget, no list of the rows
+- **Admin:** uploaded files are not editable in the admin; no file-upload field on model
+  forms. Relations: no many-to-many widget, no list of the rows
   that point to a record, and no search-as-you-type for long lists of related rows.
 - **Models:** single-column primary keys only; UUID, decimal, enum and array columns are
   read-only.

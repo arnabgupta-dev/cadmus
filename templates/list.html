@@ -15,6 +15,14 @@
 .filters select.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .filters .clear-filters { align-self: center; font-size: .9rem; white-space: nowrap; }
 @media (max-width: 640px) { .filters .field { max-width: none; flex-basis: calc(50% - 7px); min-width: 0; } }
+.bulkbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--sunken); }
+.bulkbar .picked { color: var(--muted); font-size: .9rem; margin-right: auto; }
+.bulkbar .picked.some { color: var(--ink); font-weight: 600; }
+.bulkbar select { min-height: 40px; max-width: 260px; }
+@media (max-width: 640px) { .bulkbar .picked { flex-basis: 100%; } .bulkbar select { flex: 1; max-width: none; min-width: 0; } }
+th.pick, td.pick { width: 44px; }
+.pick input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+tr.picked td { background: var(--accent-soft); }
 </style>
 {% endblock %}
 {% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><span class="here">{{ model.label }}</span>{% endblock %}
@@ -55,11 +63,28 @@
   </form>
   {% endif %}
 
+  {% if rows and actions %}
+  <form id="bulk-form" class="bulkbar" method="post" action="{{ base }}/{{ model.slug }}/bulk" data-bulk>
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <input type="hidden" name="back" value="{{ back }}">
+    <span class="picked" data-picked aria-live="polite">Select rows to act on several at once</span>
+    <select name="action" aria-label="Action for the selected rows" data-bulk-action>
+      <option value="">Choose an action…</option>
+      {% for a in actions %}<option value="{{ a[0] }}">{{ a[1] }}</option>{% endfor %}
+    </select>
+    <button class="btn" type="submit" data-bulk-apply disabled>Apply</button>
+  </form>
+  <dialog id="confirm-bulk-delete" aria-labelledby="bulk-title">
+    <div class="dialog-body"><h2 id="bulk-title">Delete <span data-bulk-count></span>?</h2><p class="muted">This cannot be undone. Rows that other rows point to are kept.</p></div>
+    <div class="dialog-actions"><button class="btn ghost" type="button" data-bulk-cancel autofocus>Keep them</button><button class="btn solid-danger" type="button" data-bulk-confirm>Delete</button></div>
+  </dialog>
+  {% endif %}
   {% if rows %}
   <div class="scroll">
   <table class="cards">
     <caption class="sr-only">{{ model.label }}, page {{ page }} of {{ pages }}</caption>
     <thead><tr>
+      {% if actions %}<th scope="col" class="pick"><input type="checkbox" data-pick-all aria-label="Select every row on this page"></th>{% endif %}
       {% for c in columns %}
       <th scope="col"{% if c.active == "asc" %} aria-sort="ascending"{% elif c.active == "desc" %} aria-sort="descending"{% endif %}><a href="{{ base }}/{{ model.slug }}{{ query(sort_to=c.next) }}" title="Sort by {{ c.label|lower }}"><span>{{ c.label }}</span><svg class="i" aria-hidden="true"><use href="#i-{% if c.active == "asc" %}up{% elif c.active == "desc" %}down{% else %}sort{% endif %}"/></svg></a></th>
       {% endfor %}
@@ -68,6 +93,7 @@
     <tbody>
     {% for row in rows %}
       <tr>
+        {% if actions %}<td class="pick" data-label="Select">{% if row.id is not none %}<input type="checkbox" name="ids" value="{{ row.id }}" form="bulk-form" data-pick aria-label="Select row {{ row.id }}">{% endif %}</td>{% endif %}
         {% for cell in row.cells %}<td data-label="{{ columns[loop.index0].label }}">{% if cell.link %}<a href="{{ base }}/{{ cell.link[0] }}/{{ cell.link[1]|urlencode }}">{{ cell.text }}</a>{% elif cell.flag is true %}<span class="badge on"><svg class="i i-sm" aria-hidden="true"><use href="#i-check"/></svg>Yes</span>{% elif cell.flag is false %}<span class="badge off">No</span>{% else %}{{ cell.text }}{% endif %}</td>{% endfor %}
         <td class="act">{% if row.id is not none %}<a class="row-link" href="{{ base }}/{{ model.slug }}/{{ row.id|urlencode }}">{% if can_change %}Edit{% else %}View{% endif %}</a>{% endif %}</td>
       </tr>
@@ -104,6 +130,39 @@
 {% endblock %}
 {% block scripts %}
 <script>
+(function () {
+  var form = document.querySelector("[data-bulk]");
+  if (!form) return;
+  var picks = Array.prototype.slice.call(document.querySelectorAll("[data-pick]"));
+  var all = document.querySelector("[data-pick-all]");
+  var label = form.querySelector("[data-picked]"), action = form.querySelector("[data-bulk-action]");
+  var apply = form.querySelector("[data-bulk-apply]"), dialog = document.getElementById("confirm-bulk-delete");
+  var confirmed = false;
+  function count() { return picks.filter(function (p) { return p.checked; }).length; }
+  function rows(n) { return n + (n === 1 ? " row" : " rows"); }
+  function paint() {
+    var n = count();
+    picks.forEach(function (p) { p.closest("tr").classList.toggle("picked", p.checked); });
+    label.textContent = n ? rows(n) + " selected" : "Select rows to act on several at once";
+    label.classList.toggle("some", n > 0);
+    apply.disabled = !n || !action.value;
+    if (all) { all.checked = n > 0 && n === picks.length; all.indeterminate = n > 0 && n < picks.length; }
+  }
+  picks.forEach(function (p) { p.addEventListener("change", paint); });
+  if (all) all.addEventListener("change", function () { picks.forEach(function (p) { p.checked = all.checked; }); paint(); });
+  action.addEventListener("change", paint);
+  form.addEventListener("submit", function (e) {
+    if (action.value !== "delete" || confirmed || !dialog || !dialog.showModal) return;
+    e.preventDefault();
+    dialog.querySelector("[data-bulk-count]").textContent = rows(count());
+    dialog.showModal();
+  });
+  if (dialog) {
+    dialog.querySelector("[data-bulk-cancel]").addEventListener("click", function () { dialog.close(); });
+    dialog.querySelector("[data-bulk-confirm]").addEventListener("click", function () { confirmed = true; dialog.close(); form.requestSubmit ? form.requestSubmit() : form.submit(); });
+  }
+  paint();
+})();
 document.querySelectorAll("[data-filters] select").forEach(function (s) {
   s.addEventListener("change", function () {
     // Leave out empty choices, so links stay short.

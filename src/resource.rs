@@ -1,8 +1,11 @@
 //! The `Resource` seam: what the admin needs from a model, independent of the ORM.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use serde::Serialize;
 
 use crate::error::AdminError;
@@ -84,6 +87,35 @@ pub struct Reference {
     pub column: String,
 }
 
+type ActionFn =
+    Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, Result<(), AdminError>> + Send + Sync>;
+
+/// What a bulk action does to the selected rows.
+#[derive(Clone)]
+pub(crate) enum ActionKind {
+    /// Sets one column to one value, as an edit would.
+    Set { field: String, value: String },
+    /// Runs your code with the selected primary keys.
+    Custom(ActionFn),
+}
+
+/// An action offered for the rows selected on a list page.
+#[derive(Clone)]
+pub(crate) struct BulkAction {
+    pub(crate) name: String,
+    pub(crate) label: String,
+    pub(crate) kind: ActionKind,
+}
+
+impl std::fmt::Debug for BulkAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BulkAction")
+            .field("name", &self.name)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Per-model UI customisation, in the spirit of Django's `ModelAdmin`.
 #[derive(Debug, Clone, Default)]
 pub struct ModelOptions {
@@ -95,6 +127,7 @@ pub struct ModelOptions {
     pub(crate) per_page: Option<u64>,
     pub(crate) display_field: Option<String>,
     pub(crate) list_filter: Vec<String>,
+    pub(crate) actions: Vec<BulkAction>,
 }
 
 impl ModelOptions {
@@ -174,6 +207,67 @@ impl ModelOptions {
         S: Into<String>,
     {
         self.list_filter = columns.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Offers an action for the rows selected on the list page that sets `field` to `value`
+    /// in each, as editing them would: e.g. `set_action("publish", "Mark as published",
+    /// "published", "true")`. Needs the `change` permission. "Delete selected" is always
+    /// offered to accounts that may delete.
+    #[must_use]
+    pub fn set_action(
+        mut self,
+        name: impl Into<String>,
+        label: impl Into<String>,
+        field: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.actions.push(BulkAction {
+            name: name.into(),
+            label: label.into(),
+            kind: ActionKind::Set {
+                field: field.into(),
+                value: value.into(),
+            },
+        });
+        self
+    }
+
+    /// Offers an action for the rows selected on the list page that runs `run` with their
+    /// primary keys. Needs the `change` permission. Capture what it needs, such as a
+    /// database connection:
+    ///
+    /// ```ignore
+    /// let db = app.db().clone();
+    /// ModelOptions::new().action("archive", "Archive", move |ids| {
+    ///     let db = db.clone();
+    ///     async move {
+    ///         post::Entity::update_many()
+    ///             .col_expr(post::Column::Archived, Expr::value(true))
+    ///             .filter(post::Column::Id.is_in(ids.iter().filter_map(|id| id.parse::<i32>().ok())))
+    ///             .exec(&db)
+    ///             .await?;
+    ///         Ok(())
+    ///     }
+    /// })
+    /// ```
+    #[must_use]
+    pub fn action<F, Fut>(
+        mut self,
+        name: impl Into<String>,
+        label: impl Into<String>,
+        run: F,
+    ) -> Self
+    where
+        F: Fn(Vec<String>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), AdminError>> + Send + 'static,
+    {
+        let run: ActionFn = Arc::new(move |ids| Box::pin(run(ids)));
+        self.actions.push(BulkAction {
+            name: name.into(),
+            label: label.into(),
+            kind: ActionKind::Custom(run),
+        });
         self
     }
 

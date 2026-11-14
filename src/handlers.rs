@@ -39,6 +39,7 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         .route(&format!("{b}/logout"), post(logout))
         .route(&format!("{b}/{{model}}"), get(list))
         .route(&format!("{b}/{{model}}/new"), get(new_form).post(create))
+        .route(&format!("{b}/{{model}}/bulk"), post(bulk))
         .route(
             &format!("{b}/{{model}}/{{id}}"),
             get(edit_form).post(update),
@@ -387,6 +388,13 @@ pub(crate) struct ListParams {
     /// What just happened, from a redirect after a change; see [`notice_text`].
     #[serde(default)]
     pub(crate) notice: Option<String>,
+    /// The bulk action just done, how many rows it did, and how many failed.
+    #[serde(default)]
+    pub(crate) done: Option<String>,
+    #[serde(default)]
+    pub(crate) n: Option<u64>,
+    #[serde(default)]
+    pub(crate) failed: Option<u64>,
 }
 
 /// The columns a list may be ordered by: the visible ones.
@@ -426,7 +434,9 @@ pub(crate) fn notice_text(code: Option<&str>) -> Option<&'static str> {
 }
 
 /// Query parameters of a list that are not filters.
-const LIST_PARAMS: [&str; 5] = ["page", "per_page", "q", "sort", "notice"];
+const LIST_PARAMS: [&str; 8] = [
+    "page", "per_page", "q", "sort", "notice", "done", "n", "failed",
+];
 /// The choice in a filter's dropdown that means "empty".
 const NULL_CHOICE: &str = "__null";
 /// Filter suffixes: `?views__gte=10`, `?deleted_at__isnull=true`, `?created_at__range=7d`.
@@ -760,6 +770,7 @@ async fn list(
     let mut query = list_query(&state, resource, &params);
     query.filters = parse_filters(resource, &raw, false)?;
     let filters = filter_views(&state, &session, resource, &raw).await?;
+    let actions = bulk_choices(resource, &session);
     let (filter_qs, filter_pairs) = filter_query(&raw);
     let page = match resource.list(&query).await {
         Ok(page) => page,
@@ -865,13 +876,16 @@ async fn list(
             can_change => session.can(&model, Action::Change),
             columns => Value::from(Serde(&heads)),
             sort,
-            notice => notice_text(params.notice.as_deref()),
+            notice => bulk_message(resource, &params)
+                .or_else(|| notice_text(params.notice.as_deref()).map(str::to_owned)),
             rows => Value::from(Serde(&rows)),
             total => page.total,
             page => query.page + 1,
             pages => pages,
             q => query.search.unwrap_or_default(),
             filters => Value::from(Serde(&filters)),
+            actions => Value::from(Serde(&actions)),
+            back => back_query(&raw),
             filter_qs,
             filter_pairs => Value::from(Serde(&filter_pairs)),
             filtered => !query.filters.is_empty(),
@@ -1153,4 +1167,176 @@ async fn delete(
         "{}/{model}?notice=deleted",
         state.base
     )))
+}
+
+// ---- bulk actions --------------------------------------------------------------------------
+
+/// The actions this account may run on selected rows: the model's own (needing `change`),
+/// then "Delete selected" (needing `delete`).
+fn bulk_choices(resource: &dyn Resource, session: &Session) -> Vec<(String, String)> {
+    let slug = resource.slug();
+    let mut choices = Vec::new();
+    if session.can(slug, Action::Change) {
+        choices.extend(
+            resource
+                .options()
+                .actions
+                .iter()
+                .map(|a| (a.name.clone(), a.label.clone())),
+        );
+    }
+    if session.can(slug, Action::Delete) {
+        choices.push(("delete".to_owned(), "Delete selected".to_owned()));
+    }
+    choices
+}
+
+/// The list's own query string without what a redirect adds, for returning to it.
+fn back_query(raw: &HashMap<String, String>) -> String {
+    let mut pairs: Vec<(&String, &String)> = raw
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "notice" | "done" | "n" | "failed" | "page"))
+        .collect();
+    pairs.sort();
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in pairs {
+        query.append_pair(key, value);
+    }
+    query.finish()
+}
+
+/// What a bulk action did, from the redirect after it.
+fn bulk_message(resource: &dyn Resource, params: &ListParams) -> Option<String> {
+    let name = params.done.as_deref()?;
+    let n = params.n.unwrap_or(0);
+    let failed = params.failed.unwrap_or(0);
+    let rows = |n: u64| format!("{n} {}", if n == 1 { "row" } else { "rows" });
+    let mut text = if name == "delete" {
+        format!("Deleted {}.", rows(n))
+    } else {
+        let action = resource.options().actions.iter().find(|a| a.name == name)?;
+        format!("{}: {}.", action.label, rows(n))
+    };
+    if failed > 0 {
+        text.push_str(&if name == "delete" {
+            format!(
+                " {} could not be deleted, probably because other rows point to them.",
+                rows(failed)
+            )
+        } else {
+            format!(" {} failed.", rows(failed))
+        });
+    }
+    Some(text)
+}
+
+/// The most rows one bulk action touches.
+const MAX_BULK: usize = 1000;
+
+async fn bulk(
+    State(state): Shared,
+    session: Session,
+    Path(model): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Response, AdminError> {
+    let fields: Vec<(String, String)> = url::form_urlencoded::parse(&body).into_owned().collect();
+    let value = |name: &str| {
+        fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    session.check_csrf(value(CSRF_FIELD))?;
+    let resource = state.resource(&model)?.as_ref();
+    let mut ids: Vec<String> = fields
+        .iter()
+        .filter(|(key, value)| key == "ids" && !value.is_empty())
+        .map(|(_, value)| value.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.len() > MAX_BULK {
+        return Err(AdminError::BadInput {
+            field: "ids".into(),
+            message: format!("at most {MAX_BULK} rows at a time"),
+        });
+    }
+    // Back to the same list: only its own parameters, re-encoded.
+    let back: String = {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in
+            url::form_urlencoded::parse(value("back").unwrap_or_default().as_bytes())
+        {
+            if !matches!(key.as_ref(), "notice" | "done" | "n" | "failed" | "page") {
+                query.append_pair(&key, &value);
+            }
+        }
+        query.finish()
+    };
+    let list = format!("{}/{model}", state.base);
+    let name = value("action").unwrap_or_default().to_owned();
+    if ids.is_empty() || name.is_empty() {
+        let target = if back.is_empty() {
+            list
+        } else {
+            format!("{list}?{back}")
+        };
+        return Ok(Redirect::to(&target).into_response());
+    }
+
+    let (mut done, mut failed) = (0_u64, 0_u64);
+    if name == "delete" {
+        session.require(&model, Action::Delete)?;
+        for id in &ids {
+            match resource.delete(id).await {
+                Ok(()) => done += 1,
+                Err(error) => {
+                    tracing::warn!(%model, %id, %error, "bulk delete skipped a row");
+                    failed += 1;
+                }
+            }
+        }
+        tracing::info!(%model, done, failed, username = %session.username, "bulk delete");
+    } else {
+        session.require(&model, Action::Change)?;
+        let action = resource
+            .options()
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| AdminError::BadInput {
+                field: "action".into(),
+                message: format!("`{name}` is not an action of this model"),
+            })?;
+        match &action.kind {
+            crate::resource::ActionKind::Set { field, value } => {
+                let input: Input = HashMap::from([(field.clone(), Some(value.clone()))]);
+                for id in &ids {
+                    match resource.update(id, &input, WriteMode::Patch).await {
+                        Ok(()) => done += 1,
+                        Err(error) => {
+                            tracing::warn!(%model, %id, %error, action = %name, "bulk action skipped a row");
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+            crate::resource::ActionKind::Custom(run) => match run(ids.clone()).await {
+                Ok(()) => done = ids.len() as u64,
+                Err(error) => {
+                    tracing::error!(%model, %error, action = %name, "bulk action failed");
+                    failed = ids.len() as u64;
+                }
+            },
+        }
+        tracing::info!(%model, action = %name, done, failed, username = %session.username, "bulk action");
+    }
+    let mut target = format!("{list}?");
+    if !back.is_empty() {
+        target.push_str(&back);
+        target.push('&');
+    }
+    let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+    target.push_str(&format!("done={encoded}&n={done}&failed={failed}"));
+    Ok(Redirect::to(&target).into_response())
 }

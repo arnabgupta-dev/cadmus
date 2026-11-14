@@ -352,6 +352,7 @@ impl AdminBuilder {
                     "model slug `{slug}` is registered twice"
                 )));
             }
+            check_actions(resource.as_ref())?;
         }
 
         let mut templates = minijinja::Environment::new();
@@ -393,6 +394,49 @@ impl AdminBuilder {
             }),
         })
     }
+}
+
+/// Checks a model's bulk actions: distinct names, and columns that exist and can be edited.
+fn check_actions(resource: &dyn Resource) -> Result<(), AdminError> {
+    let slug = resource.slug();
+    let actions = &resource.options().actions;
+    for (i, action) in actions.iter().enumerate() {
+        let error = |message: String| {
+            AdminError::Config(format!(
+                "model `{slug}`, action `{}`: {message}",
+                action.name
+            ))
+        };
+        let valid = !action.name.is_empty()
+            && action
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
+        if !valid || action.name == "delete" {
+            return Err(error(
+                "names use letters, digits, `_` and `-`, and `delete` is built in".into(),
+            ));
+        }
+        if actions[..i].iter().any(|other| other.name == action.name) {
+            return Err(error("listed twice".into()));
+        }
+        if let resource::ActionKind::Set { field, .. } = &action.kind {
+            let options = resource.options();
+            let editable = resource.fields().iter().any(|f| {
+                &f.name == field
+                    && f.editable
+                    && !f.primary_key
+                    && !options.readonly_fields.contains(field)
+                    && !options.hidden_fields.contains(field)
+            });
+            if !editable {
+                return Err(error(format!(
+                    "`{field}` is not a column the admin can edit"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Normalises and validates a URL prefix.
