@@ -115,6 +115,10 @@ to one of `OAuthClient::audiences`: your iOS and Android apps have their own cli
 Google, so list them (`GOOGLE_AUDIENCES=ios-id,android-id` with `OAuthClient::from_env`). If
 the app sent a `nonce` to the provider, send it too.
 
+Google's button only loads on a page whose address is listed under **Authorized JavaScript
+origins** in the OAuth client, such as `https://app.example.com`, and `http://localhost:3000`
+while you develop.
+
 **Or the code** the provider sent back to the app, which the server trades using the client
 secret. This works with every provider, and is the only way for GitHub and Facebook, which
 issue no ID tokens:
@@ -144,8 +148,11 @@ await fetch("/api/auth/github", {
 });
 ```
 
-The `redirect_uri` must be listed in `auth.app.redirect_uris` (exactly) and registered with
-the provider. Mobile apps can use their own scheme, such as `myapp://auth`.
+The `redirect_uri` must be listed in `auth.app.redirect_uris` and registered with the
+provider, both exactly. Mobile apps can use their own scheme, such as `myapp://auth`. A
+GitHub OAuth app has only one callback URL, so it cannot serve the admin and an app at once;
+see [Addresses for apps](login-methods.md#addresses-for-apps) for where each provider keeps
+these and what to do about GitHub.
 
 Either way, the account is found as for the admin: the one linked to that identity, or the
 one with the address the provider vouches for, or a new account if `signup` allows the
