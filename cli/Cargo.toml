@@ -1,6 +1,6 @@
 [package]
 name = "cadmus-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "The `cadmus` command: creates Cadmus projects and models"
 license = "MIT"

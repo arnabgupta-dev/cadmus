@@ -181,6 +181,19 @@ async fn everything_under_the_api_path_is_json() {
     let allow = reply.allow.expect("405 carries Allow");
     assert!(allow.contains("GET") && allow.contains("POST"), "{allow}");
 
+    // A login method this build leaves out is "not found", like one that is not listed.
+    #[cfg(not(feature = "oauth"))]
+    {
+        let reply = fetch(&app, "POST", "/api/auth/google", None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+        assert_eq!(reply.json()["error"]["code"], "not_found");
+    }
+    #[cfg(not(feature = "magic-link"))]
+    for path in ["/api/auth/link", "/api/auth/link/verify"] {
+        let reply = fetch(&app, "POST", path, None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+    }
+
     // Errors the API already rendered are passed through unchanged.
     let reply = fetch(&app, "GET", "/api/note", None).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);

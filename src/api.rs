@@ -106,11 +106,19 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             &format!("{b}/auth/link/verify"),
             post(crate::login_api::link_verify),
         );
+    // Without the feature the answer is still "no such login method", not whatever the
+    // model routes make of the path.
+    #[cfg(not(feature = "magic-link"))]
+    let router = router
+        .route(&format!("{b}/auth/link"), post(no_login_links))
+        .route(&format!("{b}/auth/link/verify"), post(no_login_links));
     #[cfg(feature = "oauth")]
     let router = router.route(
         &format!("{b}/auth/{{provider}}"),
         post(crate::login_api::provider),
     );
+    #[cfg(not(feature = "oauth"))]
+    let router = router.route(&format!("{b}/auth/{{provider}}"), post(no_login_method));
     router
         .route(&format!("{b}/{{model}}"), get(list).post(create))
         .route(
@@ -374,4 +382,14 @@ async fn delete(
     owned_row(resource, &session, &id).await?;
     resource.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(not(feature = "magic-link"))]
+async fn no_login_links() -> ApiError {
+    AdminError::NotFound("login links are not enabled on this site".into()).into()
+}
+
+#[cfg(not(feature = "oauth"))]
+async fn no_login_method(Path(name): Path<String>) -> ApiError {
+    AdminError::NotFound(format!("login method `{name}`")).into()
 }

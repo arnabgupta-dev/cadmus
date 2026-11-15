@@ -5,6 +5,13 @@ order: 230
 summary: What changes when a project moves to a new version of Cadmus, and what to check.
 ---
 
+## 0.2.1
+
+Nothing to change in a project. `POST /api/auth/<name>` and `/api/auth/link` now answer
+`404` when the login method's feature is not built in (0.2.0 answered `405`), the same as
+for a method that is not listed. The documentation is corrected: a GitHub OAuth app takes
+several callback URLs, so one app serves the admin and your own app.
+
 ## From 0.1 to 0.2
 
 0.2 lets the users of your own apps log in through the REST API with every login method

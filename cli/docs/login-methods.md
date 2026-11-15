@@ -85,8 +85,8 @@ fn methods() -> Result<Vec<AuthMethod>, AdminError> {
   Move the lines to reorder the buttons.
 - **The API.** Each method has its own endpoint (`POST /api/auth/token`,
   `POST /api/auth/google`, `POST /api/auth/github`, `POST /api/auth/link`, ...), so your
-  app offers whichever it wants. A method that is not listed is refused: `404`, or `405`
-  when its feature is not built in, and `403` for the password endpoint.
+  app offers whichever it wants. A method that is not listed answers `404` (the password
+  endpoint `403`).
 - **One account, many ways in.** Methods lead to the same account, not separate ones. The
   first time someone uses a site, the account is found by the address that site vouches
   for, and the site is linked to it; after that, the link alone finds it. So a person can

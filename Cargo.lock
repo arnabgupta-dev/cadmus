@@ -637,7 +637,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cadmus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ammonia",
  "argon2",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "cadmus-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "rand 0.10.3",
