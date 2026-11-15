@@ -6,7 +6,8 @@ summary: Passwords, login links by e-mail, and logging in with Google, Microsoft
 ---
 
 Each project chooses how people log in. The login page, and the REST API's login endpoints,
-offer the chosen methods, in order, and only those.
+offer the chosen methods and only those; you can offer one or
+[several together](#using-several-methods-together).
 
 ## Adding a method
 
@@ -51,6 +52,71 @@ also turns off the API's password endpoint).
 
 A method listed without its feature stops the server at startup with the line to add, for
 example `` `github` needs cadmus's `github` feature ... (or run `cadmus add github`) ``.
+
+## Using several methods together
+
+Methods combine freely: list as many as you like, and people pick one each time they log
+in. Add them in one go:
+
+```sh
+cadmus add google github magic-link smtp
+```
+
+and `methods()` offers passwords, Google, GitHub and login links:
+
+```rust
+fn methods() -> Result<Vec<AuthMethod>, AdminError> {
+    let mut methods = Vec::new();
+    methods.push(AuthMethod::Password);
+    if let Some(client) = OAuthClient::from_env_if_set("GOOGLE")? {
+        methods.push(AuthMethod::Google(client));
+    }
+    if let Some(client) = OAuthClient::from_env_if_set("GITHUB")? {
+        methods.push(AuthMethod::GitHub(client));
+    }
+    methods.push(AuthMethod::MagicLink);
+    // cadmus:methods (login methods are added above this line)
+    Ok(methods)
+}
+```
+
+- **Order.** The admin's login page shows a button per site first, in the order of
+  `methods()`, then the login-link form, then the password form, each under an "or" divider.
+  Move the lines to reorder the buttons.
+- **The API.** Each method has its own endpoint (`POST /api/auth/token`,
+  `POST /api/auth/google`, `POST /api/auth/github`, `POST /api/auth/link`, ...), so your
+  app offers whichever it wants. A method that is not listed answers `404` (the password
+  endpoint `403`).
+- **One account, many ways in.** Methods lead to the same account, not separate ones. The
+  first time someone uses a site, the account is found by the address that site vouches
+  for, and the site is linked to it; after that, the link alone finds it. So a person can
+  log in with a password on Monday, Google on Tuesday and GitHub on Wednesday, as long as
+  the sites vouch for the same address. The account's page (and
+  `GET /api/auth/me/identities`) lists the linked sites.
+- **Different addresses.** If someone's GitHub address differs from the account's, GitHub
+  finds no account, and with `signup` open it makes a second one. To avoid that, keep
+  `signup` closed (or limited to your domains) until people have linked their sites, or ask
+  them to use the same address everywhere.
+- **Accounts without a password.** An account made by a login through a site has no
+  password, so the password form does not let it in. It can set one with **Forgot
+  password** (shown when `Password` is listed, accounts are the built-in ones and
+  `public_url` is set) or a superuser can set one on its account page.
+- **Two-factor login** applies after every method alike: an account with it enters its code
+  whichever way it logged in, and `totp_required` covers them all.
+- **The same kind twice.** Each name may appear once; listing one twice stops the server at
+  startup. Several OpenID Connect providers are fine, as long as their names differ:
+
+  ```rust
+  methods.push(AuthMethod::Oidc(OidcProvider::new("okta", "Okta", okta_issuer, okta)));
+  methods.push(AuthMethod::Oidc(OidcProvider::new("gitlab", "GitLab", gitlab_issuer, gitlab)));
+  ```
+
+  Each gets its own button, its own callback (`/admin/auth/okta/callback`,
+  `/admin/auth/gitlab/callback`) and its own endpoint (`POST /api/auth/okta`). Read their
+  keys with `OAuthClient::from_env_if_set("OKTA")?` and `("GITLAB")`.
+- **Without passwords.** Remove `AuthMethod::Password` to offer only sites or login links.
+  Keep at least one method that every account can use: with none at all, the server does
+  not start.
 
 ## The addresses to register
 
