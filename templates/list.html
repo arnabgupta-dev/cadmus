@@ -129,7 +129,7 @@ tr.picked td { background: var(--accent-soft); }
 </div>
 {% endblock %}
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   var form = document.querySelector("[data-bulk]");
   if (!form) return;

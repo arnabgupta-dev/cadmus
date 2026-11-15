@@ -22,7 +22,7 @@
 </style>
 {% endblock %}
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 document.querySelectorAll("[data-invite]").forEach(function (box) {
   var password = document.getElementById("f-password"), email = document.getElementById("f-email");
   function sync() { password.required = !box.checked; password.disabled = box.checked; if (email) email.required = box.checked; }

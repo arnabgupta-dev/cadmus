@@ -88,7 +88,7 @@
   {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script>
+{% block scripts %}<script nonce="{{ csp_nonce }}">
 var e = document.querySelector("[data-focus]"); if (e) e.focus();
 document.querySelectorAll("[data-copy-codes]").forEach(function (b) {
   b.addEventListener("click", function () {

@@ -15,6 +15,19 @@ use tower::ServiceExt;
 
 mod common;
 
+/// `body` with its script nonces blanked out.
+fn without_nonce(body: &str) -> String {
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("nonce=\"") {
+        out.push_str(&rest[..at + 7]);
+        rest = &rest[at + 7..];
+        rest = &rest[rest.find('"').unwrap_or(0)..];
+    }
+    out.push_str(rest);
+    out
+}
+
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 const PASSWORD: &str = "correct horse battery";
 
@@ -226,7 +239,8 @@ async fn unknown_addresses_get_the_same_answer_and_no_message() {
     let known = post(&site.app, "/admin/login/link", "email=ada%40acme.com", None).await;
     let unknown = post(&site.app, "/admin/login/link", "email=eve%40acme.com", None).await;
     assert_eq!(known.status, unknown.status);
-    assert_eq!(known.body, unknown.body);
+    // The same page, apart from the script nonce every response gets.
+    assert_eq!(without_nonce(&known.body), without_nonce(&unknown.body));
     assert_eq!(site.outbox.count_after_a_moment().await, 1);
     assert_eq!(site.outbox.nth(0).await.to, "ada@acme.com");
 
@@ -354,7 +368,8 @@ async fn a_forgotten_password_is_reset_by_e_mail() {
     )
     .await;
     assert_eq!(known.status, StatusCode::OK);
-    assert_eq!(known.body, unknown.body);
+    // The same page, apart from the script nonce every response gets.
+    assert_eq!(without_nonce(&known.body), without_nonce(&unknown.body));
     assert_eq!(site.outbox.count_after_a_moment().await, 1);
     let email = site.outbox.nth(0).await;
     assert_eq!(email.subject, "Choose a new password for Acme");

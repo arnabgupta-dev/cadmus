@@ -56,6 +56,51 @@ async fn title(State(db): State<DatabaseConnection>, Path(id): Path<i32>) -> Api
 }
 ```
 
+## Who is calling
+
+Your routes are **public**: nothing checks a login unless you ask for one. Take
+`CurrentUser` in a handler and it answers `401` to anyone who is not logged in, and tells
+you who sent the rest. Take `Option<CurrentUser>` for a route everyone may use but accounts
+see more of.
+
+```rust
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use cadmus::{Action, ApiResult, CurrentUser};
+
+pub fn router() -> Router {
+    Router::new()
+        .route("/hello", get(|| async { "anyone can see this" }))
+        .route("/me", get(me))
+        .route("/posts/{id}/publish", post(publish))
+}
+
+// Logged in: any account.
+async fn me(user: CurrentUser) -> String {
+    format!("logged in as {}", user.username())
+}
+
+// Logged in, and allowed to change posts.
+async fn publish(user: CurrentUser) -> ApiResult<&'static str> {
+    user.require("post", Action::Change)?; // 403 if not
+    Ok("published")
+}
+```
+
+| Logged in with | How | Notes |
+|---|---|---|
+| A login token | `Authorization: Bearer <token>`, from `POST /api/auth/token` | |
+| An API key | `Authorization: Bearer cadmus_...` or `X-API-Key` | A read-only key may only make `GET` requests and only view. |
+| The admin's session cookie | sent by the browser | Only to paths under the admin (such as `/admin/reports`). Requests that change something must send `user.csrf_token()` back in an `X-CSRF-Token` header. |
+
+`CurrentUser` has `username()`, `is_superuser()`, `access()`, `can(model, action)`,
+`require(model, action)`, `require_superuser()` and `csrf_token()`. Permissions are read
+again on every request, so a deactivated account is refused at once.
+
+Being logged in is not the same as being allowed: check permissions with `require` or `can`.
+Ownership (`owned_by`) is not applied for you here either: filter on `user.username()` in
+your queries.
+
 ## Errors
 
 Every failure in Cadmus is an `AdminError`, shown in the right form for where the request

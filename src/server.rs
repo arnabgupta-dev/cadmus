@@ -1,18 +1,23 @@
 //! What the app needs around its routes to be put on the internet: a time limit per request,
-//! a line in the log per request, cross-origin access for browser clients, and the response
-//! headers that keep the admin out of frames and caches.
+//! a line in the log per request, cross-origin access for browser clients, the response
+//! headers that keep the admin out of frames and caches and its pages to their own scripts,
+//! HTTPS-only (HSTS), and compression of API responses.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::header::{
     ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION,
-    REFERRER_POLICY, RETRY_AFTER, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+    REFERRER_POLICY, RETRY_AFTER, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
+    X_FRAME_OPTIONS,
 };
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, Predicate};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AdminError;
@@ -103,6 +108,7 @@ pub(crate) async fn browser_redirect(
 /// - No framing: another site cannot show the admin inside a frame and trick a logged-in
 ///   user into clicking (clickjacking).
 /// - `same-origin` referrer: admin URLs are not sent to sites the admin links to.
+/// - `same-origin` opener: a page the admin opens cannot reach back into it.
 /// - `no-store`: pages and data that needed a login are not kept in caches.
 ///
 /// A header the handler set itself is left alone.
@@ -112,6 +118,10 @@ pub(crate) fn protect(response: &mut Response) {
         (X_FRAME_OPTIONS, "DENY"),
         (CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
         (REFERRER_POLICY, "same-origin"),
+        (
+            HeaderName::from_static("cross-origin-opener-policy"),
+            "same-origin",
+        ),
         (CACHE_CONTROL, "no-store"),
     ];
     for (name, value) in defaults {
@@ -119,6 +129,129 @@ pub(crate) fn protect(response: &mut Response) {
             .headers_mut()
             .entry(name)
             .or_insert(HeaderValue::from_static(value));
+    }
+}
+
+struct Nonce {
+    value: String,
+    used: Cell<bool>,
+}
+
+tokio::task_local! {
+    /// The current request's script nonce, while [`with_csp`] runs it.
+    static NONCE: Nonce;
+}
+
+/// The nonce a page's `<script>` tags must carry. Asking for it is what turns the policy on
+/// for the response ([`with_csp`]); outside a request it is empty.
+pub(crate) fn csp_nonce() -> String {
+    NONCE
+        .try_with(|nonce| {
+            nonce.used.set(true);
+            nonce.value.clone()
+        })
+        .unwrap_or_default()
+}
+
+/// The Content Security Policy for a page rendered with `nonce`: scripts only from the site
+/// itself and from the page's own `<script nonce>` tags, so text that slips into a page
+/// cannot run. Styles, fonts and images may come from elsewhere (Google Fonts, a logo or a
+/// stylesheet of yours, images in rich text).
+fn page_policy(nonce: &str) -> String {
+    format!(
+        "default-src 'self'; script-src 'self' 'nonce-{nonce}'; \
+         style-src 'self' 'unsafe-inline' https:; font-src 'self' https: data:; \
+         img-src * data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; \
+         frame-ancestors 'none'"
+    )
+}
+
+/// Runs the request with a fresh script nonce. A response whose page asked for it (see
+/// [`csp_nonce`]) gets the Content Security Policy that names it.
+pub(crate) async fn with_csp<F: Future<Output = Response>>(run: F) -> Response {
+    // Hex, so that it reads the same in the header and in the HTML attribute.
+    let value: String = rand::random::<[u8; 16]>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let nonce = Nonce {
+        value: value.clone(),
+        used: Cell::new(false),
+    };
+    let (mut response, used) = NONCE
+        .scope(nonce, async {
+            let response = run.await;
+            (response, NONCE.with(|nonce| nonce.used.get()))
+        })
+        .await;
+    if used && let Ok(policy) = HeaderValue::from_str(&page_policy(&value)) {
+        response
+            .headers_mut()
+            .insert(CONTENT_SECURITY_POLICY, policy);
+    }
+    response
+}
+
+/// Tells browsers to use only HTTPS for this site from now on (HSTS), unless the response
+/// says otherwise itself. Browsers ignore the header on plain-HTTP responses.
+pub(crate) async fn hsts(
+    State(value): State<HeaderValue>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .entry(STRICT_TRANSPORT_SECURITY)
+        .or_insert(value);
+    response
+}
+
+/// Marks a response as safe to compress.
+///
+/// Only REST API responses (and the admin's own script files) are. Admin pages are not: they
+/// carry a CSRF token next to text the visitor controls, which is what the BREACH attack
+/// needs. API requests carry their credentials in a header that browsers never add by
+/// themselves, so another site cannot make a browser send the many requests BREACH needs.
+#[derive(Clone, Copy)]
+pub(crate) struct Compressible;
+
+/// Marks the REST API's responses [`Compressible`], except file downloads: those are often
+/// compressed already, and may be large.
+pub(crate) async fn mark_api(
+    State(api_base): State<Arc<str>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let api = path
+        .strip_prefix(&*api_base)
+        .is_some_and(|rest| rest.starts_with('/') && !rest.ends_with("/content"));
+    let mut response = next.run(request).await;
+    if api {
+        response.extensions_mut().insert(Compressible);
+    }
+    response
+}
+
+/// Compresses responses marked [`Compressible`] with gzip or Brotli, as the client accepts.
+/// Tiny bodies, images and event streams are left alone.
+pub(crate) fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .gzip(true)
+        .br(true)
+        .compress_when(DefaultPredicate::new().and(Marked))
+}
+
+#[derive(Clone, Copy)]
+struct Marked;
+
+impl Predicate for Marked {
+    fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+    where
+        B: axum::body::HttpBody,
+    {
+        response.extensions().get::<Compressible>().is_some()
     }
 }
 

@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
+use axum_extra::extract::CookieJar;
 use minijinja::value::Serde;
 use minijinja::{Value, context};
 use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder};
@@ -18,7 +19,7 @@ use crate::AdminState;
 use crate::access::{Access, Action};
 use crate::auth::{self, Session};
 use crate::error::AdminError;
-use crate::handlers::{notice_text, render};
+use crate::handlers::{notice_text, render, session_cookie};
 use crate::uploads::FILES;
 use crate::users::{self, AccountInput, group, user};
 
@@ -1054,6 +1055,7 @@ async fn password_page(
 async fn password_change(
     State(state): Shared,
     session: Session,
+    jar: CookieJar,
     body: Bytes,
 ) -> Result<Response, AdminError> {
     let form = Submitted::parse(&body);
@@ -1083,11 +1085,20 @@ async fn password_change(
         Err(other) => return Err(other),
     }
     tracing::info!(username = %session.username, "password changed by its owner");
-    Ok(Redirect::to(&format!(
+    // The change ends every login made with the old password, this one included: carry on
+    // with a new one. Other browsers and apps have to log in again.
+    let jar = match state.users.find(&session.username).await? {
+        Some(user) => jar.add(session_cookie(
+            &state,
+            state.auth.issue(&user.username, &user.password_hash)?,
+        )),
+        None => jar,
+    };
+    let next = Redirect::to(&format!(
         "{}/auth/password?notice=password_changed",
         state.base
-    ))
-    .into_response())
+    ));
+    Ok((jar, next).into_response())
 }
 
 /// Replaces the account's recovery codes. Confirmed with a current authenticator code rather

@@ -95,7 +95,8 @@ cadmus generate model Post title:string body:text published:bool views:int
 
 This writes `src/models/post.rs` and registers it. The field types are `string`, `text`,
 `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`, `decimal` (an exact number such
-as a price), `uuid`, `file` (an uploaded file), `references` (a link to another model, see
+as a price), `uuid`, `html` (formatted text such as a blog post, edited with a rich-text
+editor and cleaned of scripts before it is stored), `file` (an uploaded file), `references` (a link to another model, see
 [Relations](#relations)), `many` (links to any number of rows of another model, as in
 `tags:many`) and `owner` (rows belong to the account that adds them). Add `?` to make a field
 optional, as in `rating:float?`.
@@ -774,7 +775,11 @@ A generated project is ready to run behind HTTPS as it is:
 - **Request log:** one line per request with method, address, status and duration (the query
   string is left out).
 - **Protective headers** on every admin and API response: no embedding in other sites, no
-  content-type guessing, no caching of pages that needed a login.
+  content-type guessing, no caching of pages that needed a login. Admin pages also get a
+  Content Security Policy: scripts only from the site and from the page's own nonce-tagged
+  `<script>` tags.
+- **HTTPS only (HSTS)** for a year on every response (`server.hsts`; `None` to not send it).
+- **Compression** (gzip or Brotli) of REST API responses (`server.compress_api`).
 - **Cross-origin access (CORS)** is off. To let a browser app on another domain call the API,
   set `server.cors_origins: vec!["https://app.example.com".into()]` (or `"*"`). Such apps use
   a token or key; the login cookie is never accepted from another domain.
@@ -792,9 +797,10 @@ Before going live:
 4. Run `cargo run --release -- migrate` as part of each deployment, before starting the new
    version.
 
-Responses are not compressed, on purpose: admin pages contain a security token next to text
-the visitor controls (the search box), which is what the BREACH attack on compressed HTTPS
-needs.
+Admin pages are not compressed, on purpose: they contain a security token next to text the
+visitor controls (the search box), which is what the BREACH attack on compressed HTTPS needs.
+API requests carry their credentials in a header browsers never add on their own, so they
+are compressed safely.
 
 ## Building with AI agents
 
@@ -944,8 +950,8 @@ in `.env`.
 </details>
 
 **Your own account store:** accounts live in the `auth_user` table (`DbUserStore`). To use
-accounts kept elsewhere, implement the `UserStore` trait. Every account is then a superuser
-unless you implement `UserStore::access`, API keys work only if you implement
+accounts kept elsewhere, implement the `UserStore` trait. Accounts can then log in but do
+nothing until you implement `UserStore::access`, API keys work only if you implement
 `UserStore::api_key`, and the Users and Groups pages are not shown.
 
 ## Not done yet
@@ -962,7 +968,7 @@ unless you implement `UserStore::access`, API keys work only if you implement
   decimals are exact to about 15 digits.
 - **Uploads:** completing a resumable upload copies the pieces once inside the storage
   (no direct-to-S3 multipart yet), and abandoned uploads are not cleaned up automatically.
-- **Server:** no response compression (see [Deploying](#deploying)), request ids or metrics;
+- **Server:** admin pages are not compressed (see [Deploying](#deploying)); no request ids or metrics;
   add them with your own `tower` layers.
 - **API documentation:** your own routes are not discovered automatically, and the viewers
   load from a CDN rather than being bundled.

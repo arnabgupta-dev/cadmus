@@ -68,7 +68,7 @@
 </div>
 {% for k in keys %}<form id="revoke-{{ k.id }}" method="post" action="{{ base }}/auth/api-keys/{{ k.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"></form>{% endfor %}
 {% endblock %}
-{% block scripts %}<script>
+{% block scripts %}<script nonce="{{ csp_nonce }}">
 var e = document.querySelector("[data-focus]"); if (e) e.focus();
 document.querySelectorAll("[data-copy]").forEach(function (b) {
   b.addEventListener("click", function () {

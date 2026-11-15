@@ -39,6 +39,24 @@ curl -H "Authorization: Bearer eyJ..." http://localhost:3000/api/post
 `totp` is needed only for accounts with two-factor login; a recovery code works in its
 place. The endpoint also accepts a form (`application/x-www-form-urlencoded`).
 
+### When a login ends
+
+The admin cookie and login tokens are the same thing: a token signed with `SECRET_KEY`
+(HS256), which says who logged in and when. Every request checks it again against the
+account, so a login ends as soon as any of these happens:
+
+| What happens | Effect |
+|---|---|
+| The token is older than `auth.token_lifetime` (an hour by default) | refused; log in again. There are no refresh tokens. |
+| The password is changed (on the account's page, by a superuser, with `changepassword`, or through a reset link) | every login made with the old password ends, in every browser and app. Changing your own password in the admin keeps that one browser logged in. |
+| The account is deactivated, loses staff status, or is deleted | every login and API key stops working at once. |
+| Its permissions change | the next request already uses the new ones. |
+| `SECRET_KEY` changes | everyone is logged out. |
+
+**Log out** in the admin removes the cookie from that browser. A login token copied
+elsewhere keeps working until it expires: to end every login of an account at once, change
+its password (or deactivate it).
+
 ## Programs
 
 Programs running on their own have nobody to type a password or a phone code: a nightly
@@ -55,7 +73,7 @@ curl -H "X-API-Key: cadmus_..." https://example.com/api/post     # the same
 | For | a person, in an app | a program running on its own |
 | Made by | logging in with password (and two-factor code) | once, on the account's API keys page |
 | Lasts | an hour | until revoked, or 30 days / 90 days / a year / never |
-| If it leaks | change the password | revoke that one key; nothing else changes |
+| If it leaks | change the password: that ends every login of the account | revoke that one key; nothing else changes |
 | Can be limited | no | read-only |
 
 ## API keys

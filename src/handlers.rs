@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::http::header::RETRY_AFTER;
+use axum::http::header::{self, RETRY_AFTER};
 use axum::http::request::Parts;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -60,7 +60,44 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             get(file_content),
         )
         .route(&format!("{b}/{{model}}/{{id}}/delete"), post(delete))
+        .route(&format!("{b}/{QUILL_PATH}/quill.js"), get(quill_js))
+        .route(&format!("{b}/{QUILL_PATH}/quill.snow.css"), get(quill_css))
         .with_state(state)
+}
+
+/// Where the rich-text editor's files are served, under the admin. The version is in the
+/// path, so browsers may keep them for good.
+const QUILL_PATH: &str = "static/quill-2.0.3";
+
+/// One of the admin's own files, cached for a year and compressed like API responses (it
+/// holds no secrets).
+fn static_file(content_type: &'static str, body: &'static str) -> Response {
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response();
+    response
+        .extensions_mut()
+        .insert(crate::server::Compressible);
+    response
+}
+
+async fn quill_js() -> Response {
+    static_file(
+        "text/javascript; charset=utf-8",
+        include_str!("../assets/quill/quill.js"),
+    )
+}
+
+async fn quill_css() -> Response {
+    static_file(
+        "text/css; charset=utf-8",
+        include_str!("../assets/quill/quill.snow.css"),
+    )
 }
 
 /// A model as the logged-in account sees it: what it is called and what may be done to it.
@@ -119,6 +156,8 @@ pub(crate) fn render(
         // Whether to link to the Users and Groups pages.
         manages_accounts => state.accounts.is_some()
             && session.is_some_and(|s| s.access.is_superuser()),
+        // Every `<script>` carries it; see `server::with_csp`.
+        csp_nonce => crate::server::csp_nonce(),
     };
     let html = state
         .templates
@@ -763,12 +802,20 @@ fn row_label(resource: &dyn Resource, row: &Row) -> String {
         .or_else(|| {
             chosen
                 .is_none()
-                .then(|| visible_fields(resource).find(|f| f.kind == FieldKind::LongText))
+                .then(|| {
+                    visible_fields(resource)
+                        .find(|f| matches!(f.kind, FieldKind::LongText | FieldKind::Html))
+                })
                 .flatten()
         });
     field
         .map(|f| {
             let text = display(row.get(&f.name));
+            let text = if f.kind == FieldKind::Html {
+                crate::html::plain_text(&text)
+            } else {
+                text
+            };
             let line = text.lines().next().unwrap_or_default().trim().to_owned();
             if line.chars().count() > 60 || text.trim() != line {
                 format!("{}…", line.chars().take(60).collect::<String>())
@@ -1008,6 +1055,11 @@ async fn list(
                 .zip(&files)
                 .map(|((f, names), files)| {
                     let value = display(row.get(&f.name));
+                    let value = if f.kind == FieldKind::Html {
+                        crate::html::plain_text(&value)
+                    } else {
+                        value
+                    };
                     if let Some(files) = files {
                         let found = value.parse::<i32>().ok().and_then(|id| files.get(&id));
                         let row_id = pk.map(|name| display(row.get(name)));
@@ -1231,6 +1283,8 @@ fn input_value(field: &Field, value: Option<&serde_json::Value>) -> String {
             .filter(|v| !v.is_null())
             .and_then(|v| serde_json::to_string_pretty(v).ok())
             .unwrap_or_default(),
+        // Cleaned again on the way out, in case it reached the database some other way.
+        FieldKind::Html => crate::html::clean_html(&text),
         _ => text,
     }
 }
@@ -1331,7 +1385,11 @@ async fn form_fields<'a>(
                 && !made_up
                 && !matches!(
                     f.kind,
-                    FieldKind::Boolean | FieldKind::Text | FieldKind::LongText | FieldKind::List
+                    FieldKind::Boolean
+                        | FieldKind::Text
+                        | FieldKind::LongText
+                        | FieldKind::Html
+                        | FieldKind::List
                 ),
             readonly,
             choices,
@@ -1515,6 +1573,9 @@ async fn render_form(
             can_save => id.is_none() || session.can(resource.slug(), Action::Change),
             can_delete => session.can(resource.slug(), Action::Delete),
             multipart => !resource.options().file_fields.is_empty(),
+            // Loads the editor's script and styles.
+            rich_text => visible_fields(resource).any(|f| f.kind == FieldKind::Html),
+            quill => Value::from_safe_string(QUILL_PATH.to_owned()),
         },
     )
 }

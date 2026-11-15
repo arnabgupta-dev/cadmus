@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>{% block title %}{{ site.site_title }}{% endblock %}</title>
-<script>
+<script nonce="{{ csp_nonce }}">
 /* Before the first paint, so a remembered theme never flashes the other one. */
 try { var t = localStorage.getItem("cadmus-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
@@ -338,7 +338,7 @@ dialog[open] { animation: pop .18s var(--ease); }
 </main>
 {% if site.footer_text %}<footer class="footer">{{ site.footer_text }}</footer>{% endif %}
 {% endif %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   var root = document.documentElement, body = document.body;
   function dark() { var t = root.dataset.theme; return t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches); }

@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{% if id is none %}Add{% elif not can_save %}View{% else %}Edit{% endif %} · {{ model.label }} · {{ site.site_title }}{% endblock %}
 {% block head %}
+{# Before the styles below, which adapt it to the admin's colours. #}
+{% if rich_text %}<link rel="stylesheet" href="{{ base }}/{{ quill }}/quill.snow.css">{% endif %}
 <style>
 .file-current { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--sunken); min-width: 0; }
 .file-current img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--r-sm); flex: none; background: var(--surface); }
@@ -18,6 +20,25 @@ input[type=file] { padding: 8px; min-height: 44px; }
 .related li { padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .related li:first-child { border-top: 0; }
 .related .row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+{% if rich_text %}
+.ql-toolbar.ql-snow, .ql-container.ql-snow { border-color: var(--line-strong); font-family: var(--font); }
+.ql-toolbar.ql-snow { border-radius: var(--r-md) var(--r-md) 0 0; background: var(--sunken); }
+.ql-container.ql-snow { border-radius: 0 0 var(--r-md) var(--r-md); background: var(--surface); color: var(--ink); font-size: 1rem; }
+.ql-editor { min-height: 240px; line-height: 1.6; }
+.ql-editor.ql-blank::before { color: var(--muted); }
+.ql-snow .ql-stroke { stroke: var(--ink); }
+.ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill: var(--ink); }
+.ql-snow .ql-picker { color: var(--ink); }
+.ql-snow .ql-picker-options { background: var(--surface); border-color: var(--line); }
+.ql-snow.ql-toolbar button:hover .ql-stroke, .ql-snow.ql-toolbar button.ql-active .ql-stroke, .ql-snow .ql-picker-label:hover .ql-stroke { stroke: var(--accent); }
+.ql-snow.ql-toolbar button:hover .ql-fill, .ql-snow.ql-toolbar button.ql-active .ql-fill { fill: var(--accent); }
+.ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active, .ql-snow .ql-picker-label:hover, .ql-snow .ql-picker-item:hover, .ql-snow .ql-picker-item.ql-selected { color: var(--accent); }
+.ql-snow .ql-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); box-shadow: var(--shadow-lift); }
+.ql-snow .ql-tooltip input[type=text] { background: var(--bg); color: var(--ink); border-color: var(--line-strong); min-height: 0; }
+.ql-snow .ql-editor pre.ql-syntax, .ql-editor pre { background: var(--sunken); color: var(--ink); border-radius: var(--r-sm); }
+.ql-snow .ql-editor a { color: var(--accent-ink); }
+.rich-text.readonly .ql-toolbar { display: none; }
+{% endif %}
 </style>
 {% endblock %}
 {% block crumbs %}<a href="{{ base }}/">Dashboard</a><span class="sep">/</span><a href="{{ base }}/{{ model.slug }}">{{ model.label }}</a><span class="sep">/</span><span class="here">{% if id is none %}New{% else %}#{{ id }}{% endif %}</span>{% endblock %}
@@ -38,7 +59,7 @@ input[type=file] { padding: 8px; min-height: 44px; }
   <div class="fields">
   {% for f in fields %}
     {% set ro = f.readonly or locked %}
-    <div class="field{% if f.kind == "long_text" or f.kind == "json" or f.kind == "list" %} wide{% endif %}">
+    <div class="field{% if f.kind == "long_text" or f.kind == "html" or f.kind == "json" or f.kind == "list" %} wide{% endif %}">
     {% if f.kind == "boolean" and f.choices is none %}
       <div class="check-field">
         <input id="f-{{ f.name }}" name="{{ f.name }}" type="checkbox" value="true"{% if f.value == "true" or f.value == "1" %} checked{% endif %}{% if ro %} disabled{% endif %}>
@@ -64,6 +85,9 @@ input[type=file] { padding: 8px; min-height: 44px; }
           <option value="">{% if f.required %}Choose…{% else %}— none —{% endif %}</option>
           {% for c in f.choices %}<option value="{{ c.value }}"{% if c.selected %} selected{% endif %}>{{ c.label }}</option>{% endfor %}
         </select>
+      {% elif f.kind == "html" %}
+        {# A plain box of HTML without JavaScript; the editor takes its place when it loads. #}
+        <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="10" class="code" spellcheck="false" data-rich-text data-label="{{ f.label }}"{% if ro %} readonly{% endif %}>{{ f.value }}</textarea>
       {% elif f.kind == "long_text" or f.kind == "json" or f.kind == "list" %}
         <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="{% if f.kind == "json" %}8{% elif f.kind == "list" %}4{% else %}6{% endif %}"{% if f.kind == "json" or f.kind == "list" %} class="code" spellcheck="false"{% endif %}{% if f.required %} required{% endif %}{% if ro %} readonly{% endif %}>{{ f.value }}</textarea>
       {% else %}
@@ -135,5 +159,50 @@ input[type=file] { padding: 8px; min-height: 44px; }
 {% endif %}
 {% endblock %}
 {% block scripts %}
-<script>var e = document.querySelector("[data-focus]"); if (e) e.focus();</script>
+<script nonce="{{ csp_nonce }}">var e = document.querySelector("[data-focus]"); if (e) e.focus();</script>
+{% if rich_text %}
+<script nonce="{{ csp_nonce }}" src="{{ base }}/{{ quill }}/quill.js"></script>
+<script nonce="{{ csp_nonce }}">
+document.querySelectorAll("textarea[data-rich-text]").forEach(function (area) {
+  if (typeof Quill === "undefined") return;
+  var box = document.createElement("div");
+  var wrap = document.createElement("div");
+  wrap.className = "rich-text" + (area.readOnly ? " readonly" : "");
+  wrap.appendChild(box);
+  area.insertAdjacentElement("afterend", wrap);
+  area.hidden = true;
+  var quill = new Quill(box, {
+    theme: "snow",
+    readOnly: area.readOnly,
+    modules: {
+      toolbar: [
+        [{ header: [1, 2, 3, false] }],
+        ["bold", "italic", "underline", "strike"],
+        [{ list: "ordered" }, { list: "bullet" }, { indent: "-1" }, { indent: "+1" }],
+        ["blockquote", "code-block", "link", "image"],
+        [{ align: [] }],
+        ["clean"]
+      ]
+    }
+  });
+  // The stored HTML was cleaned on the server; Quill reads it without running anything.
+  quill.setContents(quill.clipboard.convert({ html: area.value }), "silent");
+  quill.root.setAttribute("aria-label", area.dataset.label);
+  quill.root.setAttribute("role", "textbox");
+  quill.root.setAttribute("aria-multiline", "true");
+  document.querySelector('label[for="' + area.id + '"]').addEventListener("click", function () { quill.focus(); });
+  // Images are linked by address rather than copied into the text.
+  quill.getModule("toolbar").addHandler("image", function () {
+    var url = window.prompt("Address of the image (https://…)");
+    if (!url) return;
+    var range = quill.getSelection(true);
+    quill.insertEmbed(range.index, "image", url.trim(), "user");
+    quill.setSelection(range.index + 1, 0, "silent");
+  });
+  area.form.addEventListener("submit", function () {
+    area.value = quill.getLength() > 1 ? quill.getSemanticHTML().replace(/&nbsp;/g, " ") : "";
+  });
+});
+</script>
+{% endif %}
 {% endblock %}

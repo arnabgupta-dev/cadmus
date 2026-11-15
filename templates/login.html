@@ -180,7 +180,7 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 document.querySelectorAll("[data-recovery]").forEach(function (b) {
   b.addEventListener("click", function () {
     var input = b.closest(".field").querySelector("input");

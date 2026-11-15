@@ -36,7 +36,11 @@ SQL for the database it runs on. `cargo run -- sqlmigrate 0002` prints that SQL.
 ## How it applies them
 
 - Each migration runs as one transaction, so a failure leaves the database as it was.
-  MySQL is the exception: it saves table changes as it goes.
+  MySQL is the exception: it saves table changes as it goes. If a migration fails halfway
+  on MySQL, look at what it changed (`sqlmigrate` shows its SQL), undo or finish that by
+  hand, then run `migrate` again (or `migrate --fake` to record it as applied).
+- Nothing stops two `migrate` runs at the same time. Run it once per deployment, not in
+  every copy of the server (see [Deploying](deploying.md#migrations)).
 - Applied migrations are recorded in the `cadmus_migration` table;
   `cargo run -- showmigrations` lists which ones this database has had.
 - The built-in tables (accounts, uploads) have migrations of their own, applied before yours.

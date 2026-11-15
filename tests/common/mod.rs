@@ -55,3 +55,22 @@ pub async fn database() -> DatabaseConnection {
     options.set_schema_search_path(schema).max_connections(4);
     Database::connect(options).await.unwrap()
 }
+
+/// What a login token carries to show which password it was issued under, as Cadmus
+/// computes it: for tests that make their own tokens.
+#[allow(dead_code)]
+pub async fn password_print(db: &DatabaseConnection, username: &str) -> String {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    use sha2::Digest;
+    let account = cadmus::user::Entity::find()
+        .filter(cadmus::user::Column::Username.eq(username))
+        .one(db)
+        .await
+        .unwrap()
+        .expect("the account exists");
+    sha2::Sha256::digest(account.password_hash.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}

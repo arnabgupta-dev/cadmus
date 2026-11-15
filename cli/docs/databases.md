@@ -38,6 +38,33 @@ database: DatabaseSettings {
 },
 ```
 
+## Behind PgBouncer
+
+[PgBouncer](https://www.pgbouncer.org) lets many copies of the server share a few
+PostgreSQL connections. Cadmus works behind it, with two settings on PgBouncer's side:
+
+```ini
+[pgbouncer]
+pool_mode = transaction            ; or session
+max_prepared_statements = 200      ; PgBouncer 1.21 or later; needed in transaction mode
+ignore_startup_parameters = extra_float_digits
+```
+
+| Pool mode | Works? |
+|---|---|
+| `session` | yes, with no other settings (but saves fewer connections) |
+| `transaction`, PgBouncer 1.21 or later, `max_prepared_statements` above 0 | yes |
+| `transaction`, `max_prepared_statements = 0` (the default) or an older PgBouncer | no: requests fail with `prepared statement "sqlx_s_1" already exists`. Turning the driver's statement cache off (`statement-cache-capacity=0` in the URL) does not help. |
+
+Without `ignore_startup_parameters`, PgBouncer refuses the connection with
+`unsupported startup parameter: extra_float_digits`.
+
+`DATABASE_URL` then points at PgBouncer. Keep `max_connections` per copy of the server
+modest (PgBouncer's `max_client_conn` must cover all copies together). Migrations work
+through PgBouncer in both modes, each in its own transaction. This was tested with
+PgBouncer 1.25 in front of PostgreSQL 17: migrations, account creation and 200 API requests
+at once over 3 server connections (`tests/pgbouncer.rs`; set `PGBOUNCER_TEST_URL` to run it).
+
 ## Smaller builds
 
 A project that only uses one database can leave the other drivers out, to compile faster:

@@ -19,9 +19,9 @@ use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::AdminState;
+use crate::auth::fingerprint;
 use crate::error::AdminError;
 use crate::handlers::{Mode, login_page_as, session_cookie};
 use crate::mail::{Email, send_later};
@@ -96,14 +96,6 @@ fn unix_now() -> u64 {
 }
 
 /// A short digest of what must stay the same for a link to keep working.
-fn fingerprint(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 type Shared = State<Arc<AdminState>>;
 
 // ---- after the first factor ------------------------------------------------------------------
@@ -177,7 +169,12 @@ pub(crate) async fn complete(
 /// Logs the account in: records it and returns the session cookie.
 async fn finish(state: &AdminState, username: &str) -> Result<Cookie<'static>, AdminError> {
     state.users.logged_in(username).await?;
-    let token = state.auth.issue(username)?;
+    let user = state
+        .users
+        .find(username)
+        .await?
+        .ok_or(AdminError::Unauthorized)?;
+    let token = state.auth.issue(&user.username, &user.password_hash)?;
     Ok(session_cookie(state, token))
 }
 

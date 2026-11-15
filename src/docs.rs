@@ -397,6 +397,12 @@ fn json_response(description: &str, schema: &Value) -> Value {
 fn field_schema(field: &Field) -> Value {
     let mut schema = match field.kind {
         FieldKind::Text | FieldKind::LongText => json!({ "type": "string" }),
+        FieldKind::Html => json!({
+            "type": "string",
+            "contentMediaType": "text/html",
+            "description": "Formatted text as HTML; scripts, styles and unknown tags are removed when it is saved",
+            "example": "<p>Hello <strong>world</strong></p>",
+        }),
         FieldKind::Integer => json!({ "type": "integer" }),
         FieldKind::Float => json!({ "type": "number" }),
         FieldKind::Boolean => json!({ "type": "boolean" }),

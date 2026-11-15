@@ -29,7 +29,18 @@ turn the feature on: `cadmus = { version = "0.1", features = ["s3"] }`.
 ## Limits
 
 `uploads.max_file_bytes` (default 1 GiB) and `uploads.max_chunk_bytes` (default 8 MiB, for
-resumable uploads).
+resumable uploads). Whether the time limit (`server.request_timeout`, 30 seconds by default)
+applies depends on the way in:
+
+| Way in | Largest request | Time limit |
+|---|---|---|
+| A file field on an admin form | `max_file_bytes` | yes: the whole form must arrive in time |
+| `POST /api/files` | `max_file_bytes` | no |
+| `POST /api/uploads`, each `PATCH` piece, finishing | `max_chunk_bytes` per piece | no |
+| `GET /api/files/{id}/content` (downloads) | | no |
+| Your own routes | axum's default (2 MiB) unless you set one | yes |
+
+So very large files should go through the API, ideally as resumable uploads.
 
 ## File fields on forms
 
@@ -44,8 +55,8 @@ from a form that is then rejected are removed.
 
 A hand-written integer field becomes a file field with `ModelOptions::file_fields(["photo"])`.
 
-Files sent through an admin form must finish within `server.request_timeout` (30 seconds by
-default), so very large files should go through the API. Replacing or removing a file on a
+Files sent through an admin form must finish within `server.request_timeout` (see
+[Limits](#limits)), so very large files should go through the API. Replacing or removing a file on a
 form leaves the old one stored (it is still listed at `/api/files`).
 
 ## Through the API

@@ -376,7 +376,7 @@ pub(crate) async fn middleware(
 ) -> Response {
     let path = request.uri().path();
     let ours = under(path, &state.api_base) || under(path, &state.base);
-    let mut response = respond(&state, request, next).await;
+    let mut response = crate::server::with_csp(respond(&state, request, next)).await;
     if ours {
         crate::server::protect(&mut response);
     }

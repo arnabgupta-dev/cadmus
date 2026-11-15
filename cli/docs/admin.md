@@ -82,6 +82,8 @@ Actions need the change permission, and at most 1000 rows are done at a time.
   item per line; a UUID primary key left empty is made up.
 - File fields have a file picker, a preview for images, and "Remove the file" (see
   [File uploads](file-uploads.md)).
+- Rich-text fields have an editor with headings, lists, links, images, quotes and code (see
+  [Rich text](models.md#rich-text)).
 - Invalid input is shown next to the field, and nothing is saved.
 
 ## Accounts pages
@@ -106,3 +108,8 @@ In the `admin` section of [Settings](settings.md):
 | `web_fonts` | `false` uses the system typeface instead of loading Fira Sans from Google Fonts |
 | `template_dir` | a folder of templates that replace the built-in ones by name |
 | `path` | where the admin lives (default `/admin`) |
+
+A replaced template's `<script>` tags must carry the page's nonce, or the browser will not
+run them: `<script nonce="{{ csp_nonce }}">`. Scripts from your own site
+(`<script src="/static/my.js">`) are allowed too; scripts from other sites, inline event
+handlers (`onclick="..."`) and `javascript:` links are not.

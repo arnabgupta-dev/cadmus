@@ -171,6 +171,13 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 field.choices.clone_from(values);
             }
         }
+        for column in &options.rich_text {
+            if let Some(field) = self.fields.iter_mut().find(|f| {
+                &f.name == column && matches!(f.kind, FieldKind::Text | FieldKind::LongText)
+            }) {
+                field.kind = FieldKind::Html;
+            }
+        }
         self.options = options;
         self
     }
@@ -285,7 +292,10 @@ impl<E: EntityTrait> SeaOrmResource<E> {
 
         let backend = self.db.get_database_backend();
         let column = Expr::col((E::default(), self.columns[i]));
-        let text = if matches!(self.fields[i].kind, FieldKind::Text | FieldKind::LongText) {
+        let text = if matches!(
+            self.fields[i].kind,
+            FieldKind::Text | FieldKind::LongText | FieldKind::Html
+        ) {
             column
         } else {
             let text_type = if backend == DbBackend::MySql {
@@ -429,8 +439,12 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 message,
             };
             let ty = &self.types[i];
-            let is_text = matches!(field.kind, FieldKind::Text | FieldKind::LongText);
+            let is_text = matches!(
+                field.kind,
+                FieldKind::Text | FieldKind::LongText | FieldKind::Html
+            );
             let generated;
+            let cleaned;
             let provided = match input.get(&field.name) {
                 None if mode == WriteMode::Patch => continue,
                 // A new row with a UUID key and none given gets a fresh one.
@@ -454,6 +468,11 @@ impl<E: EntityTrait> SeaOrmResource<E> {
                 None | Some(None) => None,
                 // An empty box in a form means "no value" for everything except text.
                 Some(Some(text)) if text.is_empty() && !is_text => None,
+                // Rich text is stored cleaned, whoever sent it.
+                Some(Some(text)) if field.kind == FieldKind::Html => {
+                    cleaned = crate::html::clean_html(text);
+                    Some(cleaned.as_str())
+                }
                 Some(Some(text)) => Some(text.as_str()),
             };
             if let Some(text) = provided
@@ -517,7 +536,10 @@ where
             let mut searchable = 0;
             for (i, field) in self.fields.iter().enumerate() {
                 let chosen = if self.options.search_fields.is_empty() {
-                    matches!(field.kind, FieldKind::Text | FieldKind::LongText)
+                    matches!(
+                        field.kind,
+                        FieldKind::Text | FieldKind::LongText | FieldKind::Html
+                    )
                 } else {
                     self.options.search_fields.contains(&field.name)
                 };

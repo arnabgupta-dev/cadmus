@@ -26,6 +26,7 @@ mod docs;
 mod error;
 mod handlers;
 mod home;
+mod html;
 mod limit;
 mod login;
 mod mail;
@@ -44,12 +45,13 @@ use std::sync::Arc;
 pub use access::{Access, Action};
 pub use app::App;
 pub use auth::{
-    AdminUser, ApiKeyOwner, AuthConfig, EnvUserStore, UserStore, hash_password,
+    AdminUser, ApiKeyOwner, AuthConfig, CurrentUser, EnvUserStore, UserStore, hash_password,
     hash_password_async, totp_uri, verify_totp,
 };
 pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
+pub use html::clean_html;
 pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
 pub use resource::{
     Field, FieldKind, Filter, FilterOp, Input, LinkField, ListQuery, ModelOptions, Page, Reference,
@@ -106,7 +108,7 @@ const TEMPLATES: [(&str, &str); 16] = [
 ];
 
 /// URL segments the admin uses itself; a model cannot take these as its slug.
-const RESERVED_SLUGS: [&str; 10] = [
+const RESERVED_SLUGS: [&str; 11] = [
     "api",
     "auth",
     "docs",
@@ -116,6 +118,7 @@ const RESERVED_SLUGS: [&str; 10] = [
     "openapi.json",
     "password",
     "redoc",
+    "static",
     "uploads",
 ];
 
@@ -166,6 +169,12 @@ impl Admin {
     /// merged router through [`Admin::handle_errors`].
     pub fn router(&self) -> axum::Router {
         self.handle_errors(self.routes())
+    }
+
+    /// Lets the handlers in `router`, routes of your own, take [`CurrentUser`] to find out
+    /// who sent a request. [`App::routes`] does this for you.
+    pub fn identify(&self, router: axum::Router) -> axum::Router {
+        router.layer(axum::Extension(auth::Identify(Arc::clone(&self.state))))
     }
 
     /// Adds the central error handling to `router`: panics become `500`s, and error
@@ -357,6 +366,7 @@ impl AdminBuilder {
             }
             check_actions(resource.as_ref())?;
             check_file_fields(resource.as_ref(), self.uploads.is_some())?;
+            check_rich_text(resource.as_ref())?;
         }
 
         let mut templates = minijinja::Environment::new();
@@ -466,6 +476,23 @@ fn check_file_fields(resource: &dyn Resource, uploads: bool) -> Result<(), Admin
         }
         if !uploads {
             return Err(error("file uploads are off; set uploads.storage_url"));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that a model's rich-text fields are text columns, which have become HTML.
+fn check_rich_text(resource: &dyn Resource) -> Result<(), AdminError> {
+    for name in &resource.options().rich_text {
+        let usable = resource
+            .fields()
+            .iter()
+            .any(|f| &f.name == name && f.kind == FieldKind::Html);
+        if !usable {
+            return Err(AdminError::Config(format!(
+                "model `{}`, rich-text field `{name}`: must be a text column",
+                resource.slug()
+            )));
         }
     }
     Ok(())

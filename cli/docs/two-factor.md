@@ -62,6 +62,9 @@ Change the numbers with `auth.login_max_attempts` (`0` turns the limit off) and
   `X-Forwarded-For`), but only if it always sets it; otherwise clients could pretend to be
   anyone.
 - Counts are kept in memory, per running copy of the server: several copies each count
-  separately, and a restart clears them.
+  separately, and a restart clears them. With 3 copies behind a load balancer, a guesser
+  gets up to 3 times the attempts. If you run several copies, also limit
+  `POST /admin/login` and `POST /api/auth/token` per address at the proxy (nginx
+  `limit_req`, Caddy's `rate_limit`, or your platform's), which all copies share.
 - Someone who knows a username can keep that account locked by guessing. That is the usual
   trade-off of per-account limits; shorten `auth.login_lockout` if it becomes a problem.

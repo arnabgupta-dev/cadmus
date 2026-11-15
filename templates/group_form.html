@@ -22,7 +22,7 @@
 </style>
 {% endblock %}
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 document.querySelectorAll("[data-row-all]").forEach(function (b) {
   var boxes = b.closest("tr").querySelectorAll("input[type=checkbox]");
   function paint() { var all = Array.prototype.every.call(boxes, function (x) { return x.checked; }); b.textContent = all ? "None" : "All"; b.setAttribute("aria-label", (all ? "Clear all permissions for " : "Allow everything on ") + b.previousElementSibling.textContent); }

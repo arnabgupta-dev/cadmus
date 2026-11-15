@@ -525,14 +525,16 @@ async fn changes_to_an_account_take_effect_immediately() {
     );
     assert!(token(&app, "sam", PASSWORD).await.is_none());
 
-    // Reactivated, with a new password: the old password is gone, the old token works again.
+    // Reactivated, with a new password: the old password is gone, and so are the logins
+    // made with it.
     let reply = root
         .post(&app, &path, "username=sam&password=another+long+password&is_active=true&is_staff=true&perm=note:view")
         .await;
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
-    assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 200);
+    assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 401);
     assert!(token(&app, "sam", PASSWORD).await.is_none());
-    assert!(token(&app, "sam", "another long password").await.is_some());
+    let sam = token(&app, "sam", "another long password").await.unwrap();
+    assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 200);
 
     // Saving without a password keeps it.
     let reply = root

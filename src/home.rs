@@ -207,6 +207,7 @@ async fn respond(home: &Home, wants_json: bool) -> Response {
                 uptime_secs,
                 uptime => human_duration(uptime_secs),
                 checked_at,
+                csp_nonce => crate::server::csp_nonce(),
             })
         });
     match page {

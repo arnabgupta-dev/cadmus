@@ -71,6 +71,8 @@ pub struct App {
     routes: Router,
     request_timeout: Option<Duration>,
     cors_origins: Vec<String>,
+    hsts: Option<Duration>,
+    compress_api: bool,
     docs: DocsConfig,
     home: HomeConfig,
     /// `None` reads `LOG_LEVEL` when the server starts.
@@ -100,6 +102,8 @@ impl App {
             routes: Router::new(),
             request_timeout: Some(Duration::from_secs(30)),
             cors_origins: Vec::new(),
+            hsts: Some(crate::settings::HSTS_DEFAULT),
+            compress_api: true,
             docs: DocsConfig::new(),
             home: HomeConfig::new(),
             log_level: None,
@@ -187,6 +191,8 @@ impl App {
         app.admin_base = Some(admin.path);
         app.api_base = Some(api.path);
         app.request_timeout = server.request_timeout.filter(|limit| !limit.is_zero());
+        app.hsts = server.hsts.filter(|age| !age.is_zero());
+        app.compress_api = server.compress_api;
         app = app
             .cors_origins(&server.cors_origins)
             .map_err(|e| setting_error("server.cors_origins", e))?;
@@ -279,6 +285,8 @@ impl App {
     /// | `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_CHUNK_BYTES` | Upload limits |
     /// | `REQUEST_TIMEOUT_SECS` | Longest a request may take; `0` for no limit (default 30) |
     /// | `CORS_ALLOWED_ORIGINS` | Origins whose pages may call the app from a browser, comma-separated, or `*` (default: none) |
+    /// | `HSTS_MAX_AGE_SECS` | How long browsers keep to HTTPS for the site; `0` to not send HSTS (default a year) |
+    /// | `COMPRESS_API` | `false` to not compress REST API responses (default `true`) |
     ///
     /// plus everything read by [`AuthConfig::from_env`], [`UiSettings::from_env`] and
     /// [`DocsConfig::from_env`].
@@ -309,6 +317,23 @@ impl App {
         }
         if let Ok(text) = std::env::var("CORS_ALLOWED_ORIGINS") {
             app.cors_origins = server::parse_origins(&text)?;
+        }
+        if let Ok(text) = std::env::var("HSTS_MAX_AGE_SECS") {
+            let secs = text.parse::<u64>().map_err(|_| {
+                AdminError::Config("HSTS_MAX_AGE_SECS must be a non-negative integer".into())
+            })?;
+            app.hsts = (secs > 0).then(|| Duration::from_secs(secs));
+        }
+        if let Ok(text) = std::env::var("COMPRESS_API") {
+            app.compress_api = match text.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
+                    return Err(AdminError::Config(
+                        "COMPRESS_API must be true or false".into(),
+                    ));
+                }
+            };
         }
         app.docs = DocsConfig::from_env()?;
         app.home = HomeConfig::from_env()?;
@@ -398,6 +423,24 @@ impl App {
         self
     }
 
+    /// How long browsers should use only HTTPS for this site (the `Strict-Transport-Security`
+    /// header, sent on every response); `None` to not send it. Default: a year. Browsers
+    /// ignore it on plain-HTTP responses, so it does no harm while developing.
+    #[must_use]
+    pub fn hsts(mut self, max_age: Option<Duration>) -> Self {
+        self.hsts = max_age.filter(|age| !age.is_zero());
+        self
+    }
+
+    /// Whether REST API responses are compressed (gzip or Brotli, as the client asks).
+    /// Default: on. Admin pages are never compressed: they hold a CSRF token next to text the
+    /// visitor controls, which is what the BREACH attack on compressed HTTPS needs.
+    #[must_use]
+    pub fn compress_api(mut self, enabled: bool) -> Self {
+        self.compress_api = enabled;
+        self
+    }
+
     /// Lets pages served from these origins (e.g. `https://app.example.com`) call the app
     /// from a browser; `*` allows every origin. By default no cross-origin access is allowed.
     ///
@@ -471,6 +514,9 @@ impl App {
     }
 
     /// Adds your own axum routes next to the generated ones.
+    ///
+    /// They are public unless a handler takes [`crate::CurrentUser`], which answers `401` to
+    /// requests that are not logged in and tells the handler who sent the rest.
     #[must_use]
     pub fn routes(mut self, routes: Router) -> Self {
         self.routes = self.routes.merge(routes);
@@ -761,7 +807,7 @@ impl App {
             // A fallback rather than a route, so that a `/` route of the application wins.
             router = router.fallback(move |request| home::fallback(Arc::clone(&home), request));
         }
-        let mut router = router.merge(self.routes.clone());
+        let mut router = router.merge(admin.identify(self.routes.clone()));
         if let Some(limit) = self.request_timeout {
             router = router.layer(middleware::from_fn_with_state(limit, server::timeout));
         }
@@ -770,6 +816,19 @@ impl App {
         }
         // Errors, including the time limit's, are put into the format of their area.
         router = admin.handle_errors(router);
+        // Outside that, so that what is compressed is what is sent.
+        if self.compress_api {
+            let api: Arc<str> = base_path(self.api_base.clone(), "/api")?.into();
+            router = router
+                .layer(middleware::from_fn_with_state(api, server::mark_api))
+                .layer(server::compression());
+        }
+        if let Some(max_age) = self.hsts {
+            let value =
+                axum::http::HeaderValue::from_str(&format!("max-age={}", max_age.as_secs()))
+                    .expect("digits are a valid header value");
+            router = router.layer(middleware::from_fn_with_state(value, server::hsts));
+        }
         // Outside that, so that error responses carry the cross-origin headers too and
         // preflight requests are answered before anything asks for a login.
         if !self.cors_origins.is_empty() {

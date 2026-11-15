@@ -37,6 +37,9 @@ pub enum FieldKind {
     Text,
     /// Multi-line text.
     LongText,
+    /// Formatted text kept as HTML, edited in the admin with a rich-text editor
+    /// ([`ModelOptions::rich_text`]). Cleaned of anything unsafe before it is stored.
+    Html,
     /// Whole number.
     Integer,
     /// Floating-point number.
@@ -142,6 +145,7 @@ pub struct ModelOptions {
     pub(crate) actions: Vec<BulkAction>,
     pub(crate) file_fields: Vec<String>,
     pub(crate) choices: Vec<(String, Vec<String>)>,
+    pub(crate) rich_text: Vec<String>,
     pub(crate) many_to_many: Vec<ManyToMany>,
     pub(crate) owner_field: Option<String>,
 }
@@ -327,6 +331,20 @@ impl ModelOptions {
         S: Into<String>,
     {
         self.file_fields = columns.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Makes these text columns formatted text: the admin edits them with a rich-text editor
+    /// (headings, bold, lists, links, images by address, quotes, code), and the column holds
+    /// HTML. Whatever is written, through the admin or the API, is cleaned first: scripts,
+    /// event handlers, styles and unknown tags are removed. `rich_text(["body"])`.
+    #[must_use]
+    pub fn rich_text<I, S>(mut self, columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.rich_text = columns.into_iter().map(Into::into).collect();
         self
     }
 

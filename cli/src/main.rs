@@ -103,7 +103,8 @@ enum Generate {
         /// Model name in PascalCase, e.g. `BlogPost`.
         name: String,
         /// Fields as `name:type`, with `?` for nullable. Types: string, text, int, bigint,
-        /// float, bool, datetime, date, json, decimal, uuid, file, `references` for a foreign
+        /// float, bool, datetime, date, json, decimal, uuid, html (formatted text, edited with
+        /// a rich-text editor), file, `references` for a foreign
         /// key to another model (`author:references`, or `editor:references=author`), `many`
         /// for a many-to-many field (`tags:many`, or `readers:many=user`), and `owner` for the
         /// account a row belongs to.
@@ -368,7 +369,8 @@ gets a database table, admin pages and REST API endpoints.
 
 1. Add a model: `cadmus generate model Book title:string isbn:string? author:references`
    (generate a referenced model before the models that point to it). Field types: string,
-   text, int, bigint, float, bool, datetime, date, json, decimal, uuid, file, references,
+   text, int, bigint, float, bool, datetime, date, json, decimal, uuid, html (formatted text,
+   edited with a rich-text editor), file, references,
    many (`tags:many`, many-to-many), owner (`owner:owner`, rows belong to accounts); `?` makes
    a field optional.
    Checks on save go in the model's `ActiveModelBehavior` (`before_save`), returning
@@ -511,6 +513,8 @@ struct FieldSpec {
     file: bool,
     /// Holds the username of the account the row belongs to (`ModelOptions::owned_by`).
     owner: bool,
+    /// Formatted text, edited with the rich-text editor (`ModelOptions::rich_text`).
+    html: bool,
     /// A many-to-many field: the module of the model it links to. Not a column; it gets a
     /// link table of its own.
     many: Option<String>,
@@ -585,6 +589,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             references: Some(target.to_owned()),
             file: false,
             owner: false,
+            html: false,
             many: None,
         });
     }
@@ -615,6 +620,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             references: None,
             file: false,
             owner: false,
+            html: false,
             many: Some(target),
         });
     }
@@ -627,6 +633,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             references: None,
             file: false,
             owner: true,
+            html: false,
             many: None,
         });
     }
@@ -640,12 +647,13 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
             references: None,
             file: true,
             owner: false,
+            html: false,
             many: None,
         });
     }
     let (rust_type, attribute) = match kind {
         "string" => ("String", None),
-        "text" => ("String", Some("#[sea_orm(column_type = \"Text\")]")),
+        "text" | "html" => ("String", Some("#[sea_orm(column_type = \"Text\")]")),
         "int" => ("i32", None),
         "bigint" => ("i64", None),
         "float" => ("f64", None),
@@ -660,7 +668,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         "uuid" => ("Uuid", None),
         other => {
             return Err(format!(
-                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, decimal, uuid, file, references, many, owner)"
+                "`{other}`: unknown type (use string, text, int, bigint, float, bool, datetime, date, json, decimal, uuid, html, file, references, many, owner)"
             ));
         }
     };
@@ -672,6 +680,7 @@ fn parse_field(spec: &str) -> Result<FieldSpec, String> {
         references: None,
         file: false,
         owner: false,
+        html: kind == "html",
         many: None,
     })
 }
@@ -898,6 +907,14 @@ fn generate_model(project: &Path, name: &str, fields: &[String]) -> Result<Strin
     } else {
         format!(".file_fields([{}])", files.join(", "))
     };
+    let rich: Vec<String> = parsed
+        .iter()
+        .filter(|f| f.html)
+        .map(|f| format!("{:?}", f.name))
+        .collect();
+    if !rich.is_empty() {
+        let _ = write!(file_option, ".rich_text([{}])", rich.join(", "));
+    }
     if let Some(owner) = parsed.iter().find(|f| f.owner) {
         let _ = write!(file_option, ".owned_by({:?})", owner.name);
     }
@@ -1218,6 +1235,7 @@ mod tests {
                 references: None,
                 file: false,
                 owner: false,
+                html: false,
                 many: None,
             }
         );
@@ -1486,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn many_to_many_owner_decimal_and_uuid_fields() {
+    fn many_to_many_owner_decimal_uuid_and_html_fields() {
         let dir = temp("many");
         new_project(&dir, "blog", None, Database::Sqlite).unwrap();
         let root = dir.join("blog");
@@ -1504,6 +1522,7 @@ mod tests {
                 "owner:owner".into(),
                 "price:decimal".into(),
                 "code:uuid?".into(),
+                "body:html".into(),
             ],
         )
         .unwrap();
@@ -1516,6 +1535,10 @@ mod tests {
         assert!(model.contains("pub price: Decimal,"));
         assert!(model.contains("pub code: Option<Uuid>,"));
         assert!(
+            model.contains("#[sea_orm(column_type = \"Text\")]\n    pub body: String,"),
+            "{model}"
+        );
+        assert!(
             !model.contains("tags"),
             "a many-to-many field is not a column"
         );
@@ -1525,6 +1548,7 @@ mod tests {
         let index = std::fs::read_to_string(&index_path).unwrap();
         assert!(index.contains("pub mod post_tags;"));
         assert!(index.contains(".owned_by(\"owner\")"), "{index}");
+        assert!(index.contains(".rich_text([\"body\"])"), "{index}");
         assert!(index.contains(
             ".many_to_many::<post_tags::Entity>(\"tags\", post_tags::Column::PostId, post_tags::Column::TagId)"
         ));

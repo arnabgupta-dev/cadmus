@@ -56,6 +56,7 @@ is named in snake_case (`blog_post`). An `id` primary key is always added.
 | `json` | `Json` | a JSON document |
 | `decimal` | `Decimal` | an exact number, such as a price (12 digits, 2 after the point) |
 | `uuid` | `Uuid` | a universally unique id |
+| `html` | `String` | formatted text, such as a blog post's body, edited with a rich-text editor (see [Rich text](#rich-text)) |
 | `file` | `Option<i32>` | an uploaded file (see [File uploads](file-uploads.md)) |
 | `references` | `i32` | a link to another model (see [Relations](relations.md)) |
 | `many` | (a link table) | links to any number of rows of another model: `tags:many` (see [Relations](relations.md#many-to-many)) |
@@ -173,11 +174,44 @@ app.model::<post::Entity>(
 | `display_field("email")` | the field that names a record where other models link to it (default: the first text field) |
 | `per_page(n)` | rows per list page for this model |
 | `file_fields([...])` | integer fields that hold an uploaded file (set by `field:file`) |
+| `rich_text([...])` | text fields that hold formatted text, edited with a rich-text editor (set by `field:html`; see [Rich text](#rich-text)) |
 | `choices(field, [...])` | a dropdown of these values, and no others, for a text or number field; database enums get theirs automatically |
 | `many_to_many::<link::Entity>(name, from, to)` | a many-to-many field kept in a link table (set by `field:many`; see [Relations](relations.md#many-to-many)) |
 | `owned_by(field)` | rows belong to the account named in `field` (set by `field:owner`; see [Rows owned by accounts](accounts.md#rows-owned-by-accounts)) |
 | `set_action(name, label, field, value)` | a bulk action setting a field on the selected rows |
 | `action(name, label, \|ids\| async move { ... })` | a bulk action running your own code with the selected ids |
+
+## Rich text
+
+For text people format, such as a blog post or a product description, use an `html` field:
+
+```sh
+cadmus generate model Post title:string body:html
+```
+
+It is a long text column, with `ModelOptions::new().rich_text(["body"])` (which you can also
+add to an existing `text` field by hand). In the admin it gets an editor
+([Quill](https://quilljs.com), served by the admin itself) with headings, bold, italics,
+underline, strike-through, lists, indentation, quotes, code blocks, links, images and
+alignment. Without JavaScript the field is a plain box of HTML.
+
+The column holds HTML, and the API sends and accepts it as a string:
+
+```json
+{ "title": "Hello", "body": "<h2>Hello</h2><p>A <strong>bold</strong> start.</p>" }
+```
+
+**Whatever is written is cleaned first**, through the admin, the API or a bulk action:
+only the formatting above is kept. Scripts, `style` attributes, event handlers such as
+`onclick`, forms, frames and `javascript:` or `data:` addresses are removed, and links get
+`rel="noopener noreferrer"`. So it is safe to show a stored value as it is on your own
+pages; in a template that escapes by default, mark it as safe (minijinja: `{{ post.body|safe }}`).
+HTML that reaches the database some other way (an import, SQL by hand) is cleaned again
+before the admin shows it, but not before your own pages do: run it through
+`cadmus::clean_html` first.
+
+Images are linked by address (`https://...`), not uploaded into the text. Lists show the
+text of a rich-text field without its markup.
 
 ## Models without the generator
 

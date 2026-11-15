@@ -17,12 +17,17 @@ Cadmus is at version 0.1. These are the gaps known today.
   [Rows owned by accounts](accounts.md#rows-owned-by-accounts)), not sharing rules.
 - Login attempt limits are per server process, not shared between instances.
 - Accounts and groups are managed in the admin only; there is no API for them.
+- Accounts are for the people who run the site: an account that is not staff cannot log in.
+  Visitors of your app need logins of your own (see [Accounts](accounts.md)).
+- No refresh tokens, and logging out does not end a copied login token before it expires;
+  changing the password ends them all.
 
 ## Admin
 
 - No page listing all uploaded files, and a replaced file is not deleted.
 - No search-as-you-type for long lists of related records: above 200, forms take ids.
 - No editing of related records inside another record's form (inlines).
+- Images in rich text are linked by address; they cannot be uploaded from the editor.
 
 ## Models and migrations
 
@@ -31,6 +36,7 @@ Cadmus is at version 0.1. These are the gaps known today.
 - On SQLite, decimals are stored as floating-point numbers, exact to about 15 digits; use
   PostgreSQL or MySQL for larger exact amounts.
 - Migrations do not handle database enums, or changing a primary key.
+- `migrate` takes no lock: run it once per deployment, not in every copy of the server.
 
 ## Uploads
 
@@ -41,8 +47,8 @@ Cadmus is at version 0.1. These are the gaps known today.
 
 ## Server and documentation
 
-- No response compression (on purpose; see [Deploying](deploying.md)), request ids or
-  metrics; add them with your own `tower` layers.
+- Admin pages are not compressed (on purpose; see [Deploying](deploying.md#compression)).
+- No request ids or metrics; add them with your own `tower` layers.
 - Your own routes are not added to the API documentation automatically.
 - The API documentation viewers load from a CDN rather than being bundled.
 

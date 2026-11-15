@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
          CREATE TABLE author (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
             email TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '');
          INSERT INTO post (title, body, published, views) VALUES
-            ('Hello admin', 'Generated from the entity definition.', 1, 3);
+            ('Hello admin', '<p>Generated from the <strong>entity definition</strong>.</p>', 1, 3);
          INSERT INTO author (name, email, api_key) VALUES ('Ada', 'ada@example.com', 'k-123');",
     )
     .await?;
@@ -92,26 +92,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
 
-    let admin =
-        Admin::builder()
-            .settings(UiSettings::from_env()?)
-            .auth(auth, users)
-            .register(SeaOrmResource::<post::Entity>::new(db.clone()).options(
-                ModelOptions::new().label("Posts").list_display([
-                    "id",
-                    "title",
-                    "published",
-                    "views",
-                ]),
-            ))
-            .register(
-                SeaOrmResource::<author::Entity>::new(db).options(
-                    ModelOptions::new()
-                        .label("Authors")
-                        .hidden_fields(["api_key"]),
-                ),
-            )
-            .build()?;
+    let admin = Admin::builder()
+        .settings(UiSettings::from_env()?)
+        .auth(auth, users)
+        .register(
+            SeaOrmResource::<post::Entity>::new(db.clone()).options(
+                ModelOptions::new()
+                    .label("Posts")
+                    .list_display(["id", "title", "published", "views"])
+                    .rich_text(["body"]),
+            ),
+        )
+        .register(
+            SeaOrmResource::<author::Entity>::new(db).options(
+                ModelOptions::new()
+                    .label("Authors")
+                    .hidden_fields(["api_key"]),
+            ),
+        )
+        .build()?;
 
     let app = Router::new().merge(admin.router());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;

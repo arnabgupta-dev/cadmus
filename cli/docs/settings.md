@@ -68,7 +68,7 @@ admin.accent_color: accent colour must be #rgb or #rrggbb, got `red`
 |---|---|
 | `secret_key` | signs logins; at least 32 bytes (`cadmus secret` prints one) |
 | `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
-| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
+| `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url`, `hsts` (a year; `None` to not send it), `compress_api` (`true`) |
 | `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min), `api_keys` (`true`) |
 | `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
 | `api` | `path` (`/api`) |

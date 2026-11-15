@@ -71,6 +71,8 @@ curl -X POST http://localhost:3000/api/post \
   text too; a UUID primary key left out is made up.
 - Lists (PostgreSQL arrays) are JSON arrays: `"labels": ["red", "green"]`.
 - A field with choices refuses any other value.
+- Rich-text fields are HTML strings, cleaned of scripts, styles and unknown tags before they
+  are stored (see [Rich text](models.md#rich-text)).
 - Fields that are unknown, hidden or read-only are refused rather than silently ignored.
 - `PUT` needs every required field; `PATCH` changes only what is sent.
 

@@ -10,7 +10,7 @@ use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::{ConnectInfo, FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName};
@@ -223,9 +223,11 @@ impl AuthConfig {
         self
     }
 
-    pub(crate) fn issue(&self, username: &str) -> Result<String, AdminError> {
+    /// Signs a login token for `username`, whose password hash is `password_hash`.
+    pub(crate) fn issue(&self, username: &str, password_hash: &str) -> Result<String, AdminError> {
         let now = unix_now();
         let claims = Claims {
+            pw: fingerprint(password_hash),
             sub: username.to_owned(),
             iat: now,
             exp: now + self.token_ttl_secs,
@@ -324,6 +326,11 @@ struct Claims {
     exp: u64,
     /// Random per-token value echoed by forms; proves a POST came from our own page.
     csrf: String,
+    /// Fingerprint of the password hash the token was issued under: changing the password
+    /// ends every login made with the old one. Missing in tokens from before 0.1.5, which
+    /// are then refused.
+    #[serde(default)]
+    pw: String,
 }
 
 /// An account allowed into the admin.
@@ -342,18 +349,31 @@ pub struct AdminUser {
 #[async_trait]
 pub trait UserStore: Send + Sync {
     /// Looks up an account by login name.
+    ///
+    /// Also asked on every authenticated request: a login ends when the `password_hash`
+    /// returned here is no longer the one it was made with.
     async fn find(&self, username: &str) -> Result<Option<AdminUser>, AdminError>;
 
     /// What the account may do, or `None` if it may no longer use the site at all.
     ///
-    /// Called on every authenticated request, so the answer is always current. The default
-    /// treats every account [`UserStore::find`] returns as a superuser; override it to give
-    /// accounts in your own store narrower permissions.
+    /// Called on every authenticated request, so the answer is always current.
+    ///
+    /// The default lets every account [`UserStore::find`] returns log in but do nothing
+    /// ([`Access::none`]), and logs a warning once: a store that forgets this method fails
+    /// closed. Override it to say what each account may do; return [`Access::superuser`] for
+    /// accounts that may do everything.
     ///
     /// # Errors
     /// Whatever the lookup fails with; the request is then answered with a `500`.
     async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
-        Ok(self.find(username).await?.map(|_| Access::superuser()))
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "the account store does not implement UserStore::access, so accounts may log \
+                 in but do nothing; implement it to grant permissions"
+            );
+        });
+        Ok(self.find(username).await?.map(|_| Access::none()))
     }
 
     /// Called after each successful login with the account's username, e.g. to record the
@@ -465,6 +485,11 @@ impl UserStore for EnvUserStore {
         Ok((username == self.user.username).then(|| self.user.clone()))
     }
 
+    /// The one operator may do everything.
+    async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
+        Ok((username == self.user.username).then(Access::superuser))
+    }
+
     async fn accept_totp_step(&self, _username: &str, step: u64) -> Result<bool, AdminError> {
         Ok(self.last_totp_step.fetch_max(step, Ordering::SeqCst) < step)
     }
@@ -560,7 +585,7 @@ pub(crate) async fn login(
     }
     state.limiter.succeeded(&key, address);
     state.users.logged_in(&user.username).await?;
-    state.auth.issue(&user.username)
+    state.auth.issue(&user.username, &user.password_hash)
 }
 
 fn unix_now() -> u64 {
@@ -772,8 +797,32 @@ pub fn totp_uri(issuer: &str, username: &str, base32_secret: &str) -> String {
     uri.into()
 }
 
+/// A short digest of `value`, for telling whether a secret (such as a password hash) changed
+/// without carrying the secret itself.
+pub(crate) fn fingerprint(value: &str) -> String {
+    sha2::Sha256::digest(value.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// The login token and the API key a request carries, if any. An API key comes as a Bearer
+/// token or in `X-API-Key`; a Bearer token that is not an API key is a login token.
+fn credentials(headers: &HeaderMap) -> (Option<&str>, Option<&str>) {
+    let bearer = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let api_key = bearer
+        .filter(|token| token.starts_with(API_KEY_PREFIX))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+    let token = bearer.filter(|_| api_key.is_none());
+    (token, api_key)
 }
 
 /// An authenticated request. Extracting it is what protects a handler.
@@ -804,13 +853,44 @@ impl Session {
         Ok(())
     }
 
+    /// Who sent the request: a login token, an API key (if `api_keys` are accepted here) or
+    /// the session cookie. `None` if none of them is valid.
+    async fn authenticate(
+        headers: &HeaderMap,
+        state: &AdminState,
+        api_keys: bool,
+    ) -> Result<Option<Self>, AdminError> {
+        match credentials(headers) {
+            (_, Some(key)) if api_keys => Self::from_api_key(state, key).await,
+            (_, Some(_)) => Ok(None),
+            (Some(token), None) => match state.auth.verify(token) {
+                Some(claims) => Self::load(state, claims, false).await,
+                None => Ok(None),
+            },
+            (None, None) => Self::from_cookie(headers, state).await,
+        }
+    }
+
     /// Builds the session for verified claims, reading the account's current permissions.
-    /// `None` means the account no longer exists or may no longer log in.
+    /// `None` means the account no longer exists, may no longer log in, or has changed its
+    /// password since the token was issued.
     async fn load(
         state: &AdminState,
         claims: Claims,
         via_cookie: bool,
     ) -> Result<Option<Self>, AdminError> {
+        let Some(user) = state.users.find(&claims.sub).await? else {
+            return Ok(None);
+        };
+        // Compare usernames too: `find` may also accept an e-mail address.
+        if user.username != claims.sub
+            || !constant_time_eq(
+                fingerprint(&user.password_hash).as_bytes(),
+                claims.pw.as_bytes(),
+            )
+        {
+            return Ok(None);
+        }
         Ok(state.users.access(&claims.sub).await?.map(|access| Self {
             username: claims.sub,
             access,
@@ -921,29 +1001,14 @@ impl FromRequestParts<Arc<AdminState>> for Session {
         parts: &mut Parts,
         state: &Arc<AdminState>,
     ) -> Result<Self, Self::Rejection> {
-        let bearer = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
         let api = parts
             .uri
             .path()
             .starts_with(&format!("{}/", state.api_base));
-        // API keys come as a Bearer token or in `X-API-Key`, and only for the REST API: the
-        // admin pages, and with them account management, need a login.
-        let api_key = bearer
-            .filter(|token| token.starts_with(API_KEY_PREFIX))
-            .or_else(|| parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()));
-        let session = match (api_key, bearer) {
-            (Some(key), _) if api => Self::from_api_key(state, key).await,
-            (Some(_), _) => Ok(None),
-            (None, Some(token)) => match state.auth.verify(token) {
-                Some(claims) => Self::load(state, claims, false).await,
-                None => Ok(None),
-            },
-            (None, None) => Self::from_cookie(&parts.headers, state).await,
-        };
+        // API keys only work for the REST API (and your own routes): the admin pages, and
+        // with them account management, need a login.
+        let session = Self::authenticate(&parts.headers, state, api).await;
+        let (bearer, api_key) = credentials(&parts.headers);
         let bearer = bearer.or(api_key);
         match session {
             Ok(Some(session)) => Ok(session),
@@ -955,6 +1020,171 @@ impl FromRequestParts<Arc<AdminState>> for Session {
             Err(error) if bearer.is_some() || api => Err(ApiError::from(error).into_response()),
             Err(error) => Err(error.into_response()),
         }
+    }
+}
+
+/// Put on the requests of your own routes by [`crate::Admin::identify`], so that
+/// [`CurrentUser`] can check who sent them.
+#[derive(Clone)]
+pub(crate) struct Identify(pub(crate) Arc<AdminState>);
+
+/// The header a cookie-authenticated request that changes something must carry the
+/// session's CSRF token in, for [`CurrentUser`].
+const CSRF_HEADER: &str = "x-csrf-token";
+
+/// The account that sent a request to one of your own routes.
+///
+/// Take it as an extractor in a handler given to [`crate::App::routes`]: the handler then
+/// answers `401` to anyone who is not logged in. Take `Option<CurrentUser>` for a route that
+/// serves everyone but shows more to accounts. Routes that take neither are public.
+///
+/// A request is logged in by any of: a login token (`Authorization: Bearer`, from
+/// `POST /api/auth/token`), an API key (`Authorization: Bearer` or `X-API-Key`), or the
+/// admin's session cookie. The cookie is only sent to paths under the admin (`/admin/...`).
+/// The account's permissions are read again on every request, like everywhere else.
+///
+/// Requests that change something (any method but `GET`, `HEAD`, `OPTIONS` and `TRACE`) are
+/// refused with `403` when they come with a read-only API key, or with the session cookie but
+/// without the session's CSRF token in an `X-CSRF-Token` header (see
+/// [`CurrentUser::csrf_token`]).
+///
+/// Being logged in says nothing about what the account may do: check that with
+/// [`CurrentUser::require`] or [`CurrentUser::can`].
+///
+/// ```
+/// use axum::{Json, Router, routing::post};
+/// use cadmus::{Action, ApiResult, CurrentUser};
+///
+/// async fn publish(user: CurrentUser) -> ApiResult<Json<String>> {
+///     user.require("post", Action::Change)?;
+///     Ok(Json(format!("published by {}", user.username())))
+/// }
+///
+/// let routes: Router = Router::new().route("/posts/publish", post(publish));
+/// ```
+#[derive(Debug, Clone)]
+pub struct CurrentUser {
+    username: String,
+    access: Access,
+    read_only: bool,
+    /// The session's CSRF token, for requests that came with the session cookie.
+    csrf: Option<String>,
+}
+
+impl CurrentUser {
+    /// The account's login name.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// Everything the account may do.
+    #[must_use]
+    pub fn access(&self) -> &Access {
+        &self.access
+    }
+
+    /// Whether the account is a superuser (and did not log in with a read-only API key).
+    #[must_use]
+    pub fn is_superuser(&self) -> bool {
+        self.access.is_superuser() && !self.read_only
+    }
+
+    /// Whether the request came with a read-only API key, which may only view.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Whether the account may do `action` on `model` (the model's URL name; `files` for file
+    /// uploads). A read-only API key may only view.
+    #[must_use]
+    pub fn can(&self, model: &str, action: Action) -> bool {
+        (!self.read_only || action == Action::View) && self.access.allows(model, action)
+    }
+
+    /// Refuses with `403` unless the account may do `action` on `model`.
+    ///
+    /// # Errors
+    /// [`AdminError::Forbidden`] if it may not.
+    pub fn require(&self, model: &str, action: Action) -> Result<(), AdminError> {
+        if self.can(model, action) {
+            return Ok(());
+        }
+        Err(AdminError::Forbidden(format!(
+            "you do not have permission to {} `{model}`",
+            action.as_str()
+        )))
+    }
+
+    /// Refuses with `403` unless the account is a superuser.
+    ///
+    /// # Errors
+    /// [`AdminError::Forbidden`] if it is not.
+    pub fn require_superuser(&self) -> Result<(), AdminError> {
+        if self.is_superuser() {
+            return Ok(());
+        }
+        Err(AdminError::Forbidden("only superusers may do this".into()))
+    }
+
+    /// The token a page of yours must send back in an `X-CSRF-Token` header with requests
+    /// that change something, when it is logged in with the session cookie. `None` for
+    /// requests that came with a login token or an API key, which need no such token.
+    #[must_use]
+    pub fn csrf_token(&self) -> Option<&str> {
+        self.csrf.as_deref()
+    }
+
+    /// Who sent the request, if anyone. Errors are refusals (a missing CSRF token, a
+    /// read-only key trying to change something) and failures of the account store.
+    async fn identify(parts: &Parts) -> Result<Option<Self>, AdminError> {
+        let Some(Identify(state)) = parts.extensions.get::<Identify>().cloned() else {
+            return Err(AdminError::Config(
+                "CurrentUser only works in routes given to App::routes (or passed through \
+                 Admin::identify)"
+                    .into(),
+            ));
+        };
+        let Some(session) = Session::authenticate(&parts.headers, &state, true).await? else {
+            return Ok(None);
+        };
+        if !parts.method.is_safe() {
+            if session.read_only {
+                return Err(AdminError::Forbidden(
+                    "a read-only API key may only view".into(),
+                ));
+            }
+            let submitted = parts.headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok());
+            session.check_csrf(submitted)?;
+        }
+        Ok(Some(Self {
+            csrf: session.via_cookie.then_some(session.csrf),
+            username: session.username,
+            access: session.access,
+            read_only: session.read_only,
+        }))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for CurrentUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self::identify(parts)
+            .await?
+            .ok_or(AdminError::Unauthorized)?)
+    }
+}
+
+impl<S: Send + Sync> OptionalFromRequestParts<S> for CurrentUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(Self::identify(parts).await?)
     }
 }
 
@@ -986,7 +1216,7 @@ mod tests {
     #[test]
     fn token_round_trips_and_rejects_other_secrets() {
         let config = AuthConfig::new("0123456789abcdef0123456789abcdef").unwrap();
-        let token = config.issue("root").unwrap();
+        let token = config.issue("root", "some-hash").unwrap();
         assert_eq!(config.verify(&token).unwrap().sub, "root");
 
         let other = AuthConfig::new("ffffffffffffffffffffffffffffffff").unwrap();

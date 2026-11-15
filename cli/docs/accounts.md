@@ -13,8 +13,14 @@ admin under **Users** and **Groups**.
 | Switch | Meaning |
 |---|---|
 | Active | Can log in. Untick to lock someone out without deleting the account. |
-| Staff | Can use the admin and the API. |
+| Staff | Can log in at all: to the admin, for an API token, for API keys. |
 | Superuser | Can do everything, including managing accounts. |
+
+An account that is not staff **cannot log in anywhere**: not to the admin, not to
+`POST /api/auth/token`, and its API keys and existing tokens stop working. Accounts are for
+the people who run the site, not for its visitors. If your app has customers or members who
+log in, keep them in a table of your own and handle their logins in your own routes; give
+them staff accounts only if they should see the admin.
 
 ## Permissions
 
@@ -99,5 +105,20 @@ pub enum Relation {
 ## Your own account store
 
 To use accounts kept elsewhere, implement the `UserStore` trait and pass it to `App::users`.
-Every account is then a superuser unless you implement `UserStore::access`, API keys work
-only if you implement `UserStore::api_key`, and the Users and Groups pages are not shown.
+The Users and Groups pages are then not shown.
+
+Say what each account may do in `UserStore::access`, which is asked on every request.
+Without it, accounts can log in but do nothing (and a warning is logged once):
+
+```rust
+async fn access(&self, username: &str) -> Result<Option<Access>, AdminError> {
+    Ok(match my_lookup(username).await? {
+        Some(account) if account.is_admin => Some(Access::superuser()),
+        Some(_) => Some(Access::none().grant("post", Action::View)),
+        None => None, // may no longer log in
+    })
+}
+```
+
+API keys work only if you implement `UserStore::api_key`. Logins end when the
+`password_hash` that `UserStore::find` returns changes, as with the built-in accounts.

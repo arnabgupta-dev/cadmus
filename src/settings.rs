@@ -377,7 +377,16 @@ pub struct ServerSettings {
     /// `http://localhost:3000` on your machine). Needed by login methods that send people to
     /// another site and back, such as Google.
     pub public_url: Option<String>,
+    /// How long browsers should use only HTTPS for the site (HSTS); `None` to not send the
+    /// header (default a year). Browsers ignore it on plain-HTTP responses.
+    pub hsts: Option<Duration>,
+    /// Compress REST API responses with gzip or Brotli when the client accepts them
+    /// (default `true`). Admin pages are never compressed (see Deploying).
+    pub compress_api: bool,
 }
+
+/// A year: how long browsers keep to HTTPS by default.
+pub(crate) const HSTS_DEFAULT: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 impl Default for ServerSettings {
     fn default() -> Self {
@@ -387,6 +396,8 @@ impl Default for ServerSettings {
             cors_origins: Vec::new(),
             client_ip_header: None,
             public_url: None,
+            hsts: Some(HSTS_DEFAULT),
+            compress_api: true,
         }
     }
 }

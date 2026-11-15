@@ -88,13 +88,14 @@ struct Browser {
 }
 
 impl Browser {
-    fn new(username: &str, stale: bool) -> Self {
+    async fn new(db: &DatabaseConnection, username: &str, stale: bool) -> Self {
         #[derive(serde::Serialize)]
         struct Claims<'a> {
             sub: &'a str,
             iat: u64,
             exp: u64,
             csrf: &'a str,
+            pw: String,
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -107,6 +108,7 @@ impl Browser {
                 iat: if stale { now - 3600 } else { now },
                 exp: now + 3600,
                 csrf: "test-csrf",
+                pw: common::password_print(db, username).await,
             },
             &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
         )
@@ -151,8 +153,8 @@ fn shown_key(page: &str) -> String {
 
 #[tokio::test]
 async fn a_key_made_on_the_page_works_until_it_is_revoked() {
-    let (app, _db) = site().await;
-    let me = Browser::new("root", false);
+    let (app, db) = site().await;
+    let me = Browser::new(&db, "root", false).await;
     let page = me.get(&app, "/admin/auth/api-keys").await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.body.contains("You have no keys yet"));
@@ -266,8 +268,8 @@ async fn keys_stop_working_when_they_expire_or_the_account_is_locked() {
 
 #[tokio::test]
 async fn an_old_login_needs_the_password_to_make_a_key() {
-    let (app, _db) = site().await;
-    let me = Browser::new("root", true);
+    let (app, db) = site().await;
+    let me = Browser::new(&db, "root", true).await;
     let page = me.get(&app, "/admin/auth/api-keys").await;
     assert!(page.body.contains("name=\"password\""));
     let refused = me
@@ -312,7 +314,7 @@ async fn superusers_see_and_revoke_other_accounts_keys() {
     let key = new_api_key(&db, "bob", "Bob's script", None, false)
         .await
         .unwrap();
-    let root = Browser::new("root", false);
+    let root = Browser::new(&db, "root", false).await;
     let form = root.get(&app, "/admin/auth/users/2").await;
     assert!(form.body.contains("Bob&#x27;s script"), "{}", form.body);
     let revoked = root
@@ -345,7 +347,7 @@ async fn keys_can_be_turned_off() {
         api(&app, "GET", "/api/note", &key, None).await.status,
         StatusCode::UNAUTHORIZED
     );
-    let me = Browser::new("root", false);
+    let me = Browser::new(&db, "root", false).await;
     assert_eq!(
         me.get(&app, "/admin/auth/api-keys").await.status,
         StatusCode::NOT_FOUND

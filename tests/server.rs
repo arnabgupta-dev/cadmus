@@ -316,9 +316,15 @@ async fn admin_and_api_responses_carry_protective_headers() {
             Some("DENY"),
             "{path}"
         );
+        assert!(
+            reply
+                .header(header::CONTENT_SECURITY_POLICY)
+                .is_some_and(|policy| policy.contains("frame-ancestors 'none'")),
+            "{path}"
+        );
         assert_eq!(
-            reply.header(header::CONTENT_SECURITY_POLICY),
-            Some("frame-ancestors 'none'"),
+            reply.header("cross-origin-opener-policy"),
+            Some("same-origin"),
             "{path}"
         );
         assert_eq!(
@@ -395,4 +401,125 @@ async fn every_request_is_logged_without_its_query_string() {
         !log.contains("hunter2") && !log.contains("private"),
         "{log}"
     );
+}
+
+#[tokio::test]
+async fn admin_pages_run_only_their_own_scripts() {
+    let db = database().await;
+    let app = new_app(&db).router().unwrap();
+
+    for path in ["/admin/login", "/admin/nothing/at/all", "/"] {
+        let reply = fetch(&app, Method::GET, path, &[]).await;
+        let policy = reply.header(header::CONTENT_SECURITY_POLICY).unwrap();
+        let nonce = policy
+            .split("'nonce-")
+            .nth(1)
+            .and_then(|rest| rest.split('\'').next())
+            .unwrap_or_else(|| panic!("{path}: no nonce in {policy}"));
+        assert!(policy.contains("script-src 'self' 'nonce-"), "{policy}");
+        assert!(policy.contains("object-src 'none'"), "{policy}");
+        let scripts = reply.body.matches("<script").count();
+        assert!(scripts > 0, "{path}");
+        assert_eq!(
+            reply
+                .body
+                .matches(&format!("<script nonce=\"{nonce}\""))
+                .count(),
+            scripts,
+            "{path}: every script carries this response's nonce"
+        );
+        // A new one for every response.
+        let again = fetch(&app, Method::GET, path, &[]).await;
+        assert_ne!(again.header(header::CONTENT_SECURITY_POLICY), Some(policy));
+    }
+    // JSON keeps the short policy.
+    let reply = fetch(&app, Method::GET, "/api/note", &[]).await;
+    assert_eq!(
+        reply.header(header::CONTENT_SECURITY_POLICY),
+        Some("frame-ancestors 'none'")
+    );
+}
+
+#[tokio::test]
+async fn browsers_are_told_to_keep_to_https_unless_turned_off() {
+    let db = database().await;
+    let app = new_app(&db).router().unwrap();
+    for path in ["/admin/login", "/api/note", "/hello"] {
+        let reply = fetch(&app, Method::GET, path, &[]).await;
+        assert_eq!(
+            reply.header(header::STRICT_TRANSPORT_SECURITY),
+            Some("max-age=31536000"),
+            "{path}"
+        );
+    }
+    let app = new_app(&db).hsts(None).router().unwrap();
+    let reply = fetch(&app, Method::GET, "/admin/login", &[]).await;
+    assert!(reply.header(header::STRICT_TRANSPORT_SECURITY).is_none());
+}
+
+async fn fetch_bytes(app: &Router, path: &str, headers: &[(&str, &str)]) -> (HeaderMap, Vec<u8>) {
+    let mut request = Request::get(path);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (parts, body) = response.into_parts();
+    (
+        parts.headers,
+        body.collect().await.unwrap().to_bytes().to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn api_responses_are_compressed_and_admin_pages_are_not() {
+    let db = database().await;
+    let app = new_app(&db).router().unwrap();
+    let bearer = format!("Bearer {}", token(&app).await);
+    for i in 0..20 {
+        let request = Request::post("/api/note")
+            .header(header::AUTHORIZATION, &bearer)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "text": format!("note number {i}") }).to_string(),
+            ))
+            .unwrap();
+        assert_eq!(send(&app, request).await.status, StatusCode::CREATED);
+    }
+    let gzip = [
+        ("authorization", bearer.as_str()),
+        ("accept-encoding", "gzip"),
+    ];
+    let (headers, body) = fetch_bytes(&app, "/api/note", &gzip).await;
+    assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
+    assert!(
+        headers[header::VARY]
+            .to_str()
+            .unwrap()
+            .contains("accept-encoding")
+    );
+    assert_eq!(&body[..2], &[0x1f, 0x8b], "a gzip stream");
+    let br = [
+        ("authorization", bearer.as_str()),
+        ("accept-encoding", "br"),
+    ];
+    let (headers, _) = fetch_bytes(&app, "/api/note", &br).await;
+    assert_eq!(headers[header::CONTENT_ENCODING], "br");
+    // Without asking, plain JSON.
+    let (headers, body) = fetch_bytes(&app, "/api/note", &gzip[..1]).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
+    assert!(serde_json::from_slice::<Value>(&body).is_ok());
+
+    // Pages with a CSRF token next to the visitor's own text never are.
+    let (headers, _) = fetch_bytes(&app, "/admin/login", &[("accept-encoding", "gzip, br")]).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
+    let (headers, _) = fetch_bytes(&app, "/hello", &[("accept-encoding", "gzip")]).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
+
+    let app = new_app(&db).compress_api(false).router().unwrap();
+    let (headers, _) = fetch_bytes(&app, "/api/note", &gzip).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
 }
