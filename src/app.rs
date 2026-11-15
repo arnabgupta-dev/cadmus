@@ -1259,12 +1259,15 @@ impl App {
                 drop(self.router()?);
                 // Before the first `migrate` there are no account tables to look in.
                 let missing = self.missing_signup_groups().await.unwrap_or_default();
+                // A warning, not a failure: a new database has no groups until someone adds
+                // them, and a deployment that runs `check` first must not stop on that.
                 if !missing.is_empty() {
-                    return Err(AdminError::Config(format!(
-                        "auth.signup_groups names groups that do not exist: {}; add them on \
-                         the admin's Groups page",
+                    println!(
+                        "warning: auth.signup_groups names groups that do not exist yet: {}; \
+                         new accounts are not put in them until they are added on the admin's \
+                         Groups page",
                         missing.join(", ")
-                    )));
+                    );
                 }
                 println!("configuration is valid ({} models)", self.resources.len());
                 Ok(())

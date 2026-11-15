@@ -63,8 +63,7 @@ Check these:
   started it.**
 - **An S3 endpoint given as `http://`** (MinIO, SeaweedFS, LocalStack) now works without
   `AWS_ALLOW_HTTP=true`.
-- **`check` fails when `auth.signup_groups` names a group that does not exist,** and `serve`
-  warns about it.
+- **`check` and `serve` warn when `auth.signup_groups` names a group that does not exist.**
 - The API documentation lists the new login endpoints. A front end on another origin needs
   it in `server.cors_origins`, as before; `X-API-Key` is now allowed across origins.
 - `POST /api/auth/token` still returns `token` next to `access_token`, but it is deprecated:
