@@ -16,11 +16,12 @@ use serde_json::json;
 
 use crate::AdminState;
 use crate::access::Action;
-use crate::auth::{self, Credentials, Session};
+use crate::auth::{Credentials, Session};
 use crate::error::{AdminError, ApiError, ApiResult};
 use crate::handlers::{
     ListParams, list_query, owned_row, owner_filter, parse_sort, sortable, stamp_owner,
 };
+use crate::login_api::{LoginOutcome, TokenPair};
 use crate::resource::{Input, Resource, Row, WriteMode};
 
 type Shared = State<Arc<AdminState>>;
@@ -32,6 +33,13 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.api_base.clone();
     Router::new()
         .route(&format!("{b}/auth/token"), post(token))
+        .route(&format!("{b}/auth/totp"), post(crate::login_api::totp))
+        .route(
+            &format!("{b}/auth/refresh"),
+            post(crate::login_api::refresh),
+        )
+        .route(&format!("{b}/auth/logout"), post(crate::login_api::logout))
+        .route(&format!("{b}/auth/me"), get(crate::login_api::me))
         .route(&format!("{b}/{{model}}"), get(list).post(create))
         .route(
             &format!("{b}/{{model}}/{{id}}"),
@@ -99,16 +107,15 @@ fn json_input(resource: &dyn Resource, body: &Bytes, creating: bool) -> ApiResul
     Ok(input)
 }
 
+/// The tokens of a password login, with `token` repeating `access_token` as in 0.1.
 #[derive(Serialize)]
-struct TokenResponse {
-    /// The name OAuth 2 clients, such as the documentation's login dialog, look for.
-    access_token: String,
+struct PasswordTokens {
+    #[serde(flatten)]
+    pair: TokenPair,
     token: String,
-    token_type: &'static str,
-    expires_in: u64,
 }
 
-async fn token(State(state): Shared, parts: Parts, body: Bytes) -> ApiResult<Json<TokenResponse>> {
+async fn token(State(state): Shared, parts: Parts, body: Bytes) -> ApiResult<Response> {
     // A form is what OAuth 2 password logins send; everything else is taken as JSON.
     let is_form = parts
         .headers
@@ -133,13 +140,15 @@ async fn token(State(state): Shared, parts: Parts, body: Bytes) -> ApiResult<Jso
         serde_json::from_slice(&body)
             .map_err(|_| bad_request("expected JSON with `username` and `password`"))?
     };
-    let token = auth::login(&state, &credentials, state.auth.client_ip(&parts)).await?;
-    Ok(Json(TokenResponse {
-        access_token: token.clone(),
-        token,
-        token_type: "Bearer",
-        expires_in: state.auth.token_ttl_secs,
-    }))
+    let outcome =
+        crate::login_api::password(&state, &credentials, state.auth.client_ip(&parts)).await?;
+    Ok(match outcome {
+        LoginOutcome::Tokens(pair) => {
+            let token = pair.access_token.clone();
+            Json(PasswordTokens { pair, token }).into_response()
+        }
+        challenge @ LoginOutcome::TwoFactor { .. } => challenge.into_response(),
+    })
 }
 
 async fn list(

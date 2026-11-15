@@ -118,7 +118,11 @@ pub(crate) async fn complete(
     cross_site: bool,
 ) -> Result<Response, AdminError> {
     // The same rules as a password login: active staff only, and the second factor.
-    let Some(user) = state.users.find(username).await? else {
+    let user = match state.users.find(username).await? {
+        Some(user) if crate::auth::may_use_admin(state, username).await? => Some(user),
+        _ => None,
+    };
+    let Some(user) = user else {
         let page = login_page_as(
             state,
             StatusCode::FORBIDDEN,
@@ -494,6 +498,7 @@ async fn link_use(
                     None,
                     None,
                     &state.auth.methods.signup_groups,
+                    true,
                     "login link",
                 )
                 .await?

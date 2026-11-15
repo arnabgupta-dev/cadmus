@@ -63,6 +63,8 @@ impl Action {
 #[derive(Debug, Clone, Default)]
 pub struct Access {
     superuser: bool,
+    /// Kept out of the admin: the account logs in through the API only.
+    api_only: bool,
     /// Model slug to a bit set of granted actions.
     grants: HashMap<String, u8>,
 }
@@ -73,6 +75,7 @@ impl Access {
     pub fn superuser() -> Self {
         Self {
             superuser: true,
+            api_only: false,
             grants: HashMap::new(),
         }
     }
@@ -91,10 +94,24 @@ impl Access {
         self
     }
 
+    /// Keeps the account out of the admin: it may still log in through the REST API and your
+    /// own routes, with the same permissions. Accounts that are not staff get this.
+    #[must_use]
+    pub fn api_only(mut self) -> Self {
+        self.api_only = true;
+        self
+    }
+
     /// Whether this is a superuser.
     #[must_use]
     pub fn is_superuser(&self) -> bool {
         self.superuser
+    }
+
+    /// Whether the account may use the admin (staff), not only the API.
+    #[must_use]
+    pub fn is_staff(&self) -> bool {
+        !self.api_only
     }
 
     /// Whether `action` on `model` is allowed.

@@ -131,6 +131,24 @@ pub(crate) fn auth() -> Vec<Migration> {
                 .column(Column::new("expires", Type::TimestampTz).null())
                 .index(Index::new("idx-auth_api_key-user_id", ["user_id"])),
         ),
+        // Added in 0.2: refresh tokens, so apps stay logged in.
+        Migration::new("0003_refresh_tokens").create_table(
+            Table::new("auth_refresh_token")
+                .column(
+                    Column::new("id", Type::Integer)
+                        .primary_key()
+                        .auto_increment(),
+                )
+                .column(Column::new("user_id", Type::Integer))
+                .column(Column::new("family", Type::String(None)))
+                .column(Column::new("digest", Type::String(None)).unique())
+                .column(Column::new("password_print", Type::String(None)))
+                .column(Column::new("created", Type::TimestampTz))
+                .column(Column::new("expires", Type::TimestampTz))
+                .column(Column::new("used", Type::TimestampTz).null())
+                .index(Index::new("idx-auth_refresh_token-user_id", ["user_id"]))
+                .index(Index::new("idx-auth_refresh_token-family", ["family"])),
+        ),
     ]
 }
 
@@ -167,7 +185,7 @@ pub(crate) fn uploads() -> Vec<Migration> {
 
 pub(crate) fn auth_tables() -> Result<Vec<EntityTable>, String> {
     use crate::users::{
-        api_key, group, group_permission, identity, membership, recovery_code, user,
+        api_key, group, group_permission, identity, membership, recovery_code, refresh_token, user,
         user_permission,
     };
     Ok(vec![
@@ -179,6 +197,7 @@ pub(crate) fn auth_tables() -> Result<Vec<EntityTable>, String> {
         table_of::<user_permission::Entity>()?,
         table_of::<group_permission::Entity>()?,
         table_of::<api_key::Entity>()?,
+        table_of::<refresh_token::Entity>()?,
     ])
 }
 

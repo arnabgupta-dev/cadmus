@@ -39,7 +39,7 @@ pub mod user {
         pub totp_secret: Option<String>,
         /// Inactive accounts cannot log in.
         pub is_active: bool,
-        /// Only staff may use the admin and the API.
+        /// Staff may use the admin; every active account may log in through the API.
         pub is_staff: bool,
         /// Superusers may do everything, including managing accounts.
         // The default lets `migrate` add the column to a table that already has accounts.
@@ -269,12 +269,44 @@ pub(crate) mod api_key {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// Refresh tokens: let an app keep a login going after its access token expires.
+pub(crate) mod refresh_token {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "auth_refresh_token")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        #[sea_orm(indexed)]
+        pub user_id: i32,
+        /// Shared by every token descended from one login: reusing a spent token ends them all.
+        #[sea_orm(indexed)]
+        pub family: String,
+        /// SHA-256 of the token; the token itself is never stored.
+        #[sea_orm(unique)]
+        pub digest: String,
+        /// Fingerprint of the password hash at login: changing the password ends the login.
+        pub password_print: String,
+        pub created: DateTimeUtc,
+        pub expires: DateTimeUtc,
+        /// When it was traded for a new token; `None` while it is the current one.
+        pub used: Option<DateTimeUtc>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// Registers every account table with `migrate`.
 pub(crate) fn register_schema(builder: SchemaBuilder) -> SchemaBuilder {
     builder
         .register(identity::Entity)
         .register(recovery_code::Entity)
         .register(api_key::Entity)
+        .register(refresh_token::Entity)
         .register(user::Entity)
         .register(group::Entity)
         .register(membership::Entity)
@@ -309,16 +341,15 @@ impl DbUserStore {
 
 #[async_trait]
 impl UserStore for DbUserStore {
-    /// Accepts the username or the e-mail address.
+    /// Accepts the username or the e-mail address. Active accounts only; whether one may
+    /// use the admin is in [`UserStore::access`].
     async fn find(&self, login: &str) -> Result<Option<AdminUser>, AdminError> {
         let account = find_by_login(&self.db, login).await?;
-        Ok(account
-            .filter(|a| a.is_active && a.is_staff)
-            .map(|a| AdminUser {
-                username: a.username,
-                password_hash: a.password_hash,
-                totp_secret: a.totp_secret,
-            }))
+        Ok(account.filter(|a| a.is_active).map(|a| AdminUser {
+            username: a.username,
+            password_hash: a.password_hash,
+            totp_secret: a.totp_secret,
+        }))
     }
 
     async fn logged_in(&self, username: &str) -> Result<(), AdminError> {
@@ -398,25 +429,30 @@ impl UserStore for DbUserStore {
             .filter(user::Column::Username.eq(username))
             .one(&self.db)
             .await?;
-        let Some(account) = account.filter(|a| a.is_active && a.is_staff) else {
+        let Some(account) = account.filter(|a| a.is_active) else {
             return Ok(None);
         };
-        if account.is_superuser {
-            return Ok(Some(Access::superuser()));
-        }
-        let access = user_grants(&self.db, account.id).await?;
-        let groups = user_groups(&self.db, account.id).await?;
-        if groups.is_empty() {
-            return Ok(Some(access));
-        }
-        let shared = group_permission::Entity::find()
-            .filter(group_permission::Column::GroupId.is_in(groups))
-            .all(&self.db)
-            .await?;
-        Ok(Some(with_grants(
-            access,
-            shared.into_iter().map(|p| (p.model, p.action)),
-        )))
+        let access = if account.is_superuser {
+            Access::superuser()
+        } else {
+            let access = user_grants(&self.db, account.id).await?;
+            let groups = user_groups(&self.db, account.id).await?;
+            if groups.is_empty() {
+                access
+            } else {
+                let shared = group_permission::Entity::find()
+                    .filter(group_permission::Column::GroupId.is_in(groups))
+                    .all(&self.db)
+                    .await?;
+                with_grants(access, shared.into_iter().map(|p| (p.model, p.action)))
+            }
+        };
+        // Accounts that are not staff log in through the API only.
+        Ok(Some(if account.is_staff {
+            access
+        } else {
+            access.api_only()
+        }))
     }
 }
 
@@ -793,6 +829,10 @@ pub(crate) async fn delete_user(db: &DatabaseConnection, id: i32) -> Result<(), 
         .filter(api_key::Column::UserId.eq(id))
         .exec(&txn)
         .await?;
+    refresh_token::Entity::delete_many()
+        .filter(refresh_token::Column::UserId.eq(id))
+        .exec(&txn)
+        .await?;
     txn.commit().await?;
     Ok(())
 }
@@ -911,12 +951,14 @@ pub(crate) async fn unlink_identity(
 ///
 /// 1. the account this identity was linked to before;
 /// 2. otherwise the account with the address the site vouches for, which is then linked;
-/// 3. otherwise a new account, if [`crate::settings::Signup`] allows the address.
+/// 3. otherwise a new account, if [`crate::settings::Signup`] allows the address: staff
+///    when `staff` (a login to the admin), otherwise an account for the API only.
 pub(crate) async fn resolve_identity(
     db: &DatabaseConnection,
     methods: &crate::oauth::Methods,
     label: &str,
     found: &crate::oauth::Identity,
+    staff: bool,
 ) -> Result<Result<user::Model, String>, AdminError> {
     let now = chrono::Utc::now();
     let link = identity::Entity::find()
@@ -960,6 +1002,7 @@ pub(crate) async fn resolve_identity(
                 found.first_name.clone(),
                 found.last_name.clone(),
                 &methods.signup_groups,
+                staff,
                 &found.provider,
             )
             .await?
@@ -985,14 +1028,16 @@ pub(crate) async fn resolve_identity(
 }
 
 /// Creates the account of someone who logged in through another site or a login link for
-/// the first time: active staff without permissions of its own, in `groups`, with a password
-/// nobody knows. `source` names how they came, for the log.
+/// the first time: active, without permissions of its own, in `groups`, with a password
+/// nobody knows. Staff (may use the admin) when `staff`; otherwise it uses the API only.
+/// `source` names how they came, for the log.
 pub(crate) async fn signup(
     db: &DatabaseConnection,
     email: &str,
     first_name: Option<String>,
     last_name: Option<String>,
     groups: &[String],
+    staff: bool,
     source: &str,
 ) -> Result<user::Model, AdminError> {
     // The address is the username, unless an older account already has that name.
@@ -1013,7 +1058,7 @@ pub(crate) async fn signup(
         password_hash: Set(password_hash),
         totp_secret: Set(None),
         is_active: Set(true),
-        is_staff: Set(true),
+        is_staff: Set(staff),
         is_superuser: Set(false),
         totp_last_step: Set(None),
         email: Set(Some(email.to_owned())),

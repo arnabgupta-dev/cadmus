@@ -29,12 +29,14 @@ mod home;
 mod html;
 mod limit;
 mod login;
+mod login_api;
 mod mail;
 pub mod migrations;
 mod oauth;
 mod resource;
 mod seaorm;
 mod server;
+mod sessions;
 pub mod settings;
 mod storage;
 mod uploads;
@@ -52,6 +54,7 @@ pub use docs::DocsConfig;
 pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
 pub use html::clean_html;
+pub use login_api::{LoginOutcome, Logins, TokenPair};
 pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
 pub use resource::{
     Field, FieldKind, Filter, FilterOp, Input, LinkField, ListQuery, ModelOptions, Page, Reference,

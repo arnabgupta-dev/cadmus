@@ -424,8 +424,12 @@ pub struct AuthSettings {
     /// Groups that accounts created by [`Signup`] are put in, by name. New accounts are staff
     /// without permissions of their own, so these groups decide what they may do.
     pub signup_groups: Vec<String>,
-    /// How long a login lasts (default 1 hour).
+    /// How long a login lasts (default 1 hour). For apps this is the access token's
+    /// lifetime; they stay logged in with refresh tokens (see `refresh_lifetime`).
     pub token_lifetime: Duration,
+    /// How long an app stays logged in through refresh tokens without logging in again
+    /// (default 30 days). Each refresh gives a new token; zero turns refresh tokens off.
+    pub refresh_lifetime: Duration,
     /// Refuse accounts without two-factor authentication (default `false`).
     pub totp_required: bool,
     /// Send the login cookie over HTTPS only (default `true`). Turn it off only on your own
@@ -447,6 +451,7 @@ impl Default for AuthSettings {
             signup: Signup::Closed,
             signup_groups: Vec::new(),
             token_lifetime: Duration::from_secs(3600),
+            refresh_lifetime: Duration::from_secs(30 * 24 * 3600),
             totp_required: false,
             cookie_secure: true,
             login_max_attempts: 5,

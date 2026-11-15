@@ -35,6 +35,8 @@ const TOTP_STEP_SECS: u64 = 30;
 pub struct AuthConfig {
     jwt_secret: Vec<u8>,
     pub(crate) token_ttl_secs: u64,
+    /// How long an app's login lasts through refresh tokens; `0` for no refresh tokens.
+    pub(crate) refresh_ttl_secs: u64,
     pub(crate) totp_required: bool,
     pub(crate) cookie_secure: bool,
     pub(crate) login_max_attempts: u32,
@@ -52,6 +54,7 @@ impl std::fmt::Debug for AuthConfig {
         f.debug_struct("AuthConfig")
             .field("jwt_secret", &"<redacted>")
             .field("token_ttl_secs", &self.token_ttl_secs)
+            .field("refresh_ttl_secs", &self.refresh_ttl_secs)
             .field("totp_required", &self.totp_required)
             .field("cookie_secure", &self.cookie_secure)
             .field("login_max_attempts", &self.login_max_attempts)
@@ -90,6 +93,7 @@ impl AuthConfig {
         Ok(Self {
             jwt_secret,
             token_ttl_secs: 3600,
+            refresh_ttl_secs: 30 * 24 * 3600,
             totp_required: false,
             cookie_secure: true,
             login_max_attempts: 5,
@@ -158,6 +162,14 @@ impl AuthConfig {
     #[must_use]
     pub fn token_ttl_secs(mut self, secs: u64) -> Self {
         self.token_ttl_secs = secs.max(1);
+        self
+    }
+
+    /// How long an app's login lasts through refresh tokens (default 30 days); `0` turns
+    /// refresh tokens off, so API logins end with their access token.
+    #[must_use]
+    pub fn refresh_ttl_secs(mut self, secs: u64) -> Self {
+        self.refresh_ttl_secs = secs;
         self
     }
 
@@ -532,16 +544,18 @@ fn decoy_hash() -> &'static str {
     HASH.get_or_init(|| hash_password("no account has this password").unwrap_or_default())
 }
 
-/// Checks credentials and returns a signed token.
+/// Checks a username (or e-mail address) and password, counting the attempt against the
+/// login limits. The account if they match, with the key its attempts are counted under:
+/// call [`crate::limit::Limiter::succeeded`] with it once the whole login has passed.
 ///
-/// Every credential failure maps to the same [`AdminError::Unauthorized`] so the response
-/// does not reveal which part was wrong. Too many attempts for one account or from one
-/// address get [`AdminError::RateLimited`] instead, whether or not the password was right.
-pub(crate) async fn login(
+/// A wrong name and a wrong password get the same [`AdminError::Unauthorized`]. Too many
+/// attempts for one account or from one address get [`AdminError::RateLimited`] instead,
+/// whether or not the password was right.
+pub(crate) async fn check_password(
     state: &AdminState,
     credentials: &Credentials,
     address: Option<IpAddr>,
-) -> Result<String, AdminError> {
+) -> Result<(AdminUser, String), AdminError> {
     if !state.auth.methods.password {
         return Err(AdminError::Forbidden(
             "password login is turned off on this site".into(),
@@ -570,9 +584,29 @@ pub(crate) async fn login(
     let matches = tokio::task::spawn_blocking(move || password_matches(&candidate, &hash))
         .await
         .map_err(|e| AdminError::Config(format!("password check task failed: {e}")))?;
-    let Some(user) = user.filter(|_| matches) else {
-        return Err(AdminError::Unauthorized);
-    };
+    match user.filter(|_| matches) {
+        Some(user) => Ok((user, key)),
+        None => Err(AdminError::Unauthorized),
+    }
+}
+
+/// Whether the account may use the admin: active and staff.
+pub(crate) async fn may_use_admin(state: &AdminState, username: &str) -> Result<bool, AdminError> {
+    Ok(state
+        .users
+        .access(username)
+        .await?
+        .is_some_and(|access| access.is_staff()))
+}
+
+/// The admin's password login: password, then the authenticator code typed with it. Signs a
+/// login token for a staff account; others get [`AdminError::Forbidden`].
+pub(crate) async fn login(
+    state: &AdminState,
+    credentials: &Credentials,
+    address: Option<IpAddr>,
+) -> Result<String, AdminError> {
+    let (user, key) = check_password(state, credentials, address).await?;
     match &user.totp_secret {
         Some(secret) => {
             let code = credentials.totp.as_deref().unwrap_or_default();
@@ -584,6 +618,12 @@ pub(crate) async fn login(
         None => {}
     }
     state.limiter.succeeded(&key, address);
+    // Only after both factors, so the answer says nothing to someone guessing passwords.
+    if !may_use_admin(state, &user.username).await? {
+        return Err(AdminError::Forbidden(
+            "this account cannot use the admin".into(),
+        ));
+    }
     state.users.logged_in(&user.username).await?;
     state.auth.issue(&user.username, &user.password_hash)
 }
@@ -1011,6 +1051,15 @@ impl FromRequestParts<Arc<AdminState>> for Session {
         let (bearer, api_key) = credentials(&parts.headers);
         let bearer = bearer.or(api_key);
         match session {
+            // Accounts that are not staff use the API only, whatever they log in with.
+            Ok(Some(session)) if !api && !session.access.is_staff() => {
+                let refused = AdminError::Forbidden("this account cannot use the admin".into());
+                Err(if bearer.is_some() {
+                    ApiError::from(refused).into_response()
+                } else {
+                    refused.into_response()
+                })
+            }
             Ok(Some(session)) => Ok(session),
             // API clients get a status code, not a login page.
             Ok(None) if bearer.is_some() || api => {
@@ -1088,6 +1137,13 @@ impl CurrentUser {
     #[must_use]
     pub fn is_superuser(&self) -> bool {
         self.access.is_superuser() && !self.read_only
+    }
+
+    /// Whether the account is staff, so it may also use the admin. Other accounts log in
+    /// through the API only.
+    #[must_use]
+    pub fn is_staff(&self) -> bool {
+        self.access.is_staff()
     }
 
     /// Whether the request came with a read-only API key, which may only view.

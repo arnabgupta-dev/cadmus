@@ -940,8 +940,14 @@ async fn callback(
     let db = state.accounts.as_ref().ok_or_else(|| {
         AdminError::Config("logging in through providers needs the built-in accounts".into())
     })?;
-    let account = match crate::users::resolve_identity(db, methods, &provider.label, &identity)
-        .await?
+    let account = match crate::users::resolve_identity(
+        db,
+        methods,
+        &provider.label,
+        &identity,
+        true,
+    )
+    .await?
     {
         Ok(account) => account,
         Err(message) => {

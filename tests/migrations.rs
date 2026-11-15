@@ -592,7 +592,7 @@ async fn databases_from_before_migrations_get_the_built_in_tables_brought_up_to_
             "SELECT name FROM cadmus_migration WHERE app = 'auth' ORDER BY id"
         )
         .await,
-        ["0001_initial", "0002_api_keys"]
+        ["0001_initial", "0002_api_keys", "0003_refresh_tokens"]
     );
     // Next time there is nothing to do for them.
     let events = app_v1(&db).migrate_to(None, false).await.unwrap();

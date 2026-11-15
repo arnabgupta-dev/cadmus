@@ -544,10 +544,21 @@ async fn changes_to_an_account_take_effect_immediately() {
     assert!(token(&app, "sam", "another long password").await.is_some());
     assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 403);
 
-    // Not staff: no access at all.
-    let reply = root.post(&app, &path, "username=sam&is_active=true").await;
+    // Not staff: the API still works, with the account's permissions, but the admin does
+    // not, whatever the account logs in with.
+    let reply = root
+        .post(&app, &path, "username=sam&is_active=true&perm=note:view")
+        .await;
     assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
-    assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 401);
+    assert_eq!(status(&app, &sam, "GET", "/api/note", None).await, 200);
+    let (admin, _) = api(&app, &sam, "GET", "/admin/note", None).await;
+    assert_eq!(admin, StatusCode::FORBIDDEN);
+    assert!(
+        Browser::try_login(&app, "sam", "another long password")
+            .await
+            .is_none()
+    );
+    assert!(token(&app, "sam", "another long password").await.is_some());
 
     // Deleted.
     let reply = root.post(&app, &format!("{path}/delete"), "").await;

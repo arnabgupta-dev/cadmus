@@ -409,6 +409,11 @@ async fn login_submit(
             let retry = [(RETRY_AFTER, retry_after_secs.to_string())];
             Ok((retry, page).into_response())
         }
+        Err(AdminError::Forbidden(_)) => login_error(
+            &state,
+            StatusCode::FORBIDDEN,
+            "This account cannot use the admin.".into(),
+        ),
         Err(other) => Err(other),
     }
 }

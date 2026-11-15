@@ -637,9 +637,19 @@ async fn two_factor_can_be_set_from_the_command_line_and_reset_by_a_superuser() 
 #[tokio::test]
 async fn a_site_that_requires_two_factor_does_not_let_it_be_turned_off() {
     let (app, db) = app_with(auth().totp_required(true)).await;
-    // Nobody can log in to set it up, so the first key comes from the command line.
+    // Nobody can log in to set it up, so the first key comes from the command line. The
+    // API says why, once the password is right.
+    let refused = token(&app, "root", PASSWORD, None, None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert!(
+        refused.body.contains("totp_setup_required"),
+        "{}",
+        refused.body
+    );
     assert_eq!(
-        token(&app, "root", PASSWORD, None, None).await.status,
+        token(&app, "root", "wrong password", None, None)
+            .await
+            .status,
         StatusCode::UNAUTHORIZED
     );
     let secret = enable_totp(&db, "root").await.unwrap();

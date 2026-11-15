@@ -169,6 +169,7 @@ impl App {
         let mut auth_config = AuthConfig::new(secret_key)
             .map_err(|e| setting_error("secret_key", e))?
             .token_ttl_secs(auth.token_lifetime.as_secs().max(1))
+            .refresh_ttl_secs(auth.refresh_lifetime.as_secs())
             .totp_required(auth.totp_required)
             .cookie_secure(auth.cookie_secure)
             .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1))
