@@ -28,7 +28,7 @@ use tokio::sync::OnceCell;
 use crate::AdminState;
 use crate::auth::constant_time_eq;
 use crate::error::AdminError;
-use crate::settings::{AuthMethod, OAuthClient, Signup};
+use crate::settings::{AppSettings, AuthMethod, OAuthClient, Signup};
 
 const FLOW_COOKIE: &str = "cadmus_oauth";
 const FLOW_PURPOSE: &str = "oauth-flow";
@@ -59,6 +59,8 @@ pub(crate) struct Methods {
     pub(crate) signup_groups: Vec<String>,
     /// Without a trailing slash.
     public_url: Option<String>,
+    /// The app whose users log in through the API; its `url` without a trailing slash.
+    pub(crate) app: AppSettings,
     /// Built on first use, so sites without providers never load the system's certificates.
     http: OnceLock<Result<reqwest::Client, String>>,
 }
@@ -72,8 +74,61 @@ impl Methods {
             signup: Signup::Closed,
             signup_groups: Vec::new(),
             public_url: None,
+            app: AppSettings::default(),
             http: OnceLock::new(),
         }
+    }
+
+    /// Sets the app whose users log in through the API, checking its addresses.
+    pub(crate) fn with_app(mut self, mut app: AppSettings) -> Result<Self, AdminError> {
+        if let Some(url) = app
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            app.url = Some(check_url("auth.app.url", url)?);
+        } else {
+            app.url = None;
+        }
+        for uri in &mut app.redirect_uris {
+            let trimmed = uri.trim().to_owned();
+            let parsed = url::Url::parse(&trimmed).map_err(|_| {
+                AdminError::Config(format!("auth.app.redirect_uris: `{trimmed}` is not a URL"))
+            })?;
+            if parsed.fragment().is_some() || matches!(parsed.scheme(), "javascript" | "data") {
+                return Err(AdminError::Config(format!(
+                    "auth.app.redirect_uris: `{trimmed}` cannot be a redirect address"
+                )));
+            }
+            *uri = trimmed;
+        }
+        for (name, link) in [
+            ("login", &app.links.login),
+            ("register", &app.links.register),
+            ("reset", &app.links.reset),
+        ] {
+            if !link.contains("{token}") {
+                return Err(AdminError::Config(format!(
+                    "auth.app.links.{name}: must contain `{{token}}`, got `{link}`"
+                )));
+            }
+        }
+        self.app = app;
+        Ok(self)
+    }
+
+    /// The app's address for an e-mailed link, from one of [`AppLinks`]' templates; `None`
+    /// when no app address is set.
+    #[allow(dead_code)] // The e-mailed links for apps come in the next commit.
+    pub(crate) fn app_link(&self, template: &str, token: &str) -> Option<String> {
+        let base = self.app.url.as_deref()?;
+        let path = template.replace("{token}", token);
+        Some(if path.contains("://") {
+            path
+        } else {
+            format!("{base}{path}")
+        })
     }
 
     /// Checks the settings; errors name the setting at fault.
@@ -147,6 +202,7 @@ impl Methods {
             signup,
             signup_groups,
             public_url,
+            app: AppSettings::default(),
             http: OnceLock::new(),
         })
     }
@@ -166,7 +222,7 @@ impl Methods {
         }
     }
 
-    fn http(&self) -> Result<&reqwest::Client, String> {
+    pub(crate) fn http(&self) -> Result<&reqwest::Client, String> {
         self.http
             .get_or_init(build_http_client)
             .as_ref()
@@ -215,7 +271,11 @@ fn build_http_client() -> Result<reqwest::Client, String> {
 }
 
 fn check_public_url(text: &str) -> Result<String, AdminError> {
-    let error = |why: &str| AdminError::Config(format!("server.public_url: {why}, got `{text}`"));
+    check_url("server.public_url", text)
+}
+
+fn check_url(setting: &str, text: &str) -> Result<String, AdminError> {
+    let error = |why: &str| AdminError::Config(format!("{setting}: {why}, got `{text}`"));
     let url = url::Url::parse(text).map_err(|_| error("not a URL"))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(error("must be an http:// or https:// address"));
@@ -243,7 +303,7 @@ pub(crate) struct Provider {
 }
 
 enum Kind {
-    Oidc(Oidc),
+    Oidc(Box<Oidc>),
     GitHub,
     Facebook,
 }
@@ -257,6 +317,8 @@ struct Oidc {
     microsoft_shared: bool,
     microsoft: bool,
     discovery: OnceCell<Discovery>,
+    /// The provider's signing keys, for ID tokens an app sends; with when they were read.
+    keys: std::sync::Mutex<Option<(Vec<jsonwebtoken::jwk::Jwk>, std::time::Instant)>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,19 +330,23 @@ struct Discovery {
     userinfo_endpoint: Option<String>,
     #[serde(default)]
     token_endpoint_auth_methods_supported: Vec<String>,
+    /// Where the provider publishes the keys its ID tokens are signed with.
+    #[serde(default)]
+    jwks_uri: Option<String>,
 }
 
 impl Provider {
     fn new(method: AuthMethod) -> Result<Self, String> {
         let name = method.name().to_owned();
         let oidc = |issuer: String, trust_email, microsoft, microsoft_shared| {
-            Kind::Oidc(Oidc {
+            Kind::Oidc(Box::new(Oidc {
                 issuer,
                 trust_email,
                 microsoft_shared,
                 microsoft,
                 discovery: OnceCell::new(),
-            })
+                keys: std::sync::Mutex::new(None),
+            }))
         };
         let (label, client, kind) = match method {
             AuthMethod::Password | AuthMethod::MagicLink => unreachable!("handled by the caller"),
@@ -323,6 +389,7 @@ impl Provider {
                         .name
                         .chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                // Built-in methods, and the API's own addresses under /api/auth/.
                 let reserved = [
                     "password",
                     "magic-link",
@@ -330,6 +397,13 @@ impl Provider {
                     "microsoft",
                     "github",
                     "facebook",
+                    "token",
+                    "totp",
+                    "refresh",
+                    "logout",
+                    "me",
+                    "link",
+                    "register",
                 ];
                 if !valid_name || reserved.contains(&provider.name.as_str()) {
                     return Err(format!(
@@ -440,30 +514,36 @@ impl Provider {
         Ok(url.into())
     }
 
-    /// Trades the code for the identity of whoever logged in.
-    async fn identify(
+    /// Trades the code for the identity of whoever logged in. `verifier` is the PKCE
+    /// verifier the login started with, if it used one; `nonce` the one sent to the provider,
+    /// if any, which the ID token must then carry.
+    pub(crate) async fn identify(
         &self,
         http: &reqwest::Client,
         code: &str,
-        flow: &Flow,
+        verifier: Option<&str>,
+        nonce: Option<&str>,
         redirect_uri: &str,
     ) -> Result<Identity, Failure> {
+        let mut exchange = vec![
+            ("client_id", self.client.client_id.as_str()),
+            ("client_secret", self.client.client_secret.as_str()),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+        ];
+        if let Some(verifier) = verifier {
+            exchange.push(("code_verifier", verifier));
+        }
         match &self.kind {
             Kind::Oidc(oidc) => {
-                self.identify_oidc(oidc, http, code, flow, redirect_uri)
+                self.identify_oidc(oidc, http, code, verifier, nonce, redirect_uri)
                     .await
             }
             Kind::GitHub => {
                 let token: Value = get_json(
                     http.post(GITHUB_TOKEN)
                         .header(header::ACCEPT, "application/json")
-                        .form(&[
-                            ("client_id", self.client.client_id.as_str()),
-                            ("client_secret", self.client.client_secret.as_str()),
-                            ("code", code),
-                            ("redirect_uri", redirect_uri),
-                            ("code_verifier", flow.verifier.as_str()),
-                        ]),
+                        .form(&exchange),
                 )
                 .await
                 .map_err(Failure::Broken)?;
@@ -480,15 +560,9 @@ impl Provider {
                 github_identity(&self.name, &user, &emails)
             }
             Kind::Facebook => {
-                let token: Value = get_json(http.get(FACEBOOK_TOKEN).query(&[
-                    ("client_id", self.client.client_id.as_str()),
-                    ("client_secret", self.client.client_secret.as_str()),
-                    ("code", code),
-                    ("redirect_uri", redirect_uri),
-                    ("code_verifier", flow.verifier.as_str()),
-                ]))
-                .await
-                .map_err(Failure::Broken)?;
+                let token: Value = get_json(http.get(FACEBOOK_TOKEN).query(&exchange))
+                    .await
+                    .map_err(Failure::Broken)?;
                 let access = access_token(&token)?;
                 // Proves the request comes from the app's owner, not just a token holder.
                 let mut mac = Hmac::<Sha256>::new_from_slice(self.client.client_secret.as_bytes())
@@ -512,7 +586,8 @@ impl Provider {
         oidc: &Oidc,
         http: &reqwest::Client,
         code: &str,
-        flow: &Flow,
+        verifier: Option<&str>,
+        nonce: Option<&str>,
         redirect_uri: &str,
     ) -> Result<Identity, Failure> {
         let discovery = self.discovery(oidc, http).await.map_err(Failure::Broken)?;
@@ -520,8 +595,10 @@ impl Provider {
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", redirect_uri),
-            ("code_verifier", flow.verifier.as_str()),
         ];
+        if let Some(verifier) = verifier {
+            form.push(("code_verifier", verifier));
+        }
         let methods = &discovery.token_endpoint_auth_methods_supported;
         // HTTP Basic is the standard's default; some providers only take the form fields.
         let basic = methods.is_empty() || methods.iter().any(|m| m == "client_secret_basic");
@@ -553,8 +630,9 @@ impl Provider {
         check_id_token(
             oidc,
             discovery,
-            &self.client.client_id,
-            &flow.nonce,
+            &[self.client.client_id.as_str()],
+            // A login that sent no nonce still refuses a token that carries one.
+            Some(nonce.unwrap_or_default()),
             &claims,
             unix_now(),
         )
@@ -579,6 +657,133 @@ impl Provider {
             }
         }
         Ok(identity)
+    }
+}
+
+// ---- ID tokens from apps -----------------------------------------------------------------------
+
+/// How long signing keys are kept before they are read again.
+const KEYS_SECS: u64 = 3600;
+
+impl Provider {
+    /// Whether this provider issues ID tokens an app can send (OpenID Connect providers).
+    pub(crate) fn issues_id_tokens(&self) -> bool {
+        matches!(self.kind, Kind::Oidc(_))
+    }
+
+    /// The identity in an ID token an app received from the provider. Unlike a token this
+    /// server fetched itself, it came through the app, so its signature is checked against
+    /// the provider's published keys, then every claim as usual. Tokens issued to
+    /// `client_id` or one of [`OAuthClient::audiences`] are accepted; `nonce`, if given,
+    /// must match.
+    pub(crate) async fn identify_id_token(
+        &self,
+        http: &reqwest::Client,
+        id_token: &str,
+        nonce: Option<&str>,
+    ) -> Result<Identity, Failure> {
+        let Kind::Oidc(oidc) = &self.kind else {
+            return Err(Failure::Broken(format!(
+                "{} does not issue ID tokens",
+                self.label
+            )));
+        };
+        let discovery = self.discovery(oidc, http).await.map_err(Failure::Broken)?;
+        let claims = self
+            .verified_claims(oidc, discovery, http, id_token)
+            .await
+            .map_err(Failure::Broken)?;
+        let audiences: Vec<&str> = std::iter::once(self.client.client_id.as_str())
+            .chain(self.client.audiences.iter().map(String::as_str))
+            .collect();
+        check_id_token(oidc, discovery, &audiences, nonce, &claims, unix_now())
+            .map_err(Failure::Broken)?;
+        oidc_identity(&self.name, oidc, &claims)
+    }
+
+    /// The claims of `token` if a current key of the provider signed it.
+    async fn verified_claims(
+        &self,
+        oidc: &Oidc,
+        discovery: &Discovery,
+        http: &reqwest::Client,
+        token: &str,
+    ) -> Result<Value, String> {
+        use jsonwebtoken::{AlgorithmFamily, DecodingKey, Validation};
+        let header =
+            jsonwebtoken::decode_header(token).map_err(|e| format!("not an ID token: {e}"))?;
+        // Only public-key signatures: an HMAC one would use the client secret, which an app
+        // must not have.
+        if header.alg.family() == AlgorithmFamily::Hmac {
+            return Err(format!(
+                "ID tokens signed with {:?} are refused",
+                header.alg
+            ));
+        }
+        let jwks_uri = discovery
+            .jwks_uri
+            .as_deref()
+            .ok_or("the provider publishes no signing keys (no jwks_uri)")?;
+        let mut key = None;
+        for refresh in [false, true] {
+            let keys = self.signing_keys(oidc, http, jwks_uri, refresh).await?;
+            key = keys
+                .iter()
+                .find(|jwk| match (&header.kid, &jwk.common.key_id) {
+                    (Some(wanted), Some(kid)) => wanted == kid,
+                    // Without key IDs, a provider with a single key.
+                    (None, _) => keys.len() == 1,
+                    (Some(_), None) => false,
+                })
+                .cloned();
+            // An unknown key may be a new one: read the keys again, once.
+            if key.is_some() {
+                break;
+            }
+        }
+        let key = key.ok_or("the ID token is signed with a key the provider does not publish")?;
+        let key = DecodingKey::from_jwk(&key).map_err(|e| format!("unusable signing key: {e}"))?;
+        let mut validation = Validation::new(header.alg);
+        // Checked by `check_id_token`, against every accepted client ID.
+        validation.validate_aud = false;
+        validation.leeway = SKEW_SECS;
+        validation.set_required_spec_claims(&["exp", "iss", "sub"]);
+        jsonwebtoken::decode::<Value>(token, &key, &validation)
+            .map(|data| data.claims)
+            .map_err(|e| format!("the ID token's signature or dates are not valid: {e}"))
+    }
+
+    /// The provider's signing keys, read at most once an hour unless `refresh`.
+    async fn signing_keys(
+        &self,
+        oidc: &Oidc,
+        http: &reqwest::Client,
+        jwks_uri: &str,
+        refresh: bool,
+    ) -> Result<Vec<jsonwebtoken::jwk::Jwk>, String> {
+        if !refresh {
+            let cached = oidc.keys.lock().map_err(|e| e.to_string())?;
+            if let Some((keys, read)) = cached.as_ref()
+                && read.elapsed() < Duration::from_secs(KEYS_SECS)
+            {
+                return Ok(keys.clone());
+            }
+        }
+        let document: Value = get_json(http.get(jwks_uri)).await?;
+        // Keys this library cannot use (encryption keys, unknown types) are skipped.
+        let keys: Vec<jsonwebtoken::jwk::Jwk> = document
+            .get("keys")
+            .and_then(Value::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter(|key| key.get("use").and_then(Value::as_str) != Some("enc"))
+                    .filter_map(|key| serde_json::from_value(key.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        *oidc.keys.lock().map_err(|e| e.to_string())? =
+            Some((keys.clone(), std::time::Instant::now()));
+        Ok(keys)
     }
 }
 
@@ -635,8 +840,8 @@ fn split_name(name: Option<String>) -> (Option<String>, Option<String>) {
 fn check_id_token(
     oidc: &Oidc,
     discovery: &Discovery,
-    client_id: &str,
-    nonce: &str,
+    audiences: &[&str],
+    nonce: Option<&str>,
     claims: &Value,
     now: u64,
 ) -> Result<(), String> {
@@ -650,11 +855,12 @@ fn check_id_token(
     if issuer.trim_end_matches('/') != expected.trim_end_matches('/') {
         return Err(format!("id_token issuer `{issuer}` is not `{expected}`"));
     }
+    let ours = |aud: Option<&str>| aud.is_some_and(|aud| audiences.contains(&aud));
     let audience_ok = match claims.get("aud") {
-        Some(Value::String(aud)) => aud == client_id,
+        Some(Value::String(aud)) => ours(Some(aud)),
         Some(Value::Array(auds)) => {
-            auds.iter().any(|aud| aud.as_str() == Some(client_id))
-                && (auds.len() == 1 || text(claims, "azp").as_deref() == Some(client_id))
+            auds.iter().any(|aud| ours(aud.as_str()))
+                && (auds.len() == 1 || ours(text(claims, "azp").as_deref()))
         }
         _ => false,
     };
@@ -665,9 +871,11 @@ fn check_id_token(
     if expires + SKEW_SECS < now {
         return Err("id_token has expired".into());
     }
-    let sent = text(claims, "nonce").unwrap_or_default();
-    if !constant_time_eq(sent.as_bytes(), nonce.as_bytes()) {
-        return Err("id_token nonce does not match this login".into());
+    if let Some(nonce) = nonce {
+        let sent = text(claims, "nonce").unwrap_or_default();
+        if !constant_time_eq(sent.as_bytes(), nonce.as_bytes()) {
+            return Err("id_token nonce does not match this login".into());
+        }
     }
     Ok(())
 }
@@ -920,7 +1128,17 @@ async fn callback(
 
     let redirect_uri = methods.redirect_uri(&state.base, provider);
     let identity = match methods.http() {
-        Ok(http) => provider.identify(http, code, &flow, &redirect_uri).await,
+        Ok(http) => {
+            provider
+                .identify(
+                    http,
+                    code,
+                    Some(&flow.verifier),
+                    Some(&flow.nonce),
+                    &redirect_uri,
+                )
+                .await
+        }
         Err(problem) => Err(Failure::Broken(problem)),
     };
     let identity = match identity {
@@ -971,6 +1189,7 @@ mod tests {
             microsoft_shared: shared,
             microsoft,
             discovery: OnceCell::new(),
+            keys: std::sync::Mutex::new(None),
         }
     }
 
@@ -981,6 +1200,7 @@ mod tests {
             token_endpoint: String::new(),
             userinfo_endpoint: None,
             token_endpoint_auth_methods_supported: Vec::new(),
+            jwks_uri: None,
         }
     }
 
@@ -997,20 +1217,27 @@ mod tests {
         let provider = oidc(false, false, false);
         let doc = discovery("https://id.example.com");
         let good = json!({"iss": "https://id.example.com", "aud": "app", "exp": 1000, "nonce": "n1", "sub": "s"});
-        assert!(check_id_token(&provider, &doc, "app", "n1", &good, 900).is_ok());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &good, 900).is_ok());
         // Slightly late clocks are tolerated, expired tokens are not.
-        assert!(check_id_token(&provider, &doc, "app", "n1", &good, 1050).is_ok());
-        assert!(check_id_token(&provider, &doc, "app", "n1", &good, 1100).is_err());
-        assert!(check_id_token(&provider, &doc, "other", "n1", &good, 900).is_err());
-        assert!(check_id_token(&provider, &doc, "app", "n2", &good, 900).is_err());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &good, 1050).is_ok());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &good, 1100).is_err());
+        assert!(check_id_token(&provider, &doc, &["other"], Some("n1"), &good, 900).is_err());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n2"), &good, 900).is_err());
         let mut forged = good.clone();
         forged["iss"] = json!("https://evil.example.com");
-        assert!(check_id_token(&provider, &doc, "app", "n1", &forged, 900).is_err());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &forged, 900).is_err());
         let mut shared = good.clone();
         shared["aud"] = json!(["app", "other"]);
-        assert!(check_id_token(&provider, &doc, "app", "n1", &shared, 900).is_err());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &shared, 900).is_err());
         shared["azp"] = json!("app");
-        assert!(check_id_token(&provider, &doc, "app", "n1", &shared, 900).is_ok());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &shared, 900).is_ok());
+        // Any of the accepted client IDs, such as a mobile app's.
+        let mut mobile = good.clone();
+        mobile["aud"] = json!("ios");
+        assert!(check_id_token(&provider, &doc, &["app", "ios"], Some("n1"), &mobile, 900).is_ok());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n1"), &mobile, 900).is_err());
+        // No nonce to compare: an app that sent none.
+        assert!(check_id_token(&provider, &doc, &["app"], None, &good, 900).is_ok());
     }
 
     #[test]
@@ -1021,10 +1248,10 @@ mod tests {
             "iss": "https://login.microsoftonline.com/abc-123/v2.0", "tid": "abc-123",
             "aud": "app", "exp": 1000, "nonce": "n", "sub": "s", "email": "Ada@Example.com"
         });
-        assert!(check_id_token(&provider, &doc, "app", "n", &claims, 900).is_ok());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n"), &claims, 900).is_ok());
         let mut other = claims.clone();
         other["tid"] = json!("def-456");
-        assert!(check_id_token(&provider, &doc, "app", "n", &other, 900).is_err());
+        assert!(check_id_token(&provider, &doc, &["app"], Some("n"), &other, 900).is_err());
 
         // Without `xms_edov`, a shared-directory address is not trusted.
         let identity = oidc_identity("microsoft", &provider, &claims).unwrap();

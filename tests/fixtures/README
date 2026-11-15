@@ -1,0 +1,2 @@
+RSA keys made only for the tests, which sign ID tokens for a fake provider. They
+protect nothing; never use them anywhere else.

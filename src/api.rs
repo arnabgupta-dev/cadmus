@@ -40,6 +40,10 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         )
         .route(&format!("{b}/auth/logout"), post(crate::login_api::logout))
         .route(&format!("{b}/auth/me"), get(crate::login_api::me))
+        .route(
+            &format!("{b}/auth/{{provider}}"),
+            post(crate::login_api::provider),
+        )
         .route(&format!("{b}/{{model}}"), get(list).post(create))
         .route(
             &format!("{b}/{{model}}/{{id}}"),

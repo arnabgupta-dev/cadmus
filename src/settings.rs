@@ -442,6 +442,50 @@ pub struct AuthSettings {
     /// Whether accounts may make API keys for programs calling the REST API (default
     /// `true`). Turned off, existing keys stop working.
     pub api_keys: bool,
+    /// The app people log in to through the REST API: where e-mailed links point and which
+    /// addresses providers may send people back to.
+    pub app: AppSettings,
+}
+
+/// The app (a web or mobile front end) whose users log in through the REST API.
+#[derive(Debug, Clone, Default)]
+pub struct AppSettings {
+    /// Where the app is, e.g. `https://app.example.com`. E-mailed login links, sign-up
+    /// confirmations and password resets for API users point here (see `links`); the
+    /// endpoints that send them are off until it is set.
+    pub url: Option<String>,
+    /// Addresses of the app that providers may send people back to with a code, for
+    /// `POST /api/auth/<provider>` with `code` and `redirect_uri`. Exact matches only; each
+    /// must also be registered with the provider.
+    pub redirect_uris: Vec<String>,
+    /// Paths in the app for each e-mailed link; `{token}` is replaced by the token.
+    pub links: AppLinks,
+}
+
+/// Where in the app each e-mailed link goes, as paths under [`AppSettings::url`] (or full
+/// addresses). `{token}` is replaced by the link's token, which the app then sends back to
+/// the API.
+#[derive(Debug, Clone)]
+pub struct AppLinks {
+    /// A login link: send the token to `POST /api/auth/link/verify` (default
+    /// `/login/link?token={token}`).
+    pub login: String,
+    /// A sign-up confirmation: send it to `POST /api/auth/register/verify` (default
+    /// `/register/verify?token={token}`).
+    pub register: String,
+    /// A password reset: send it with the new password to `POST /api/auth/password/reset`
+    /// (default `/password/reset?token={token}`).
+    pub reset: String,
+}
+
+impl Default for AppLinks {
+    fn default() -> Self {
+        Self {
+            login: "/login/link?token={token}".into(),
+            register: "/register/verify?token={token}".into(),
+            reset: "/password/reset?token={token}".into(),
+        }
+    }
 }
 
 impl Default for AuthSettings {
@@ -457,6 +501,7 @@ impl Default for AuthSettings {
             login_max_attempts: 5,
             login_lockout: Duration::from_secs(300),
             api_keys: true,
+            app: AppSettings::default(),
         }
     }
 }
@@ -519,6 +564,9 @@ pub struct OAuthClient {
     pub client_id: String,
     /// The app's secret; keep it in the environment.
     pub client_secret: String,
+    /// Other client IDs of yours whose ID tokens are accepted at `POST /api/auth/<name>`,
+    /// such as the iOS and Android apps' own IDs at Google. `client_id` always is.
+    pub audiences: Vec<String>,
 }
 
 impl OAuthClient {
@@ -528,19 +576,41 @@ impl OAuthClient {
         Self {
             client_id: client_id.into(),
             client_secret: client_secret.into(),
+            audiences: Vec::new(),
         }
     }
 
+    /// Also accepts ID tokens issued to these client IDs (see [`OAuthClient::audiences`]).
+    #[must_use]
+    pub fn audiences<I, S>(mut self, client_ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.audiences.extend(
+            client_ids
+                .into_iter()
+                .map(Into::into)
+                .map(|id: String| id.trim().to_owned())
+                .filter(|id| !id.is_empty()),
+        );
+        self
+    }
+
     /// Reads `<PREFIX>_CLIENT_ID` and `<PREFIX>_CLIENT_SECRET` from the environment, e.g.
-    /// `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` for `from_env("GOOGLE")`.
+    /// `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` for `from_env("GOOGLE")`, and the
+    /// optional `<PREFIX>_AUDIENCES`: other client IDs, separated by commas, whose ID tokens
+    /// are accepted too.
     ///
     /// # Errors
     /// Returns [`AdminError::Config`] naming the variable that is missing.
     pub fn from_env(prefix: &str) -> Result<Self, AdminError> {
-        Ok(Self {
-            client_id: env(&format!("{prefix}_CLIENT_ID"))?,
-            client_secret: env(&format!("{prefix}_CLIENT_SECRET"))?,
-        })
+        let audiences = env_opt(&format!("{prefix}_AUDIENCES")).unwrap_or_default();
+        Ok(Self::new(
+            env(&format!("{prefix}_CLIENT_ID"))?,
+            env(&format!("{prefix}_CLIENT_SECRET"))?,
+        )
+        .audiences(audiences.split(',')))
     }
 }
 
@@ -550,6 +620,7 @@ impl std::fmt::Debug for OAuthClient {
         f.debug_struct("OAuthClient")
             .field("client_id", &self.client_id)
             .field("client_secret", &"<hidden>")
+            .field("audiences", &self.audiences)
             .finish()
     }
 }

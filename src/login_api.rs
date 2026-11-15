@@ -358,3 +358,109 @@ impl<S: Send + Sync> FromRequestParts<S> for Logins {
         }
     }
 }
+
+#[derive(Deserialize)]
+pub(crate) struct ProviderBody {
+    /// An ID token the app got from the provider (OpenID Connect providers).
+    id_token: Option<String>,
+    /// Or the code the provider sent back to the app, with what the app used to get it.
+    code: Option<String>,
+    code_verifier: Option<String>,
+    redirect_uri: Option<String>,
+    /// The nonce the app sent to the provider, if any; the ID token must carry it.
+    nonce: Option<String>,
+}
+
+/// `POST /api/auth/{provider}`: a login the app did with another site. The app sends either
+/// the ID token it received (Google, Microsoft, any OpenID Connect provider), or the code the
+/// provider sent back to it with its `redirect_uri` and PKCE `code_verifier` (every provider,
+/// including GitHub and Facebook). Then the same rules as the admin: the account linked to
+/// that identity, or the one with the address the provider vouches for, or a new account
+/// (not staff) if `signup` allows the address.
+pub(crate) async fn provider(
+    State(state): Shared,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProviderBody>,
+) -> ApiResult<LoginOutcome> {
+    let methods = &state.auth.methods;
+    let provider = methods
+        .provider(&name)
+        .ok_or_else(|| AdminError::NotFound(format!("login method `{name}`")))?;
+    let http = methods.http().map_err(|problem| {
+        tracing::warn!(provider = %provider.name, %problem, "login provider unavailable");
+        AdminError::custom(
+            StatusCode::BAD_GATEWAY,
+            "provider_unavailable",
+            format!(
+                "{} cannot be reached; try again in a moment",
+                provider.label
+            ),
+        )
+    })?;
+    let filled =
+        |value: Option<String>| value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let nonce = filled(body.nonce);
+    let identity = match (filled(body.id_token), filled(body.code)) {
+        (Some(id_token), None) => {
+            if !provider.issues_id_tokens() {
+                return Err(AdminError::BadInput {
+                    field: "id_token".into(),
+                    message: format!(
+                        "{} issues no ID tokens; send the `code` it gave the app instead",
+                        provider.label
+                    ),
+                }
+                .into());
+            }
+            provider
+                .identify_id_token(http, &id_token, nonce.as_deref())
+                .await
+        }
+        (None, Some(code)) => {
+            let redirect_uri = filled(body.redirect_uri).ok_or_else(|| AdminError::BadInput {
+                field: "redirect_uri".into(),
+                message: "send the redirect_uri the app used to get the code".into(),
+            })?;
+            if !methods.app.redirect_uris.contains(&redirect_uri) {
+                return Err(AdminError::BadInput {
+                    field: "redirect_uri".into(),
+                    message: "not one of the addresses in auth.app.redirect_uris".into(),
+                }
+                .into());
+            }
+            provider
+                .identify(
+                    http,
+                    &code,
+                    filled(body.code_verifier).as_deref(),
+                    nonce.as_deref(),
+                    &redirect_uri,
+                )
+                .await
+        }
+        _ => {
+            return Err(AdminError::Unsupported(
+                "send either `id_token` or `code` (with `redirect_uri`)".into(),
+            )
+            .into());
+        }
+    };
+    let identity = identity.map_err(|crate::oauth::Failure::Broken(problem)| {
+        tracing::warn!(provider = %provider.name, %problem, "API login through provider failed");
+        AdminError::custom(
+            StatusCode::UNAUTHORIZED,
+            "provider_login_failed",
+            format!("{} did not confirm this login", provider.label),
+        )
+    })?;
+    let db = state.accounts.as_ref().ok_or_else(|| {
+        AdminError::Config("logging in through providers needs the built-in accounts".into())
+    })?;
+    match crate::users::resolve_identity(db, methods, &provider.label, &identity, false).await? {
+        Ok(account) => Ok(finish(&state, &account.username).await?),
+        Err(message) => {
+            tracing::warn!(provider = %provider.name, email = ?identity.email, "API login through provider refused");
+            Err(AdminError::custom(StatusCode::FORBIDDEN, "no_account", message).into())
+        }
+    }
+}

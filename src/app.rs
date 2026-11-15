@@ -174,12 +174,15 @@ impl App {
             .cookie_secure(auth.cookie_secure)
             .login_limit(auth.login_max_attempts, auth.login_lockout.as_secs().max(1))
             .api_keys(auth.api_keys);
-        auth_config = auth_config.with_methods(crate::oauth::Methods::new(
-            auth.methods,
-            auth.signup,
-            auth.signup_groups,
-            server.public_url.as_deref(),
-        )?);
+        auth_config = auth_config.with_methods(
+            crate::oauth::Methods::new(
+                auth.methods,
+                auth.signup,
+                auth.signup_groups,
+                server.public_url.as_deref(),
+            )?
+            .with_app(auth.app)?,
+        );
         if let Some(header) = server.client_ip_header.as_deref().filter(|h| !h.is_empty()) {
             auth_config = auth_config
                 .client_ip_header(header)
