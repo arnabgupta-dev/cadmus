@@ -55,12 +55,23 @@ async fn setup(max_file_bytes: u64) -> Site {
     app.migrate().await.unwrap();
     create_superuser(&db, "root", PASSWORD).await.unwrap();
     let app = app.router().unwrap();
+    let (cookie, csrf) = login(&app, "root").await;
+    Site {
+        app,
+        db,
+        cookie,
+        csrf,
+    }
+}
+
+/// Logs in to the admin; the login cookie and the CSRF token for its forms.
+async fn login(app: &Router, username: &str) -> (String, String) {
     let login = send(
-        &app,
+        app,
         Request::post("/admin/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!(
-                "username=root&password={}",
+                "username={username}&password={}",
                 PASSWORD.replace(' ', "+")
             )))
             .unwrap(),
@@ -76,7 +87,7 @@ async fn setup(max_file_bytes: u64) -> Site {
         .next()
         .unwrap()
         .to_owned();
-    let home = get(&app, "/admin/", &cookie).await;
+    let home = get(app, "/admin/", &cookie).await;
     let csrf = home
         .text()
         .split("name=\"_csrf\" value=\"")
@@ -84,12 +95,7 @@ async fn setup(max_file_bytes: u64) -> Site {
         .and_then(|rest| rest.split('"').next())
         .unwrap()
         .to_owned();
-    Site {
-        app,
-        db,
-        cookie,
-        csrf,
-    }
+    (cookie, csrf)
 }
 
 struct Reply {
@@ -158,10 +164,14 @@ fn multipart(fields: &[(&str, &str)], files: &[(&str, &str, &str, &[u8])]) -> Ve
 }
 
 async fn submit(site: &Site, path: &str, body: Vec<u8>) -> Reply {
+    submit_as(&site.app, &site.cookie, path, body).await
+}
+
+async fn submit_as(app: &Router, cookie: &str, path: &str, body: Vec<u8>) -> Reply {
     send(
-        &site.app,
+        app,
         Request::post(path)
-            .header(header::COOKIE, &site.cookie)
+            .header(header::COOKIE, cookie)
             .header(
                 header::CONTENT_TYPE,
                 format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -170,6 +180,61 @@ async fn submit(site: &Site, path: &str, body: Vec<u8>) -> Reply {
             .unwrap(),
     )
     .await
+}
+
+/// An API request with a login token and an optional JSON body.
+async fn api(app: &Router, token: &str, method: &str, path: &str, body: Option<&str>) -> Reply {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if body.is_some() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    send(
+        app,
+        request
+            .body(Body::from(body.unwrap_or_default().to_owned()))
+            .unwrap(),
+    )
+    .await
+}
+
+async fn token(app: &Router, username: &str) -> String {
+    let body = format!(r#"{{"username":"{username}","password":"{PASSWORD}"}}"#);
+    let reply = send(
+        app,
+        Request::post("/api/auth/token")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let json: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+    json["access_token"].as_str().unwrap().to_owned()
+}
+
+/// Adds an active staff account through the Users page, with these permissions.
+async fn add_staff(site: &Site, username: &str, perms: &[&str]) {
+    let mut fields = format!(
+        "_csrf={}&username={username}&password={}&is_active=true&is_staff=true",
+        site.csrf,
+        PASSWORD.replace(' ', "+")
+    );
+    for perm in perms {
+        fields.push_str(&format!("&perm={perm}"));
+    }
+    let reply = send(
+        &site.app,
+        Request::post("/admin/auth/users/new")
+            .header(header::COOKIE, &site.cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(fields))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.text());
 }
 
 async fn product(db: &DatabaseConnection, id: i32) -> product::Model {
@@ -377,4 +442,192 @@ async fn file_fields_need_uploads_and_an_integer_column() {
         .uploads(Uploads::new(db.clone(), Storage::memory()))
         .model::<product::Entity>(ModelOptions::new().file_fields(["name"]));
     assert!(matches!(text_column.router(), Err(AdminError::Config(m)) if m.contains("integer")));
+}
+
+#[tokio::test]
+async fn a_file_field_names_only_files_its_writer_may_see() {
+    let site = setup(1 << 20).await;
+    // root's product, with a file only root and accounts that may view files can download.
+    let created = submit(
+        &site,
+        "/admin/product/new",
+        multipart(
+            &[("_csrf", &site.csrf), ("name", "Payroll"), ("photo", "")],
+            &[("photo__upload", "salaries.png", "image/png", PNG)],
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.text());
+    let secret = product(&site.db, 1).await.photo.unwrap();
+
+    // clerk may work with products but not files.
+    add_staff(
+        &site,
+        "clerk",
+        &["product:view", "product:add", "product:change"],
+    )
+    .await;
+    let clerk = token(&site.app, "clerk").await;
+    let refused = |reply: &Reply| {
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.text()
+        );
+        assert!(
+            reply.text().contains(r#""field":"photo""#),
+            "{}",
+            reply.text()
+        );
+    };
+
+    // Through the API: someone else's file and a file that does not exist get the same answer.
+    let stolen = api(
+        &site.app,
+        &clerk,
+        "POST",
+        "/api/product",
+        Some(&format!(r#"{{"name":"Trojan","photo":{secret}}}"#)),
+    )
+    .await;
+    refused(&stolen);
+    let missing = api(
+        &site.app,
+        &clerk,
+        "POST",
+        "/api/product",
+        Some(r#"{"name":"Ghost","photo":999}"#),
+    )
+    .await;
+    refused(&missing);
+    assert_eq!(
+        stolen.text().replace(&secret.to_string(), "N"),
+        missing.text().replace("999", "N")
+    );
+    let own = api(
+        &site.app,
+        &clerk,
+        "POST",
+        "/api/product",
+        Some(r#"{"name":"Mine"}"#),
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::CREATED, "{}", own.text());
+    refused(
+        &api(
+            &site.app,
+            &clerk,
+            "PATCH",
+            "/api/product/2",
+            Some(&format!(r#"{{"photo":{secret}}}"#)),
+        )
+        .await,
+    );
+    assert_eq!(product(&site.db, 2).await.photo, None);
+
+    // Through the admin form, by editing the hidden field.
+    let (cookie, csrf) = login(&site.app, "clerk").await;
+    let forged = submit_as(
+        &site.app,
+        &cookie,
+        "/admin/product/new",
+        multipart(
+            &[
+                ("_csrf", &csrf),
+                ("name", "Trojan"),
+                ("photo", &secret.to_string()),
+            ],
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(forged.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let forged = submit_as(
+        &site.app,
+        &cookie,
+        "/admin/product/2",
+        multipart(
+            &[
+                ("_csrf", &csrf),
+                ("name", "Mine"),
+                ("photo", &secret.to_string()),
+            ],
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(forged.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(product::Entity::find().count(&site.db).await.unwrap(), 2);
+    assert_eq!(product(&site.db, 2).await.photo, None);
+    let download = get(&site.app, "/admin/product/2/file/photo", &cookie).await;
+    assert_eq!(download.status, StatusCode::NOT_FOUND);
+
+    // A row's own file may stay: editing root's product keeps its photo.
+    let kept = submit_as(
+        &site.app,
+        &cookie,
+        "/admin/product/1",
+        multipart(
+            &[
+                ("_csrf", &csrf),
+                ("name", "Payroll 2026"),
+                ("photo", &secret.to_string()),
+            ],
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(kept.status, StatusCode::SEE_OTHER, "{}", kept.text());
+    let kept = api(
+        &site.app,
+        &clerk,
+        "PUT",
+        "/api/product/1",
+        Some(&format!(r#"{{"name":"Payroll","photo":{secret}}}"#)),
+    )
+    .await;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.text());
+    assert_eq!(product(&site.db, 1).await.photo, Some(secret));
+
+    // A file clerk uploaded may go in any of clerk's rows.
+    let uploaded = submit_as(
+        &site.app,
+        &cookie,
+        "/admin/product/2",
+        multipart(
+            &[("_csrf", &csrf), ("name", "Mine"), ("photo", "")],
+            &[("photo__upload", "mine.png", "image/png", PNG)],
+        ),
+    )
+    .await;
+    assert_eq!(
+        uploaded.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        uploaded.text()
+    );
+    let mine = product(&site.db, 2).await.photo.unwrap();
+    let moved = api(
+        &site.app,
+        &clerk,
+        "POST",
+        "/api/product",
+        Some(&format!(r#"{{"name":"Copy","photo":{mine}}}"#)),
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::CREATED, "{}", moved.text());
+
+    // Accounts that may view files may name any of them.
+    add_staff(&site, "archivist", &["product:add", "files:view"]).await;
+    let archivist = token(&site.app, "archivist").await;
+    let linked = api(
+        &site.app,
+        &archivist,
+        "POST",
+        "/api/product",
+        Some(&format!(r#"{{"name":"Archive","photo":{secret}}}"#)),
+    )
+    .await;
+    assert_eq!(linked.status, StatusCode::CREATED, "{}", linked.text());
 }

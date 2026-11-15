@@ -258,6 +258,54 @@ pub(crate) fn stamp_owner(
     }
 }
 
+/// Refuses file ids this account may not put in a file field. Anyone who may view a row can
+/// download the file its field names, so a field may only name a file the account uploaded
+/// itself, any file if it may view files, or the file the row already has. Otherwise an
+/// account without the `files` permissions could read any upload by naming its id.
+pub(crate) async fn check_file_ids(
+    state: &AdminState,
+    resource: &dyn Resource,
+    session: &Session,
+    input: &Input,
+    current: Option<&Row>,
+) -> Result<(), AdminError> {
+    let Some(uploads) = &state.uploads else {
+        return Ok(());
+    };
+    let mut named = Vec::new();
+    for field in &resource.options().file_fields {
+        let Some(value) = input.get(field).and_then(|v| v.as_deref()).map(str::trim) else {
+            continue;
+        };
+        if value.is_empty() || current.is_some_and(|row| display(row.get(field)) == value) {
+            continue;
+        }
+        // Not a number: the model's own validation reports it.
+        if let Ok(id) = value.parse::<i32>() {
+            named.push((field, id));
+        }
+    }
+    if named.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i32> = named.iter().map(|(_, id)| *id).collect();
+    let found = uploads.files_by_id(&ids).await?;
+    let sees_all = session.can(crate::uploads::FILES, Action::View);
+    for (field, id) in named {
+        // A missing file and someone else's get the same answer, so ids are not confirmed.
+        if !found
+            .get(&id)
+            .is_some_and(|file| sees_all || file.created_by == session.username)
+        {
+            return Err(AdminError::BadInput {
+                field: field.clone(),
+                message: format!("no file `{id}` that you uploaded or may view"),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// A list query with this account's ownership condition added.
 fn scoped(mut query: ListQuery, resource: &dyn Resource, session: &Session) -> ListQuery {
     query.filters.extend(owner_filter(resource, session));
@@ -1690,8 +1738,12 @@ async fn create(
     let (form, stored) = read_form(&state, &session, resource, request).await?;
     let mut input = form_input(resource, &form);
     stamp_owner(resource, &session, &mut input, true);
-    match resource.create(&input).await {
-        Ok(_) => {
+    let created = match check_file_ids(&state, resource, &session, &input, None).await {
+        Ok(()) => resource.create(&input).await.map(|_| ()),
+        Err(error) => Err(error),
+    };
+    match created {
+        Ok(()) => {
             Ok(Redirect::to(&format!("{}/{model}?notice=created", state.base)).into_response())
         }
         Err(error) => {
@@ -1846,11 +1898,15 @@ async fn update(
 ) -> Result<Response, AdminError> {
     let resource = state.resource(&model)?.as_ref();
     session.require(&model, Action::Change)?;
-    owned_row(resource, &session, &id).await?;
+    let current = owned_row(resource, &session, &id).await?;
     let (form, stored) = read_form(&state, &session, resource, request).await?;
     let mut input = form_input(resource, &form);
     stamp_owner(resource, &session, &mut input, false);
-    match resource.update(&id, &input, WriteMode::Replace).await {
+    let saved = match check_file_ids(&state, resource, &session, &input, Some(&current)).await {
+        Ok(()) => resource.update(&id, &input, WriteMode::Replace).await,
+        Err(error) => Err(error),
+    };
+    match saved {
         Ok(()) => Ok(Redirect::to(&format!("{}/{model}?notice=saved", state.base)).into_response()),
         Err(error) => {
             forget_files(&state, &stored).await;
