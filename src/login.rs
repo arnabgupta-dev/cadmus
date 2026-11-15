@@ -118,20 +118,23 @@ pub(crate) async fn complete(
     cross_site: bool,
 ) -> Result<Response, AdminError> {
     // The same rules as a password login: active staff only, and the second factor.
-    let user = match state.users.find(username).await? {
-        Some(user) if crate::auth::may_use_admin(state, username).await? => Some(user),
-        _ => None,
-    };
-    let Some(user) = user else {
+    let refuse = |message: &str| -> Result<Response, AdminError> {
         let page = login_page_as(
             state,
             StatusCode::FORBIDDEN,
             Mode::Login,
-            Some("This account cannot log in. Ask an administrator.".into()),
+            Some(message.into()),
             None,
         )?;
-        return Ok((jar, page).into_response());
+        Ok((jar.clone(), page).into_response())
     };
+    let Some(user) = state.users.find(username).await? else {
+        return refuse("This account cannot log in. Ask an administrator.");
+    };
+    // Accounts that are not staff log in to apps through the API, not here.
+    if !crate::auth::may_use_admin(state, username).await? {
+        return refuse("This account cannot use the admin.");
+    }
     let go = |next: String| -> Response {
         if cross_site {
             continue_page(&next)

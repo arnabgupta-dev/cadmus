@@ -564,6 +564,21 @@ async fn microsoft_and_facebook_through_stand_ins() {
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(reply.cookie("admin_token").is_some(), "{}", reply.body);
+    // Bo signed up through the API, so is not staff: the admin says so.
+    let reply = admin_round_trip(
+        &app,
+        &s,
+        "microsoft",
+        ms_claims(&base, tid, "bo@acme.com", json!({"xms_edov": true})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    assert!(
+        reply.body.contains("This account cannot use the admin."),
+        "{}",
+        reply.body
+    );
+    assert!(reply.cookie("admin_token").is_none());
 
     // ---- Microsoft, one directory: its addresses are trusted without `xms_edov` ----
     let contoso = "contoso-0001";
