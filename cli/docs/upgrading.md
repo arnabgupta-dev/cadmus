@@ -27,5 +27,11 @@ Check these:
   `audiences: Vec::new()`).
 - **OIDC provider names** cannot be `token`, `totp`, `refresh`, `logout`, `me`, `link` or
   `register`, which the API now uses under `/api/auth/`.
+- **Requests are now rate limited**: 120 a minute per address for visitors, 600 a minute per
+  account or API key, answered with `429` beyond that. Programs that call the API harder,
+  or a site behind a proxy without `server.client_ip_header`, need higher limits or
+  `rate_limit: RateLimitSettings { enabled: false, ..Default::default() }` (see
+  [Rate limits](rate-limits.md)). Code that builds `Settings { ... }` without
+  `..Default::default()` must add `rate_limit`.
 - The API documentation lists the new login endpoints. A front end on another origin needs
   it in `server.cors_origins`, as before.

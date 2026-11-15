@@ -34,6 +34,7 @@ mod login_api;
 mod mail;
 pub mod migrations;
 mod oauth;
+mod rate_limit;
 mod resource;
 mod seaorm;
 mod server;
@@ -57,6 +58,10 @@ pub use home::HomeConfig;
 pub use html::clean_html;
 pub use login_api::{LoginOutcome, Logins, TokenPair};
 pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
+pub use rate_limit::{
+    Decision, MemoryStore, ParseRateError, Rate, RateLimit, RateLimitService, RateLimitStore,
+    RateRule,
+};
 pub use resource::{
     Field, FieldKind, Filter, FilterOp, Input, LinkField, ListQuery, ModelOptions, Page, Reference,
     Resource, Row, WriteMode,
@@ -142,6 +147,8 @@ pub(crate) struct AdminState {
     pub(crate) templates: minijinja::Environment<'static>,
     /// Sends login links and password resets.
     pub(crate) mailer: Arc<dyn mail::Mailer>,
+    /// Request rate limits.
+    pub(crate) rate_limits: rate_limit::RateLimits,
 }
 
 impl AdminState {
@@ -243,9 +250,16 @@ pub struct AdminBuilder {
     auth: Option<(AuthConfig, Arc<dyn UserStore>)>,
     resources: Vec<Arc<dyn Resource>>,
     mailer: Option<Arc<dyn Mailer>>,
+    rate_limits: Option<rate_limit::RateLimits>,
 }
 
 impl AdminBuilder {
+    /// The request rate limits, as [`App`] configures them.
+    pub(crate) fn rate_limits(mut self, limits: rate_limit::RateLimits) -> Self {
+        self.rate_limits = Some(limits);
+        self
+    }
+
     /// URL prefix for the panel (default `/admin`).
     #[must_use]
     pub fn base_path(mut self, base: impl Into<String>) -> Self {
@@ -396,6 +410,14 @@ impl AdminBuilder {
                 self.accounts.is_some(),
             )
         });
+        let rate_limits = self.rate_limits.unwrap_or_default();
+        let docs = docs.map(|docs| {
+            if rate_limits.enabled {
+                docs.rate_limited()
+            } else {
+                docs
+            }
+        });
 
         Ok(Admin {
             state: Arc::new(AdminState {
@@ -411,6 +433,7 @@ impl AdminBuilder {
                 docs,
                 templates,
                 mailer: self.mailer.unwrap_or_else(|| Arc::new(mail::LogMailer)),
+                rate_limits,
             }),
         })
     }

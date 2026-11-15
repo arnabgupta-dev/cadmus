@@ -236,6 +236,8 @@ impl UiSettings {
 // ---------------------------------------------------------------------------------------------
 
 pub use std::time::Duration;
+
+pub use crate::rate_limit::{Rate, RateRule};
 /// How much the server logs: `LogLevel::ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE`.
 pub use tracing::Level as LogLevel;
 
@@ -292,6 +294,8 @@ pub struct Settings {
     pub mail: MailSettings,
     /// How much is logged. SQL statements are logged from `DEBUG` up.
     pub log_level: LogLevel,
+    /// How many requests each caller may make.
+    pub rate_limit: RateLimitSettings,
 }
 
 impl Default for Settings {
@@ -308,6 +312,7 @@ impl Default for Settings {
             uploads: UploadSettings::default(),
             mail: MailSettings::default(),
             log_level: LogLevel::INFO,
+            rate_limit: RateLimitSettings::default(),
         }
     }
 }
@@ -833,6 +838,53 @@ impl Default for HomeSettings {
             enabled: true,
             title: None,
             tagline: None,
+        }
+    }
+}
+
+/// How many requests each caller may make; over the limit, requests are answered with `429
+/// Too Many Requests` and a `Retry-After` header.
+///
+/// A caller is an account that is logged in (with a token or the admin's cookie), an API
+/// key, or, for everyone else, the client's address (see `server.client_ip_header` behind a
+/// proxy). Each has its own allowance, which may be used all at once and refills evenly.
+/// Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`.
+///
+/// ```ignore
+/// rate_limit: RateLimitSettings {
+///     anonymous: env_or("RATE_LIMIT_ANONYMOUS", Rate::per_minute(120))?,
+///     rules: vec![RateRule::new("/api/orders", Rate::per_minute(10)).methods(["POST"])],
+///     ..Default::default()
+/// },
+/// ```
+///
+/// Counters are kept in memory, per process; see [`crate::App::rate_limit_store`] for
+/// several instances. Login attempts have their own, stricter limit
+/// (`auth.login_max_attempts`).
+#[derive(Clone, Debug)]
+pub struct RateLimitSettings {
+    /// `false` turns request limits off (default `true`).
+    pub enabled: bool,
+    /// For callers that are not logged in, per address (default 120 a minute).
+    pub anonymous: Rate,
+    /// For each account that is logged in, and each API key (default 600 a minute).
+    pub logged_in: Rate,
+    /// For the admin's pages, per caller; `None` leaves them unlimited (default). The REST
+    /// API and your own routes always count.
+    pub admin: Option<Rate>,
+    /// Limits for some paths instead of the ones above; the first that matches is used, and
+    /// each has its own counter. Models can also have one: [`crate::ModelOptions::rate_limit`].
+    pub rules: Vec<RateRule>,
+}
+
+impl Default for RateLimitSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            anonymous: Rate::per_minute(120),
+            logged_in: Rate::per_minute(600),
+            admin: None,
+            rules: Vec::new(),
         }
     }
 }

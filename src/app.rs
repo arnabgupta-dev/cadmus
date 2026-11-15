@@ -22,6 +22,7 @@ use crate::migrations::{
     Answers, Detect, EntityTable, Migration, MigrationEvent, NewMigration, Operation, Questions,
     State, builtin, describe, diff, render_list, render_migration, table_of,
 };
+use crate::rate_limit::{self, Rate, RateLimitStore, RateLimits};
 use crate::resource::{ModelOptions, Resource};
 use crate::seaorm::SeaOrmResource;
 use crate::settings::{Settings, UiSettings};
@@ -79,6 +80,7 @@ pub struct App {
     log_level: Option<tracing::Level>,
     /// `None` writes messages to the log.
     mailer: Option<Arc<dyn crate::mail::Mailer>>,
+    rate_limits: RateLimits,
 }
 
 impl App {
@@ -108,6 +110,7 @@ impl App {
             home: HomeConfig::new(),
             log_level: None,
             mailer: None,
+            rate_limits: RateLimits::default(),
         }
     }
 
@@ -164,6 +167,7 @@ impl App {
             uploads,
             mail,
             log_level,
+            rate_limit,
         } = settings;
 
         let mut auth_config = AuthConfig::new(secret_key)
@@ -270,6 +274,7 @@ impl App {
             app.mailer = Some(Arc::new(crate::mail::SmtpMailer::new(&url, &from)?));
         }
         app.log_level = Some(log_level);
+        app = app.rate_limit(rate_limit);
         Ok(app)
     }
 
@@ -341,6 +346,19 @@ impl App {
         }
         app.docs = DocsConfig::from_env()?;
         app.home = HomeConfig::from_env()?;
+        let defaults = crate::settings::RateLimitSettings::default();
+        app = app.rate_limit(crate::settings::RateLimitSettings {
+            enabled: crate::settings::env_or("RATE_LIMIT_ENABLED", defaults.enabled)?,
+            anonymous: crate::settings::env_or("RATE_LIMIT_ANONYMOUS", defaults.anonymous)?,
+            logged_in: crate::settings::env_or("RATE_LIMIT_LOGGED_IN", defaults.logged_in)?,
+            admin: crate::settings::env_opt("RATE_LIMIT_ADMIN")
+                .map(|text| {
+                    text.parse::<Rate>()
+                        .map_err(|e| AdminError::Config(format!("RATE_LIMIT_ADMIN: {e}")))
+                })
+                .transpose()?,
+            rules: Vec::new(),
+        });
         Ok(app)
     }
 
@@ -442,6 +460,40 @@ impl App {
     #[must_use]
     pub fn compress_api(mut self, enabled: bool) -> Self {
         self.compress_api = enabled;
+        self
+    }
+
+    /// How many requests each caller may make; see [`RateLimitSettings`]. On by default.
+    ///
+    /// [`RateLimitSettings`]: crate::settings::RateLimitSettings
+    #[must_use]
+    pub fn rate_limit(mut self, settings: crate::settings::RateLimitSettings) -> Self {
+        let crate::settings::RateLimitSettings {
+            enabled,
+            anonymous,
+            logged_in,
+            admin,
+            rules,
+        } = settings;
+        self.rate_limits = RateLimits {
+            enabled,
+            anonymous,
+            logged_in,
+            admin,
+            rules,
+            store: Arc::clone(&self.rate_limits.store),
+        };
+        self
+    }
+
+    /// Where request counters are kept (default: this process's memory, [`MemoryStore`]).
+    /// With several instances behind a load balancer, give them a shared store, such as one
+    /// over Redis, so that a caller's requests count together; see Rate limits in the guide.
+    ///
+    /// [`MemoryStore`]: crate::MemoryStore
+    #[must_use]
+    pub fn rate_limit_store(mut self, store: impl RateLimitStore + 'static) -> Self {
+        self.rate_limits.store = Arc::new(store);
         self
     }
 
@@ -773,7 +825,8 @@ impl App {
             .mailer_shared(self.mailer.clone())
             .settings(self.settings.clone())
             .docs(self.docs.clone())
-            .auth_shared(self.auth.clone(), Arc::clone(&self.users));
+            .auth_shared(self.auth.clone(), Arc::clone(&self.users))
+            .rate_limits(self.rate_limits.clone());
         if let Some(base) = &self.admin_base {
             builder = builder.base_path(base.clone());
         }
@@ -820,6 +873,12 @@ impl App {
         }
         // Errors, including the time limit's, are put into the format of their area.
         router = admin.handle_errors(router);
+        // Outside the error handling, so that the allowance headers survive it; a refusal is
+        // put into the format of its area here.
+        router = router.layer(middleware::from_fn_with_state(
+            Arc::clone(&admin.state),
+            rate_limit::middleware,
+        ));
         // Outside that, so that what is compressed is what is sent.
         if self.compress_api {
             let api: Arc<str> = base_path(self.api_base.clone(), "/api")?.into();

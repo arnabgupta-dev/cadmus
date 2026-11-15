@@ -148,6 +148,7 @@ pub struct ModelOptions {
     pub(crate) rich_text: Vec<String>,
     pub(crate) many_to_many: Vec<ManyToMany>,
     pub(crate) owner_field: Option<String>,
+    pub(crate) rate_limit: Option<crate::rate_limit::Rate>,
 }
 
 /// A many-to-many field, added with [`ModelOptions::many_to_many`].
@@ -368,6 +369,15 @@ impl ModelOptions {
     #[must_use]
     pub fn owned_by(mut self, column: impl Into<String>) -> Self {
         self.owner_field = Some(column.into());
+        self
+    }
+
+    /// A request limit of its own for this model's REST API endpoints, instead of the
+    /// app-wide one: e.g. `Rate::per_minute(30)` for every caller (each account, API key or
+    /// address counts separately). See [`crate::settings::RateLimitSettings`].
+    #[must_use]
+    pub fn rate_limit(mut self, rate: crate::rate_limit::Rate) -> Self {
+        self.rate_limit = Some(rate);
         self
     }
 

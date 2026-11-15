@@ -263,6 +263,50 @@ impl Docs {
     pub(crate) fn document(&self) -> &Value {
         &self.document
     }
+
+    /// Notes request limits: every operation may answer `429`, and responses describe the
+    /// caller's allowance in headers.
+    pub(crate) fn rate_limited(mut self) -> Self {
+        let integer = json!({ "schema": { "type": "integer" } });
+        let allowance = json!({
+            "RateLimit-Limit": { "description": "Requests allowed in the period", "schema": integer["schema"] },
+            "RateLimit-Remaining": { "description": "Requests left now", "schema": integer["schema"] },
+            "RateLimit-Reset": { "description": "Seconds until the whole allowance is back", "schema": integer["schema"] },
+        });
+        let limited = &mut self.document["components"]["responses"]["RateLimited"];
+        limited["description"] = json!("Too many requests or login attempts (`rate_limited`)");
+        if let (Some(headers), Some(extra)) =
+            (limited["headers"].as_object_mut(), allowance.as_object())
+        {
+            headers.extend(extra.clone());
+        }
+        if let Some(paths) = self.document["paths"].as_object_mut() {
+            for item in paths.values_mut() {
+                let Some(item) = item.as_object_mut() else {
+                    continue;
+                };
+                for operation in item.values_mut() {
+                    if let Some(responses) = operation
+                        .get_mut("responses")
+                        .and_then(Value::as_object_mut)
+                    {
+                        responses
+                            .entry("429")
+                            .or_insert_with(|| error_response("RateLimited"));
+                    }
+                }
+            }
+        }
+        if let Some(description) = self.document["info"]["description"].as_str() {
+            self.document["info"]["description"] = json!(format!(
+                "{description}\n\nRequests are limited per caller; over the limit the answer is \
+                 `429` with `Retry-After`. Responses carry `RateLimit-Limit`, \
+                 `RateLimit-Remaining` and `RateLimit-Reset`."
+            ));
+        }
+        self.json = serde_json::to_string_pretty(&self.document).unwrap_or_default();
+        self
+    }
 }
 
 pub(crate) fn router(state: Arc<AdminState>) -> Router {

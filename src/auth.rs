@@ -302,7 +302,7 @@ impl AuthConfig {
         .map(|data| data.claims)
     }
 
-    fn verify(&self, token: &str) -> Option<Claims> {
+    pub(crate) fn verify(&self, token: &str) -> Option<Claims> {
         // `Validation::new` pins the algorithm and checks `exp`.
         jsonwebtoken::decode::<Claims>(
             token,
@@ -332,8 +332,8 @@ pub(crate) struct Credentials {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
+pub(crate) struct Claims {
+    pub(crate) sub: String,
     iat: u64,
     exp: u64,
     /// Random per-token value echoed by forms; proves a POST came from our own page.
@@ -853,7 +853,7 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// The login token and the API key a request carries, if any. An API key comes as a Bearer
 /// token or in `X-API-Key`; a Bearer token that is not an API key is a login token.
-fn credentials(headers: &HeaderMap) -> (Option<&str>, Option<&str>) {
+pub(crate) fn credentials(headers: &HeaderMap) -> (Option<&str>, Option<&str>) {
     let bearer = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -863,6 +863,21 @@ fn credentials(headers: &HeaderMap) -> (Option<&str>, Option<&str>) {
         .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
     let token = bearer.filter(|_| api_key.is_none());
     (token, api_key)
+}
+
+/// An API key the rate limiter has already looked up, kept on the request so that the
+/// handler does not look it up again.
+#[derive(Clone)]
+pub(crate) struct CheckedApiKey {
+    pub(crate) digest: String,
+    pub(crate) owner: Option<ApiKeyOwner>,
+}
+
+/// The verified claims of the admin cookie, without reading the account.
+pub(crate) fn cookie_claims(headers: &HeaderMap, state: &AdminState) -> Option<Claims> {
+    let jar = CookieJar::from_headers(headers);
+    jar.get(COOKIE)
+        .and_then(|cookie| state.auth.verify(cookie.value()))
 }
 
 /// An authenticated request. Extracting it is what protects a handler.
@@ -899,11 +914,14 @@ impl Session {
     /// the session cookie. `None` if none of them is valid.
     async fn authenticate(
         headers: &HeaderMap,
+        extensions: &axum::http::Extensions,
         state: &AdminState,
         api_keys: bool,
     ) -> Result<Option<Self>, AdminError> {
         match credentials(headers) {
-            (_, Some(key)) if api_keys => Self::from_api_key(state, key).await,
+            (_, Some(key)) if api_keys => {
+                Self::from_api_key(state, key, extensions.get::<CheckedApiKey>()).await
+            }
             (_, Some(_)) => Ok(None),
             (Some(token), None) => match state.auth.verify(token) {
                 Some(claims) => Self::load(state, claims, false).await,
@@ -945,14 +963,22 @@ impl Session {
     }
 
     /// The session for an API key, if it is a valid key of an account that may still log in.
-    async fn from_api_key(state: &AdminState, key: &str) -> Result<Option<Self>, AdminError> {
+    async fn from_api_key(
+        state: &AdminState,
+        key: &str,
+        checked: Option<&CheckedApiKey>,
+    ) -> Result<Option<Self>, AdminError> {
         if !state.auth.api_keys {
             return Ok(None);
         }
         let Some(digest) = api_key_digest(key) else {
             return Ok(None);
         };
-        let Some(owner) = state.users.api_key(&digest).await? else {
+        let owner = match checked {
+            Some(checked) if checked.digest == digest => checked.owner.clone(),
+            _ => state.users.api_key(&digest).await?,
+        };
+        let Some(owner) = owner else {
             return Ok(None);
         };
         Ok(state
@@ -975,11 +1001,7 @@ impl Session {
         headers: &HeaderMap,
         state: &AdminState,
     ) -> Result<Option<Self>, AdminError> {
-        let jar = CookieJar::from_headers(headers);
-        let claims = jar
-            .get(COOKIE)
-            .and_then(|cookie| state.auth.verify(cookie.value()));
-        match claims {
+        match cookie_claims(headers, state) {
             Some(claims) => Self::load(state, claims, true).await,
             None => Ok(None),
         }
@@ -1062,7 +1084,7 @@ impl FromRequestParts<Arc<AdminState>> for Session {
             .starts_with(&format!("{}/", state.api_base));
         // API keys only work for the REST API (and your own routes): the admin pages, and
         // with them account management, need a login.
-        let session = Self::authenticate(&parts.headers, state, api).await;
+        let session = Self::authenticate(&parts.headers, &parts.extensions, state, api).await;
         let (bearer, api_key) = credentials(&parts.headers);
         let bearer = bearer.or(api_key);
         match session {
@@ -1217,7 +1239,9 @@ impl CurrentUser {
                     .into(),
             ));
         };
-        let Some(session) = Session::authenticate(&parts.headers, &state, true).await? else {
+        let Some(session) =
+            Session::authenticate(&parts.headers, &parts.extensions, &state, true).await?
+        else {
             return Ok(None);
         };
         if !parts.method.is_safe() {

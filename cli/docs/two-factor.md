@@ -55,7 +55,7 @@ until the 5 minutes are over. A successful login clears the count. One client ad
 four times as many attempts across all accounts.
 
 Change the numbers with `auth.login_max_attempts` (`0` turns the limit off) and
-`auth.login_lockout`.
+`auth.login_lockout`. Other requests have their own limit: see [Rate limits](rate-limits.md).
 
 - **Behind a reverse proxy** (nginx, a load balancer), every request seems to come from the
   proxy. Set `server.client_ip_header` to the header the proxy sets (e.g.

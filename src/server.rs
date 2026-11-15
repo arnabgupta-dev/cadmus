@@ -301,6 +301,16 @@ pub(crate) fn cors(origins: &[String]) -> CorsLayer {
             Method::DELETE,
         ])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE, upload_offset.clone()])
-        .expose_headers([LOCATION, RETRY_AFTER, upload_offset])
+        .expose_headers({
+            let [limit, remaining, reset] = crate::rate_limit::header_names();
+            [
+                LOCATION,
+                RETRY_AFTER,
+                upload_offset,
+                limit,
+                remaining,
+                reset,
+            ]
+        })
         .max_age(Duration::from_secs(600))
 }

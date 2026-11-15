@@ -322,6 +322,9 @@ PUBLIC_URL=http://localhost:3000
 # Your front end, if people log in to it through the API:
 # APP_URL=http://localhost:5173
 # LOG_LEVEL=debug
+# Requests per caller, e.g. 120/min, 10/s, 5000/hour:
+# RATE_LIMIT_ANONYMOUS=120/min
+# RATE_LIMIT_LOGGED_IN=600/min
 # Credentials for the storage backend named in settings.rs, if any:
 # AWS_ACCESS_KEY_ID=
 # AWS_SECRET_ACCESS_KEY=
@@ -506,6 +509,16 @@ pub fn settings() -> Result<Settings, AdminError> {{
             from: Some("{name} <noreply@example.com>".into()),
         }},
         log_level: env_or("LOG_LEVEL", LogLevel::INFO)?,
+        rate_limit: RateLimitSettings {{
+            // Requests each caller may make; beyond that the answer is 429.
+            anonymous: env_or("RATE_LIMIT_ANONYMOUS", Rate::per_minute(120))?,
+            logged_in: env_or("RATE_LIMIT_LOGGED_IN", Rate::per_minute(600))?,
+            // Limits for some paths instead:
+            // rules: vec![RateRule::new("/api/orders", Rate::per_minute(10)).methods(["POST"])],
+            // or turn limits off:
+            // enabled: false,
+            ..Default::default()
+        }},
         ..Default::default()
     }})
 }}

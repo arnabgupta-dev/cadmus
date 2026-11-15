@@ -41,7 +41,7 @@ databases, but details may still change between versions.
   - [Settings](#settings)
 - [Guides](#guides): [relations](#relations), [login methods](#login-methods), [logins for apps](#logins-for-apps),
   [e-mail](#e-mail), [two-factor authentication](#two-factor-authentication),
-  [login attempt limits](#login-attempt-limits), [file uploads](#file-uploads),
+  [login attempt limits](#login-attempt-limits), [rate limits](#rate-limits), [file uploads](#file-uploads),
   [API documentation](#api-documentation), [databases](#databases),
   [errors and your own code](#errors-and-your-own-code), [home page](#home-page),
   [deploying](#deploying)
@@ -640,6 +640,28 @@ four times as many attempts across all accounts. Change the numbers with
 - Someone who knows a username can keep that account locked by guessing. That is the usual
   trade-off of per-account limits; shorten `auth.login_lockout` if it becomes a problem.
 
+### Rate limits
+
+Every request to the REST API and your own routes counts against the caller's allowance:
+600 a minute for each logged-in account and each API key, 120 a minute for each address
+otherwise. Over it, the answer is `429` with `Retry-After`; responses carry
+`RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`. Admin pages are not limited
+unless you say so.
+
+```rust
+rate_limit: RateLimitSettings {
+    anonymous: env_or("RATE_LIMIT_ANONYMOUS", Rate::per_minute(120))?,
+    rules: vec![RateRule::new("/api/orders", Rate::per_minute(10)).methods(["POST"])],
+    ..Default::default()
+},
+```
+
+A model can have its own limit (`ModelOptions::new().rate_limit(Rate::per_minute(20))`), and
+so can a route of yours (`.layer(RateLimit::new("sms", Rate::per_minute(5)))`). Counters are
+in memory, per process; with several instances, plug in a shared store such as Redis with
+`App::rate_limit_store`. Details:
+[Rate limits](https://arnabgupta-dev.github.io/cadmus/docs/rate-limits.html).
+
 ### File uploads
 
 Set `uploads.storage_url` to turn uploads on. The address chooses where files are kept:
@@ -903,6 +925,7 @@ And the `cadmus` command:
 | `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
 | `mail` | `url` (SMTP; unset writes messages to the log), `from` |
 | `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
+| `rate_limit` | `enabled` (`true`), `anonymous` (120/min per address), `logged_in` (600/min per account or key), `admin` (`None`), `rules` |
 
 Durations are written `Duration::from_secs(600)`. Things a setting cannot hold (your own
 routes in the API documentation, your own account store) are set on the `App` after it is
@@ -987,7 +1010,7 @@ nothing until you implement `UserStore::access`, API keys work only if you imple
 - **Accounts:** no passkeys yet. API keys cannot be limited to some models (only read-only).
   An account is linked to another site by e-mail address only (there is no "connect"
   button). Per-record permissions are ownership only (one owner per row). Login attempt
-  limits are per server process. Superusers manage accounts and groups in the admin only;
+  limits are per server process (request rate limits too, unless you plug in a shared store). Superusers manage accounts and groups in the admin only;
   through the API people manage only their own account. A copied access token works until it
   expires.
 - **Admin:** no page listing all uploaded files, and a replaced file is not deleted. No

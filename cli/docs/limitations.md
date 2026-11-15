@@ -15,7 +15,8 @@ Cadmus is at version 0.2. These are the gaps known today.
   button), and its e-mail address cannot be changed through the API.
 - Per-record permissions are ownership only: one owner per row (see
   [Rows owned by accounts](accounts.md#rows-owned-by-accounts)), not sharing rules.
-- Login attempt limits are per server process, not shared between instances.
+- Login attempt limits are per server process, not shared between instances. Request rate
+  limits are too, unless you plug in a shared store ([Rate limits](rate-limits.md#several-instances)).
 - Superusers manage accounts and groups in the admin only; through the API, people manage
   only their own account (`/api/auth/me`).
 - Logging out does not end a copied access token before it expires (an hour by default);
