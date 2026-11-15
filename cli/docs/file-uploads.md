@@ -23,8 +23,10 @@ uploads: UploadSettings {
 ```
 
 Cloud credentials are read from the usual environment variables (`AWS_ACCESS_KEY_ID`,
-`AWS_REGION`, `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, ...). For the cloud backends,
-turn the feature on: `cadmus = { version = "0.2", features = ["s3"] }`.
+`AWS_REGION`, `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, ...). Each cloud backend is a
+feature: `cadmus add s3` (or `azure`, `gcs`), which is
+`cadmus = { version = "0.2", features = ["s3"] }` in `Cargo.toml`. Without the feature,
+such a `storage_url` stops the server at startup.
 
 An S3-compatible store on your machine (MinIO, SeaweedFS, LocalStack) usually listens on
 plain `http://`: set `AWS_ENDPOINT=http://localhost:9000` (with its keys and any

@@ -23,6 +23,7 @@ pub fn settings() -> Result<Settings, AdminError> {
             ..Default::default()
         },
         auth: AuthSettings {
+            methods: methods()?,       // passwords, plus what `cadmus add` added: see Login methods
             cookie_secure: !debug,     // the login cookie needs HTTPS, except on your machine
             ..Default::default()
         },

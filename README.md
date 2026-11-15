@@ -53,9 +53,10 @@ databases, but details may still change between versions.
 
 ## Why Cadmus
 
-- **Batteries included.** Accounts, permissions, an admin site, an API with documentation,
-  migrations and file uploads come with the framework, configured in one settings file. There
-  is nothing to choose and wire together before you can start.
+- **Batteries included, built to measure.** Accounts, permissions, an admin site, an API with
+  documentation, migrations and file uploads come with the framework, configured in one
+  settings file. Logins through other sites, e-mail, cloud storage and database drivers are
+  features that `cadmus add` switches on, so a project compiles only what it uses.
 - **Little code to write.** There are no HTML templates for the admin and no handlers for the
   API: both are generated from the models. Your own code goes where the generated parts stop.
 - **Caught early.** It is Rust, so a misspelt setting, field or model is reported when the
@@ -90,6 +91,10 @@ A project compiles only the parts of Cadmus it uses. Passwords, two-factor login
 rate limits and the REST API are always there; logins through other sites, login links,
 sending e-mail and cloud storage are features you add now or later:
 `cadmus new blog --features google,github,smtp`, or `cadmus add google` inside the project.
+The features are `sqlite` (the default), `postgres`, `mysql`; `google`, `microsoft`,
+`github`, `facebook`, `oidc`, `magic-link`; `smtp`; `s3`, `azure`, `gcs`. `cadmus add` turns
+them on in `Cargo.toml`, adds login methods to `src/settings.rs` and their keys to `.env`.
+Without the command, they are ordinary Cargo features: `cargo add cadmus --features google`.
 
 **3. Describe your data.** A blog post with a title, a body, a published flag and a view
 count:

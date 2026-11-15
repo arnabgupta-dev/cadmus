@@ -11,8 +11,9 @@ Cadmus is a batteries-included web framework for Rust. You describe your data on
 - **a database table** for each model, kept up to date with migrations;
 - **an admin site** where people log in and add, edit, search and delete records;
 - **a REST API** (JSON) so other programs can do the same, with interactive documentation;
-- **accounts and permissions**: users, groups, two-factor login, login with Google, GitHub
-  and others, and API keys for programs;
+- **accounts and permissions**: users, groups, two-factor login, API keys for programs, and
+  login with Google, GitHub and others, for the admin and for your own apps;
+- **rate limits** on every request, per account, API key or address;
 - **management commands** such as `migrate` and `createsuperuser`;
 - **file uploads**, to a folder or to cloud storage.
 
@@ -22,9 +23,10 @@ PostgreSQL and MySQL.
 
 ## Why Cadmus
 
-- **Batteries included.** Accounts, permissions, an admin site, an API with documentation,
-  migrations and file uploads come with the framework, configured in one settings file.
-  There is nothing to choose and wire together before you can start.
+- **Batteries included, built to measure.** Accounts, permissions, an admin site, an API
+  with documentation, migrations and file uploads come with the framework, configured in one
+  settings file. Logins through other sites, e-mail, cloud storage and database drivers are
+  features that `cadmus add` switches on, so a project compiles only what it uses.
 - **Little code to write.** There are no HTML templates for the admin and no handlers for
   the API: both are generated from the models. Your own code goes where the generated parts
   stop.
@@ -58,7 +60,7 @@ them in the admin or through the API, and neither sees buttons or endpoints it c
 
 ## Status
 
-Cadmus is at version 0.1. Everything described here works and is tested on all three
+Cadmus is at version 0.2. Everything described here works and is tested on all three
 databases, but details may still change between versions. What is not there yet is listed
 under [Limitations](limitations.md).
 

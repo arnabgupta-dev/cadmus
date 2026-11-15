@@ -116,7 +116,7 @@ async function onGoogleSignIn({ credential }) {
 The server checks the token's signature against the provider's published keys, then its
 issuer, audience, expiry and e-mail address. It must be issued to the app's `client_id`, or
 to one of `OAuthClient::audiences`: your iOS and Android apps have their own client IDs at
-Google, so list them (`GOOGLE_AUDIENCES=ios-id,android-id` with `OAuthClient::from_env`). If
+Google, so list them (`GOOGLE_AUDIENCES=ios-id,android-id`, read by `OAuthClient::from_env_if_set`). If
 the app sent a `nonce` to the provider, send it too.
 
 Google's button only loads on a page whose address is listed under **Authorized JavaScript

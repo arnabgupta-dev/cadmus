@@ -9,7 +9,7 @@ summary: The files cadmus new writes, and what each one is for.
 
 ```text
 blog/
-├── Cargo.toml              Rust's project file: name and dependencies
+├── Cargo.toml              Rust's project file: name, dependencies, the Cadmus features used
 ├── .env                    secrets for this machine: database address, secret key (not in git)
 ├── .env.example            the same without the secrets, to share
 ├── .gitignore
@@ -68,6 +68,10 @@ Change the `ModelOptions` freely: see [Models](models.md).
 
 Every setting of the site, in plain Rust: database, login methods, the admin's look, e-mail,
 uploads. Secrets are read from `.env`. See [Settings](settings.md).
+
+The login methods are listed in `methods()`, at the bottom of the file. `cadmus add google`
+adds a method there (above the `// cadmus:methods` comment, so keep it), along with the
+feature in `Cargo.toml` and its keys in `.env`. See [Login methods](login-methods.md).
 
 ## migrations/
 

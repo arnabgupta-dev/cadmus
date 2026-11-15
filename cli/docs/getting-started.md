@@ -32,12 +32,41 @@ This writes a ready-to-run project (see [Project layout](project-layout.md)), in
 `.env` file with a fresh secret key. For PostgreSQL or MySQL instead of SQLite, use
 `cadmus new blog --database postgres` (or `mysql`) and edit the address in `.env`.
 
-A project compiles only the parts of Cadmus it uses. Passwords, two-factor login, API keys
-and the REST API are always there; logins through other sites, login links, sending e-mail
-and cloud storage are added when you want them, now or later:
+### Choose what to build in
+
+A project compiles only the parts of Cadmus it uses. The core is always there: the admin,
+the REST API and its documentation, accounts and permissions, passwords, two-factor login,
+API keys, refresh tokens, rate limits and file uploads to a folder. Everything else is a
+Cargo feature, which you add when you need it, now or at any time later:
 
 ```sh
-cadmus new blog --features google,github,smtp   # or, inside the project: cadmus add google
+cadmus new blog --features google,github,smtp   # when creating the project
+cadmus add google github smtp                    # or later, inside the project
+```
+
+| Feature | What it adds |
+|---|---|
+| `sqlite` (the default), `postgres`, `mysql` | the database driver; `mysql` also covers MariaDB ([Databases](databases.md)) |
+| `google`, `microsoft`, `github`, `facebook` | logging in with that site, in the admin and in your apps ([Login methods](login-methods.md)) |
+| `oidc` | logging in with any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
+| `magic-link` | login links by e-mail |
+| `smtp` | sending real e-mail; without it, e-mails are printed in the server's log ([E-mail](email.md)) |
+| `s3`, `azure`, `gcs` | keeping uploaded files in Amazon S3 (or MinIO, SeaweedFS, ...), Azure Blob Storage or Google Cloud Storage ([File uploads](file-uploads.md)) |
+
+`cadmus add` does three things: it turns the features on in `Cargo.toml`, adds login methods
+to `methods()` in `src/settings.rs`, and adds the keys each one needs to `.env`, for you to
+fill in. A login method whose keys are still empty is left out, so the project keeps running
+until you have registered it with the provider. The next `cargo run` compiles the new parts.
+
+To remove a feature, take it out of the `features` list in `Cargo.toml` and delete its lines
+from `methods()`. A method listed without its feature stops the server at startup, naming
+the feature to add.
+
+Not using the `cadmus` command? The features are ordinary Cargo features:
+
+```sh
+cargo add cadmus --features google,smtp                          # SQLite is on by default
+cargo add cadmus --no-default-features --features postgres,s3    # another database instead
 ```
 
 ## 3. Describe your data
@@ -49,9 +78,12 @@ cadmus generate model Post title:string body:text published:bool views:int
 ```
 
 This writes `src/models/post.rs` and registers it in `src/models/mod.rs`. The field types
-are `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`, `file`
-(an uploaded file) and `references` (a link to another model). Add `?` to make a field
-optional, as in `rating:float?`. See [Models](models.md) for the details.
+are `string`, `text`, `int`, `bigint`, `float`, `bool`, `datetime`, `date`, `json`,
+`decimal` (an exact number such as a price), `uuid`, `html` (formatted text, edited with a
+rich-text editor), `file` (an uploaded file), `references` (a link to another model), `many`
+(links to any number of rows of another model) and `owner` (rows belong to the account that
+adds them). Add `?` to make a field optional, as in `rating:float?`. See
+[Models](models.md) for the details.
 
 ## 4. Create the table
 
