@@ -120,10 +120,9 @@ Entra directory):
 
 **GitHub** (Settings, Developer settings):
 
-- An **OAuth app** has **one** Authorization callback URL, and the `redirect_uri` must be
-  exactly that address. So it serves either the admin or your app, not both.
-- For both, register a **GitHub App** instead: it accepts several callback URLs. Give it
-  read access to the account's **Email addresses**.
+- An **OAuth app**: add each address as an **Authorization callback URL**; several are
+  allowed, so one app serves the admin and your app.
+- A **GitHub App** works too: give it read access to the account's **Email addresses**.
 - GitHub issues no ID tokens; apps send the code. The account's primary verified address is
   used.
 

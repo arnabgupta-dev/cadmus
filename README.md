@@ -537,8 +537,7 @@ depends on who receives them: the admin at `<public_url>/admin/auth/<name>/callb
 page of your own app (say `https://shop.com/auth/callback`, also listed in
 `auth.app.redirect_uris`) that passes what it got to the API. A site used by both needs both
 registered; Google's sign-in button also needs your app's address as an *Authorized
-JavaScript origin*. Providers compare addresses exactly. A GitHub OAuth app takes a single
-callback URL, so it serves the admin or your app, not both (a GitHub App takes several).
+JavaScript origin*. Providers compare addresses exactly.
 Microsoft's shared directories need the optional `xms_edov` claim for addresses to count;
 Facebook needs the `email` permission. Per provider, with examples for production and for
 your machine:

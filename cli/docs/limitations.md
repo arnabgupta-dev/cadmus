@@ -28,8 +28,6 @@ Cadmus is at version 0.2. These are the gaps known today.
 - Google, GitHub and Keycloak (OpenID Connect) logins have been tested against the real
   services; Microsoft and Facebook against local stand-ins that follow their documented
   behaviour, not the live services.
-- A GitHub OAuth app has one callback URL, so the admin and your own app cannot share one
-  (a GitHub App can; see [Login methods](login-methods.md#each-provider)).
 
 ## Admin
 

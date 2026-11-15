@@ -154,8 +154,7 @@ await fetch("/api/auth/github", {
 
 The `redirect_uri` is a page of **your app**, not of Cadmus: it must be listed in
 `auth.app.redirect_uris` and registered with the provider, both exactly, next to the admin's
-own callback. Mobile apps can use their own scheme, such as `myapp://auth`. A GitHub OAuth
-app has only one callback URL, so it cannot serve the admin and an app at once. See
+own callback. Mobile apps can use their own scheme, such as `myapp://auth`. See
 [The addresses to register](login-methods.md#the-addresses-to-register) for what to register
 with each provider, with examples.
 
