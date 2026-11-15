@@ -28,7 +28,9 @@ Cadmus is a Rust web framework. Each model (a SeaORM entity) gets a database tab
 admin site and REST API endpoints, with accounts, permissions and migrations built in.
 
 To build an app:
-1. new_project: creates the project folder.
+1. new_project: creates the project folder. Pass `features` for what the app needs beyond \
+passwords: login methods (google, github, microsoft, facebook, oidc, magic-link), smtp, storage \
+(s3, azure, gcs); add_features adds more later.
 2. generate_model: once per kind of record; generate a model before the models that reference it.
 3. run makemigrations, then run migrate: creates the tables.
 4. create_superuser: an account to log in with.

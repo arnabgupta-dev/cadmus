@@ -75,7 +75,7 @@ admin.accent_color: accent colour must be #rgb or #rrggbb, got `red`
 | `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
 | `home` | `enabled`, `title`, `tagline` |
 | `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
-| `mail` | `url` (SMTP; unset writes messages to the log), `from` |
+| `mail` | `url` (SMTP, with the `smtp` feature; unset writes messages to the log), `from` |
 | `log_level` | `LogLevel::INFO`; `DEBUG` also shows every SQL statement |
 | `rate_limit` | `enabled` (`true`), `anonymous` (120 a minute per address), `logged_in` (600 a minute per account or API key), `admin` (`None`: not limited), `rules`: see [Rate limits](rate-limits.md) |
 

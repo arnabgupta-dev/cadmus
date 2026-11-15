@@ -16,6 +16,20 @@
 //!     .build()?;
 //! let app = axum::Router::new().merge(admin.router());
 //! ```
+//!
+//! # Features
+//!
+//! A project compiles only what it uses. Passwords, two-factor login, API keys, refresh
+//! tokens, rate limits, the admin and the REST API are always built in; the rest are Cargo
+//! features (`cadmus add <feature>` turns one on in a generated project):
+//!
+//! | Feature | Brings |
+//! |---|---|
+//! | `sqlite` (default), `postgres`, `mysql` | the database driver |
+//! | `s3`, `azure`, `gcs` | file storage in the cloud |
+//! | `google`, `microsoft`, `github`, `facebook`, `oidc` | logging in through that site |
+//! | `magic-link` | login links by e-mail |
+//! | `smtp` | sending e-mail over SMTP (otherwise messages go to the log) |
 
 mod access;
 mod account_api;

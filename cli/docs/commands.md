@@ -11,13 +11,19 @@ Installed with `cargo install cadmus-cli`.
 
 | Command | What it does |
 |---|---|
-| `cadmus new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project in a new folder |
+| `cadmus new NAME [--database sqlite\|postgres\|mysql] [--features F,...] [--framework-path PATH]` | create a project in a new folder, with only the features named built in |
+| `cadmus add FEATURE ...` | build in more in the project in the current folder: edits `Cargo.toml`, adds login methods to `methods()` in `src/settings.rs` and their keys to `.env` |
 | `cadmus generate model NAME field:type ...` | add a model to the project in the current folder (`cadmus g model` for short) |
 | `cadmus delete model NAME [--yes]` | remove a model: its file and its lines in `src/models/mod.rs` (see [Deleting a model](models.md#deleting-a-model)) |
 | `cadmus secret` | print a new secret key |
 | `cadmus mcp` | serve the MCP protocol for AI agents (see [Building with AI agents](ai-agents.md)) |
 
 `--framework-path` uses a local copy of Cadmus instead of the version on crates.io.
+
+The features are: `sqlite`, `postgres`, `mysql` (databases); `s3`, `azure`, `gcs` (file
+storage); `google`, `microsoft`, `github`, `facebook`, `oidc`, `magic-link` (login methods);
+`smtp` (sending e-mail). Passwords, two-factor login, API keys, refresh tokens and rate
+limits are always built in.
 
 ## Project commands
 

@@ -11,6 +11,10 @@ from the terminal.
 
 ## Setting it up
 
+Sending over SMTP is the `smtp` feature: `cadmus add smtp` (or `features = ["smtp"]` on the
+`cadmus` dependency). Without it, messages always go to the log, and setting `mail.url`
+stops the server at startup with the line to add.
+
 ```rust
 mail: MailSettings {
     url: env_opt("MAIL_URL"),   // smtps://user:password@smtp.example.com
@@ -29,7 +33,7 @@ Any provider with an SMTP service works. To send through an HTTP API instead, im
 
 ## What is sent
 
-- **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
+- **Login links** (`AuthMethod::MagicLink`, the `magic-link` feature): the login page asks for an address and mails a
   link that works once, within 15 minutes. Opening it shows a button rather than logging in
   straight away, because mail scanners open links to check them.
 - **Forgot your password?** appears under the password field when passwords are on and

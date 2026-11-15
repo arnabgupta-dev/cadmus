@@ -25,6 +25,11 @@ Cadmus is at version 0.2. These are the gaps known today.
   `UserStore`.
 - Facebook logins from apps need the `code`: Facebook's mobile SDK access tokens are not
   accepted.
+- Google, GitHub and Keycloak (OpenID Connect) logins have been tested against the real
+  services; Microsoft and Facebook against local stand-ins that follow their documented
+  behaviour, not the live services.
+- A GitHub OAuth app has one callback URL, so the admin and your own app cannot share one
+  (a GitHub App can; see [Login methods](login-methods.md#each-provider)).
 
 ## Admin
 
@@ -46,8 +51,8 @@ Cadmus is at version 0.2. These are the gaps known today.
 
 - Completing a resumable upload copies the pieces once inside the storage (no direct-to-S3
   multipart yet), and abandoned uploads are not cleaned up automatically.
-- S3, Azure and Google Cloud Storage are built but have not been tested against the real
-  services.
+- S3, Azure and Google Cloud Storage have been tested against local stand-ins (SeaweedFS,
+  Azurite, fake-gcs-server), not the real services.
 
 ## Server and documentation
 

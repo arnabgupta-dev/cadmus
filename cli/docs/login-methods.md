@@ -2,79 +2,150 @@
 title: Login methods
 section: Guides
 order: 100
-summary: Passwords, login links by e-mail, and logging in with Google, Microsoft, GitHub, Facebook or any OpenID Connect provider.
+summary: Passwords, login links by e-mail, and logging in with Google, Microsoft, GitHub, Facebook or any OpenID Connect provider, and the addresses to register with each.
 ---
 
-Each project chooses how people log in, in the `auth` section of `src/settings.rs`. The
-login page shows the chosen methods, in order, and only those.
+Each project chooses how people log in. The login page, and the REST API's login endpoints,
+offer the chosen methods, in order, and only those.
 
-```rust
-// Password, or Facebook
-auth: AuthSettings {
-    methods: vec![
-        AuthMethod::Password,
-        AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
-    ],
-    ..Default::default()
-},
+## Adding a method
+
+Passwords are always built in. Every other method is a Cargo feature, so a project compiles
+only the ones it uses:
+
+```sh
+cadmus add google github      # or: cadmus new blog --features google,github
 ```
 
+That turns the features on in `Cargo.toml`, adds the methods to `methods()` in
+`src/settings.rs`, and adds their keys to `.env`:
+
 ```rust
-// Google only, and anyone at acme.com gets an account on first login
-auth: AuthSettings {
-    methods: vec![AuthMethod::Google(OAuthClient::from_env("GOOGLE")?)],
-    signup: Signup::Domains(vec!["acme.com".into()]),
-    signup_groups: vec!["Staff".into()],
-    ..Default::default()
-},
+fn methods() -> Result<Vec<AuthMethod>, AdminError> {
+    let mut methods = Vec::new();
+    methods.push(AuthMethod::Password);
+    if let Some(client) = OAuthClient::from_env_if_set("GOOGLE")? {
+        methods.push(AuthMethod::Google(client));
+    }
+    if let Some(client) = OAuthClient::from_env_if_set("GITHUB")? {
+        methods.push(AuthMethod::GitHub(client));
+    }
+    // cadmus:methods (login methods are added above this line)
+    Ok(methods)
+}
 ```
 
-## The methods
+A site whose keys are not in `.env` yet is left out, so the project runs before you have
+registered it. Remove a line to turn a method off (`AuthMethod::Password` included, which
+also turns off the API's password endpoint).
 
-| Method | What it needs |
-|---|---|
-| `AuthMethod::Password` | nothing; leave it out to turn passwords off everywhere, the API's token endpoint included |
-| `AuthMethod::MagicLink` | [e-mail](email.md); people type their address and get a login link |
-| `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
-| `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
-| `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
-| `AuthMethod::Facebook(client)` | an app at developers.facebook.com with Facebook Login |
-| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
-
-## Setting up a provider
-
-1. Register an app with the provider. Give it this *redirect URI*:
-   `<public_url>/admin/auth/<name>/callback`, for example
-   `https://shop.example.com/admin/auth/google/callback`.
-2. Put its client ID and secret in `.env`: `OAuthClient::from_env("GOOGLE")` reads
-   `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
-3. Set `server.public_url` to the site's address (`PUBLIC_URL` in a generated project).
-
-### Addresses for apps
-
-When a web or mobile app logs its users in through the API ([Logins for apps](app-logins.md)),
-the provider must also know the app's addresses:
-
-- **A code flow** (every provider): register the app's own redirect URI, such as
-  `https://app.example.com/auth/callback` or `myapp://auth`, next to the admin's, and list it
-  in `auth.app.redirect_uris`. Providers compare it exactly, character for character.
-- **An ID token from the browser** (Google's sign-in button, an OpenID Connect provider's
-  JavaScript library): no redirect URI, but the provider must allow the page's origin.
-
-Where each provider keeps these:
-
-| Provider | Redirect URIs | For an ID token in the browser |
+| Method | Feature | What it needs |
 |---|---|---|
-| Google | **Authorized redirect URIs** of the OAuth client; several allowed | the page's address, such as `https://app.example.com` or `http://localhost:3000`, under **Authorized JavaScript origins**. Without it the sign-in button does not load. |
-| Microsoft | **Redirect URIs** of the app registration, under the **Web** platform (the server redeems the code with the secret); several allowed | the page's address under the **Single-page application** platform |
-| GitHub | an OAuth app has **one** callback URL, and the app's `redirect_uri` must match it exactly (a subdirectory of it was refused in testing) | GitHub issues no ID tokens; use the code |
-| Facebook | **Valid OAuth Redirect URIs** under Facebook Login; several allowed | Facebook issues no ID tokens; use the code |
-| OpenID Connect | the client's valid redirect URIs (Keycloak: **Valid redirect URIs**) | the client's allowed web origins, and whichever flow the library uses (Keycloak's **Implicit flow** for `response_type=id_token`) |
+| `AuthMethod::Password` | always there | nothing |
+| `AuthMethod::MagicLink` | `magic-link` | [e-mail](email.md); people type their address and get a login link |
+| `AuthMethod::Google(client)` | `google` | an OAuth client in the Google Cloud console |
+| `AuthMethod::Microsoft { client, tenant }` | `microsoft` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
+| `AuthMethod::GitHub(client)` | `github` | an OAuth app (or a GitHub App) in GitHub's developer settings |
+| `AuthMethod::Facebook(client)` | `facebook` | an app at developers.facebook.com with Facebook Login |
+| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | `oidc` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
 
-Because a GitHub OAuth app has a single callback URL, the admin and an app cannot both log in
-with the same one. Either register a **GitHub App** instead, which accepts several callback
-URLs (give it read access to the account's **Email addresses** so the address can be
-checked), or use GitHub only for the app or only for the admin.
+A method listed without its feature stops the server at startup with the line to add, for
+example `` `github` needs cadmus's `github` feature ... (or run `cadmus add github`) ``.
+
+## The addresses to register
+
+Logging in through another site sends the browser there and back. The address it comes back
+to, the **redirect URI**, must be registered with the provider, and it depends on who
+receives the person back:
+
+- **The admin**: the Cadmus server receives them at
+  `<public_url>/admin/auth/<name>/callback`, trades the code and logs them in to the admin.
+- **Your own app** (React, Next.js, a mobile app): your app receives them at one of its own
+  pages, such as `https://app.example.com/auth/callback`, and sends what it got to
+  `POST /api/auth/<name>` ([Logins for apps](app-logins.md)). List that address in
+  `auth.app.redirect_uris` too.
+- **An ID token in the browser** (Google's sign-in button, an OpenID Connect provider's
+  JavaScript library) needs no redirect URI, but the provider must allow the page's address,
+  its *origin*.
+
+The admin and your app are different programs, usually on different addresses, so a site
+used by both needs both registered. For a shop whose admin and API are at
+`https://api.shop.com` and whose React app is at `https://shop.com`:
+
+| Register with the provider | For |
+|---|---|
+| `https://api.shop.com/admin/auth/google/callback` | the admin |
+| `https://shop.com/auth/callback` | your app's code flow (also in `auth.app.redirect_uris`) |
+| `https://shop.com` as an allowed origin | Google's sign-in button on your app |
+
+and on your machine, with Cadmus on port 3000 and a Vite app on 5173:
+
+| Register with the provider | For |
+|---|---|
+| `http://localhost:3000/admin/auth/google/callback` | the admin |
+| `http://localhost:5173/auth/callback` | your app's code flow |
+| `http://localhost:5173` as an allowed origin | a sign-in button on your app |
+
+Providers compare addresses exactly, character for character: `localhost` is not
+`127.0.0.1`, and a trailing `/` matters. Set `server.public_url` to the site's address
+(`PUBLIC_URL` in `.env`), and put each app's client ID and secret in `.env`
+(`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and so on).
+
+## Each provider
+
+**Google** (Google Cloud console, APIs & Services, Credentials, an OAuth client ID of type
+*Web application*):
+
+- **Authorized redirect URIs**: the addresses above; several are allowed.
+- **Authorized JavaScript origins**: your app's address, for the sign-in button (without it
+  the button does not load).
+- The consent screen needs the `email`, `profile` and `openid` scopes, which are the
+  defaults. iOS and Android apps have client IDs of their own: list them in
+  `GOOGLE_AUDIENCES` so their ID tokens are accepted.
+
+**Microsoft** (Microsoft Entra admin center, App registrations; registering an app needs an
+Entra directory):
+
+- **Supported account types**: who may log in. Match it with `tenant`: `common` for work,
+  school and personal accounts, `organizations`, `consumers`, or your directory's ID.
+- **Redirect URIs** under the **Web** platform (the server trades the code with the secret);
+  several are allowed. An app using a JavaScript library to get ID tokens adds its address
+  under the **Single-page application** platform.
+- **Certificates & secrets**: a client secret; its *Value* goes in `MICROSOFT_CLIENT_SECRET`.
+- **Token configuration**: add the optional claims `email` and `xms_edov` to the ID token.
+  With the shared directories (`common`, `organizations`, `consumers`) people can choose any
+  address, so an address only counts when `xms_edov` says its domain is verified; without
+  it, those people are refused. With your own directory as `tenant`, its addresses are
+  trusted as they are.
+
+**GitHub** (Settings, Developer settings):
+
+- An **OAuth app** has **one** Authorization callback URL, and the `redirect_uri` must be
+  exactly that address. So it serves either the admin or your app, not both.
+- For both, register a **GitHub App** instead: it accepts several callback URLs. Give it
+  read access to the account's **Email addresses**.
+- GitHub issues no ID tokens; apps send the code. The account's primary verified address is
+  used.
+
+**Facebook** (developers.facebook.com, Create app, the use case "Authenticate and request
+data from users with Facebook Login"):
+
+- Add the **email** permission; without it Facebook shares no address and people are
+  refused unless their Facebook account was linked before.
+- **Valid OAuth Redirect URIs** under Facebook Login's settings; several are allowed.
+- While the app is in **Development** mode, only people with a role on it can log in, and
+  `localhost` addresses are allowed. Going live needs Facebook's review.
+- Facebook issues no ID tokens; apps send the code.
+
+**Any OpenID Connect provider** (Okta, Auth0, Keycloak, GitLab, ...):
+
+- The client's redirect URIs (Keycloak: **Valid redirect URIs**) and allowed web origins.
+- For ID tokens straight from a browser library, the flow it uses must be allowed
+  (Keycloak: **Implicit flow** for `response_type=id_token`).
+- `OidcProvider::new("okta", "Okta", "https://acme.okta.com", client)`: the issuer is the
+  address its discovery document lives under. For a provider that does not say whether
+  addresses are verified, setting the provider's `trust_email` field to `true` trusts them;
+  only do that when users cannot pick their own address.
 
 ## Who gets in
 
@@ -94,8 +165,8 @@ New accounts have no permissions of their own and are put in the `signup_groups`
 groups decide what they may do. Accounts made at the admin's login page are staff; accounts
 made through the API are not, and can only use the API (see
 [Logins for apps](app-logins.md#who-may-log-in)). With `Signup::Open`, anyone can therefore
-get into the admin, if only with the groups' permissions. Each account's page lists its links to other sites, and a
-superuser can remove one.
+get into the admin, if only with the groups' permissions. Each account's page lists its links
+to other sites, and a superuser can remove one.
 
 ## Details
 
@@ -104,13 +175,4 @@ superuser can remove one.
 - To start a project without passwords, run
   `cargo run -- createsuperuser --username you --email you@example.com`: it asks for no
   password, and the account logs in through the provider.
-- Microsoft's shared directories (`common`, `organizations`, `consumers`) let people choose
-  any address, so their addresses only count if the app sends the optional `xms_edov` claim.
-  With your own directory's ID as `tenant`, its addresses are trusted.
-- GitHub uses the account's primary verified address. For an OpenID Connect provider that
-  does not say whether addresses are verified, `trust_email: true` trusts them; only do that
-  when users cannot pick their own address.
-- The same methods work for apps through the REST API: the app logs in with the provider
-  and sends the ID token or the code to `POST /api/auth/<name>`; register the app's
-  addresses with the provider too ([Addresses for apps](#addresses-for-apps)). See
-  [Logins for apps](app-logins.md). Programs use an [API key](authentication.md).
+- Programs use an [API key](authentication.md), not a login method.

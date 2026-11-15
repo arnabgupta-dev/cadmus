@@ -65,13 +65,14 @@ through PgBouncer in both modes, each in its own transaction. This was tested wi
 PgBouncer 1.25 in front of PostgreSQL 17: migrations, account creation and 200 API requests
 at once over 3 server connections (`tests/pgbouncer.rs`; set `PGBOUNCER_TEST_URL` to run it).
 
-## Smaller builds
+## Drivers
 
-A project that only uses one database can leave the other drivers out, to compile faster:
+Each database driver is a Cargo feature, and a project compiles only the one it uses.
+`cadmus new --database postgres` sets it; `cadmus add postgres` adds one later:
 
 ```toml
 cadmus = { version = "0.2", default-features = false, features = ["postgres"] }
 ```
 
-The features are `sqlite`, `postgres` and `mysql`. An address for a driver that was left out
-stops start-up and names the feature to turn back on.
+The features are `sqlite` (the default), `postgres` and `mysql` (MariaDB too). An address
+for a driver that is not built in stops start-up and names the feature to add.

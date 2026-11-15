@@ -32,6 +32,14 @@ This writes a ready-to-run project (see [Project layout](project-layout.md)), in
 `.env` file with a fresh secret key. For PostgreSQL or MySQL instead of SQLite, use
 `cadmus new blog --database postgres` (or `mysql`) and edit the address in `.env`.
 
+A project compiles only the parts of Cadmus it uses. Passwords, two-factor login, API keys
+and the REST API are always there; logins through other sites, login links, sending e-mail
+and cloud storage are added when you want them, now or later:
+
+```sh
+cadmus new blog --features google,github,smtp   # or, inside the project: cadmus add google
+```
+
 ## 3. Describe your data
 
 A blog post with a title, a body, a published flag and a view count:

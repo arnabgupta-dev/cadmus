@@ -86,6 +86,11 @@ This writes a ready-to-run project (see [What is in a project](#what-is-in-a-pro
 including a `.env` file with a fresh secret key. For PostgreSQL or MySQL instead of SQLite,
 use `cadmus new blog --database postgres` (or `mysql`) and edit the address in `.env`.
 
+A project compiles only the parts of Cadmus it uses. Passwords, two-factor login, API keys,
+rate limits and the REST API are always there; logins through other sites, login links,
+sending e-mail and cloud storage are features you add now or later:
+`cadmus new blog --features google,github,smtp`, or `cadmus add google` inside the project.
+
 **3. Describe your data.** A blog post with a title, a body, a published flag and a view
 count:
 
@@ -492,60 +497,66 @@ negative")` to refuse one; the message is shown on the form, or sent with a `422
 
 ### Login methods
 
-Each project chooses how people log in. The login page shows the chosen methods, in order:
+Passwords are always built in. Every other way to log in is a Cargo feature, so a project
+compiles only what it uses:
 
-```rust
-// Password, or Facebook
-auth: AuthSettings {
-    methods: vec![
-        AuthMethod::Password,
-        AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
-    ],
-    ..Default::default()
-},
-
-// Google only, and anyone at acme.com gets an account on first login
-auth: AuthSettings {
-    methods: vec![AuthMethod::Google(OAuthClient::from_env("GOOGLE")?)],
-    signup: Signup::Domains(vec!["acme.com".into()]),
-    signup_groups: vec!["Staff".into()],
-    ..Default::default()
-},
+```sh
+cadmus add google github      # or: cadmus new blog --features google,github
 ```
 
-| Method | What it needs |
-|---|---|
-| `AuthMethod::Password` | nothing; leave it out to turn passwords off everywhere, the API's token endpoint included |
-| `AuthMethod::MagicLink` | [e-mail](#e-mail); people type their address and get a login link |
-| `AuthMethod::Google(client)` | an OAuth client from the Google Cloud console |
-| `AuthMethod::Microsoft { client, tenant }` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
-| `AuthMethod::GitHub(client)` | an OAuth app in GitHub's developer settings |
-| `AuthMethod::Facebook(client)` | an app at developers.facebook.com with Facebook Login |
-| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
+This turns the features on in `Cargo.toml`, adds the methods to `methods()` in
+`src/settings.rs`, and adds their keys to `.env`. A site whose keys are not filled in yet is
+left out, so the project keeps running:
 
-`OAuthClient::from_env("GOOGLE")` reads `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` from
-`.env`. Set `server.public_url` to the site's address (`PUBLIC_URL` in a generated project)
-and give each provider this *redirect URI*: `<public_url>/admin/auth/<name>/callback`, e.g.
-`https://shop.example.com/admin/auth/google/callback`.
+```rust
+fn methods() -> Result<Vec<AuthMethod>, AdminError> {
+    let mut methods = Vec::new();
+    methods.push(AuthMethod::Password);
+    if let Some(client) = OAuthClient::from_env_if_set("GOOGLE")? {
+        methods.push(AuthMethod::Google(client));
+    }
+    // cadmus:methods (login methods are added above this line)
+    Ok(methods)
+}
+```
+
+| Method | Feature | What it needs |
+|---|---|---|
+| `AuthMethod::Password` | always there | nothing; remove it to turn passwords off everywhere, the API's token endpoint included |
+| `AuthMethod::MagicLink` | `magic-link` | [e-mail](#e-mail); people type their address and get a login link |
+| `AuthMethod::Google(client)` | `google` | an OAuth client from the Google Cloud console |
+| `AuthMethod::Microsoft { client, tenant }` | `microsoft` | an app registration in Microsoft Entra; `tenant` is `common`, `organizations`, `consumers` or your directory's ID |
+| `AuthMethod::GitHub(client)` | `github` | an OAuth app (or a GitHub App) in GitHub's developer settings |
+| `AuthMethod::Facebook(client)` | `facebook` | an app at developers.facebook.com with Facebook Login |
+| `AuthMethod::Oidc(OidcProvider::new(name, label, issuer, client))` | `oidc` | any OpenID Connect provider: Okta, Auth0, Keycloak, GitLab, ... |
+
+A method listed without its feature stops the server at startup with the line to add.
+
+**The addresses to register.** The provider sends people back to a *redirect URI*, which
+depends on who receives them: the admin at `<public_url>/admin/auth/<name>/callback`, or a
+page of your own app (say `https://shop.com/auth/callback`, also listed in
+`auth.app.redirect_uris`) that passes what it got to the API. A site used by both needs both
+registered; Google's sign-in button also needs your app's address as an *Authorized
+JavaScript origin*. Providers compare addresses exactly. A GitHub OAuth app takes a single
+callback URL, so it serves the admin or your app, not both (a GitHub App takes several).
+Microsoft's shared directories need the optional `xms_edov` claim for addresses to count;
+Facebook needs the `email` permission. Per provider, with examples for production and for
+your machine:
+[Login methods](https://arnabgupta-dev.github.io/cadmus/docs/login-methods.html).
 
 **Who gets in.** A login through another site is matched to the account with the e-mail
 address that site vouches for, and the two are then linked, so later logins work even if the
 address changes. Addresses the site has not verified are never used. Nobody else gets in
 unless `signup` allows it: `Signup::Domains(vec!["acme.com".into()])` or `Signup::Open`
-create an account at the first login, as staff with no permissions of their own, in the
-`signup_groups`. Each account's page lists its links, and a superuser can remove one.
+create an account at the first login, with no permissions of their own, in the
+`signup_groups`: staff when made at the admin's login page, API-only when made through the
+API. Each account's page lists its links, and a superuser can remove one.
 
 - Accounts with two-factor login enter their code after coming back from the other site, and
   `totp_required` applies as for passwords. Inactive accounts cannot log in.
 - To start a project without passwords, run
   `createsuperuser --username you --email you@example.com`: it asks for no password, and the
   account logs in through the provider.
-- Microsoft's shared directories (`common`, `organizations`, `consumers`) let people choose any
-  address, so their addresses only count if the app sends the optional `xms_edov` claim. With
-  your own directory's ID as `tenant`, its addresses are trusted.
-- GitHub uses the account's primary verified address. For an OpenID Connect provider that does
-  not say whether addresses are verified, `trust_email: true` trusts them; only do that when
-  users cannot pick their own address.
 - The same methods work for apps through the REST API (see below). Programs use an
   [API key](#people-log-in-programs-use-keys).
 
@@ -576,7 +587,7 @@ guide, with React examples, is
 
 Login links, password resets and invitations are sent by e-mail. Until `mail.url` is set,
 messages are written to the server's log instead, so on your own machine you copy the link
-from the terminal:
+from the terminal. Sending over SMTP is the `smtp` feature (`cadmus add smtp`):
 
 ```rust
 mail: MailSettings {
@@ -590,7 +601,7 @@ provider's SMTP service. Unencrypted `smtp://` is accepted only to this machine,
 inbox such as Mailpit on `smtp://localhost:1025`. To send through an HTTP API instead,
 implement `cadmus::Mailer` (one `send` method) and pass it to `App::mailer`.
 
-- **Login links** (`AuthMethod::MagicLink`): the login page asks for an address and mails a
+- **Login links** (`AuthMethod::MagicLink`, the `magic-link` feature): the login page asks for an address and mails a
   link that works once, within 15 minutes. Opening it shows a button rather than logging in
   straight away, because mail scanners open links to check them.
 - **Forgot your password?** appears under the password field when passwords are on and
@@ -766,9 +777,10 @@ The API behaves the same on all three: true and false are JSON booleans, dates a
 ISO 8601 (`2026-03-04T05:06:07`), JSON fields come back as JSON, and `?q=` search ignores
 case.
 
-**Smaller builds:** a project that only uses one database can leave the other drivers out, to
-compile faster: `cadmus = { ..., default-features = false, features = ["postgres"] }` (the
-features are `sqlite`, `postgres` and `mysql`).
+**Drivers:** each is a Cargo feature, and a project compiles only its own:
+`cadmus = { ..., default-features = false, features = ["postgres"] }` (the features are
+`sqlite`, the default, `postgres` and `mysql`). `cadmus new --database` sets it, and
+`cadmus add postgres` adds one later.
 
 ### Errors and your own code
 
@@ -904,7 +916,8 @@ And the `cadmus` command:
 
 | Command | What it does |
 |---|---|
-| `cadmus new NAME [--database sqlite\|postgres\|mysql] [--framework-path PATH]` | create a project |
+| `cadmus new NAME [--database sqlite\|postgres\|mysql] [--features F,...] [--framework-path PATH]` | create a project, with only the features named built in |
+| `cadmus add FEATURE ...` | build in more: `google`, `microsoft`, `github`, `facebook`, `oidc`, `magic-link`, `smtp`, `s3`, `azure`, `gcs`, `postgres`, `mysql`, `sqlite` |
 | `cadmus generate model NAME field:type ...` | add a model to the project in the current folder |
 | `cadmus delete model NAME [--yes]` | remove a model: its file and its lines in `src/models/mod.rs` |
 | `cadmus secret` | print a new secret key |
@@ -923,7 +936,7 @@ And the `cadmus` command:
 | `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
 | `home` | `enabled`, `title`, `tagline` |
 | `uploads` | `storage_url` (off until set), `max_file_bytes` (1 GiB), `max_chunk_bytes` (8 MiB) |
-| `mail` | `url` (SMTP; unset writes messages to the log), `from` |
+| `mail` | `url` (SMTP, with the `smtp` feature; unset writes messages to the log), `from` |
 | `log_level` | `LogLevel::INFO`; `DEBUG` adds SQL statements |
 | `rate_limit` | `enabled` (`true`), `anonymous` (120/min per address), `logged_in` (600/min per account or key), `admin` (`None`), `rules` |
 
@@ -1010,9 +1023,9 @@ nothing until you implement `UserStore::access`, API keys work only if you imple
 - **Accounts:** no passkeys yet. API keys cannot be limited to some models (only read-only).
   An account is linked to another site by e-mail address only (there is no "connect"
   button). Per-record permissions are ownership only (one owner per row). Login attempt
-  limits are per server process (request rate limits too, unless you plug in a shared store). Superusers manage accounts and groups in the admin only;
-  through the API people manage only their own account. A copied access token works until it
-  expires.
+  limits are per server process (request rate limits too, unless you plug in a shared
+  store). Superusers manage accounts and groups in the admin only; through the API people
+  manage only their own account. A copied access token works until it expires.
 - **Admin:** no page listing all uploaded files, and a replaced file is not deleted. No
   search-as-you-type for long lists of related records, and no editing of related records
   inside another record's form.
@@ -1024,8 +1037,9 @@ nothing until you implement `UserStore::access`, API keys work only if you imple
   add them with your own `tower` layers.
 - **API documentation:** your own routes are not discovered automatically, and the viewers
   load from a CDN rather than being bundled.
-- **Untested services:** S3, Azure and Google Cloud Storage compile but have not been run
-  against the real services.
+- **Tested against stand-ins only:** S3, Azure and Google Cloud Storage (SeaweedFS, Azurite,
+  fake-gcs-server), and Microsoft and Facebook logins. Google, GitHub and Keycloak logins
+  were tested against the real services.
 
 ## Working on Cadmus
 

@@ -9,6 +9,10 @@ Every [login method](login-methods.md) works for apps too: a React, Next.js, Vue
 front end logs its users in through the REST API and gets tokens. The admin is not involved,
 and these users need not be staff.
 
+The methods are the project's own: add one with `cadmus add google` (or `github`,
+`microsoft`, `facebook`, `oidc`, `magic-link`), and it works for the admin and for apps
+alike.
+
 ## Who may log in
 
 Any **active** account may log in through the API. **Staff** only decides whether it may
@@ -116,8 +120,8 @@ Google, so list them (`GOOGLE_AUDIENCES=ios-id,android-id` with `OAuthClient::fr
 the app sent a `nonce` to the provider, send it too.
 
 Google's button only loads on a page whose address is listed under **Authorized JavaScript
-origins** in the OAuth client, such as `https://app.example.com`, and `http://localhost:3000`
-while you develop.
+origins** in the OAuth client, such as `https://app.example.com`, and `http://localhost:5173`
+(wherever your app runs) while you develop.
 
 **Or the code** the provider sent back to the app, which the server trades using the client
 secret. This works with every provider, and is the only way for GitHub and Facebook, which
@@ -148,11 +152,12 @@ await fetch("/api/auth/github", {
 });
 ```
 
-The `redirect_uri` must be listed in `auth.app.redirect_uris` and registered with the
-provider, both exactly. Mobile apps can use their own scheme, such as `myapp://auth`. A
-GitHub OAuth app has only one callback URL, so it cannot serve the admin and an app at once;
-see [Addresses for apps](login-methods.md#addresses-for-apps) for where each provider keeps
-these and what to do about GitHub.
+The `redirect_uri` is a page of **your app**, not of Cadmus: it must be listed in
+`auth.app.redirect_uris` and registered with the provider, both exactly, next to the admin's
+own callback. Mobile apps can use their own scheme, such as `myapp://auth`. A GitHub OAuth
+app has only one callback URL, so it cannot serve the admin and an app at once. See
+[The addresses to register](login-methods.md#the-addresses-to-register) for what to register
+with each provider, with examples.
 
 Either way, the account is found as for the admin: the one linked to that identity, or the
 one with the address the provider vouches for, or a new account if `signup` allows the
@@ -160,12 +165,13 @@ address. Otherwise the answer is `403` with code `no_account`.
 
 ## Login links, sign-up and password resets
 
-These e-mail a link that opens **your app**, which sends the token back to the API. Set where
-the app is:
+These e-mail a link that opens **your app**, which sends the token back to the API. Login
+links need the `magic-link` feature (`cadmus add magic-link`), and real e-mail needs `smtp`.
+Set where the app is:
 
 ```rust
 auth: AuthSettings {
-    methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
+    methods: methods()?, // Password and MagicLink, see Login methods
     signup: Signup::Open,
     signup_groups: vec!["Members".into()],
     app: AppSettings {
