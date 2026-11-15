@@ -7,6 +7,7 @@
 //! TLS, matches it to an account (see [`crate::users::resolve_identity`]) and logs them in,
 //! asking for their authenticator code first if they have one.
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +46,43 @@ const GITHUB_API: &str = "https://api.github.com";
 const FACEBOOK_AUTHORIZE: &str = "https://www.facebook.com/v21.0/dialog/oauth";
 const FACEBOOK_TOKEN: &str = "https://graph.facebook.com/v21.0/oauth/access_token";
 const FACEBOOK_ME: &str = "https://graph.facebook.com/v21.0/me";
+const MICROSOFT_LOGIN: &str = "https://login.microsoftonline.com";
+
+/// Points built-in providers at stand-ins on this machine, for testing without real apps:
+/// `microsoft=http://localhost:9100,facebook=http://localhost:9101` (also `google` and
+/// `github`). Only loopback addresses are accepted. Deliberately undocumented.
+const BASE_URLS_VAR: &str = "CADMUS_PROVIDER_BASE_URLS";
+
+/// The stand-in addresses from [`BASE_URLS_VAR`], by provider name.
+fn base_url_overrides() -> Result<HashMap<String, String>, AdminError> {
+    let Ok(text) = std::env::var(BASE_URLS_VAR) else {
+        return Ok(HashMap::new());
+    };
+    let mut overrides = HashMap::new();
+    for entry in text.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let invalid = |why: &str| AdminError::Config(format!("{BASE_URLS_VAR}: `{entry}` {why}"));
+        let (name, url) = entry
+            .split_once('=')
+            .ok_or_else(|| invalid("is not `name=url`"))?;
+        let name = name.trim();
+        if !["google", "microsoft", "github", "facebook"].contains(&name) {
+            return Err(invalid("names no built-in provider"));
+        }
+        let parsed = url::Url::parse(url.trim()).map_err(|_| invalid("has no valid URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https") || !is_local(&parsed) {
+            return Err(invalid(
+                "must point at this machine (localhost or 127.0.0.1)",
+            ));
+        }
+        tracing::warn!(
+            provider = name,
+            url = url.trim(),
+            "logins through this provider go to a stand-in, not the real site ({BASE_URLS_VAR})"
+        );
+        overrides.insert(name.to_owned(), url.trim().trim_end_matches('/').to_owned());
+    }
+    Ok(overrides)
+}
 /// Microsoft directories that admit accounts from many organisations.
 const MICROSOFT_SHARED_TENANTS: [&str; 3] = ["common", "organizations", "consumers"];
 
@@ -146,6 +184,7 @@ impl Methods {
         let mut password = false;
         let mut magic_link = false;
         let mut providers: Vec<Arc<Provider>> = Vec::new();
+        let mut overrides = base_url_overrides()?;
         for method in methods {
             let name = method.name().to_owned();
             if name == "password" && password
@@ -157,7 +196,10 @@ impl Methods {
             match method {
                 AuthMethod::Password => password = true,
                 AuthMethod::MagicLink => magic_link = true,
-                other => providers.push(Arc::new(Provider::new(other).map_err(error)?)),
+                other => {
+                    let base = overrides.remove(&name);
+                    providers.push(Arc::new(Provider::new(other, base).map_err(error)?));
+                }
             }
         }
         let public_url = match public_url.map(str::trim).filter(|url| !url.is_empty()) {
@@ -299,6 +341,8 @@ pub(crate) struct Provider {
     pub(crate) label: String,
     client: OAuthClient,
     kind: Kind,
+    /// A stand-in for the real site, for tests; see [`BASE_URLS_VAR`].
+    base: Option<String>,
 }
 
 enum Kind {
@@ -314,6 +358,9 @@ struct Oidc {
     trust_email: bool,
     /// Microsoft's shared directories: the token's issuer names the account's own directory.
     microsoft_shared: bool,
+    /// Where Microsoft's directories live: `https://login.microsoftonline.com`, unless a
+    /// stand-in replaces it.
+    microsoft_login: String,
     microsoft: bool,
     discovery: OnceCell<Discovery>,
     /// The provider's signing keys, for ID tokens an app sends; with when they were read.
@@ -335,13 +382,15 @@ struct Discovery {
 }
 
 impl Provider {
-    fn new(method: AuthMethod) -> Result<Self, String> {
+    fn new(method: AuthMethod, base: Option<String>) -> Result<Self, String> {
         let name = method.name().to_owned();
+        let microsoft_login = base.clone().unwrap_or_else(|| MICROSOFT_LOGIN.to_owned());
         let oidc = |issuer: String, trust_email, microsoft, microsoft_shared| {
             Kind::Oidc(Box::new(Oidc {
                 issuer,
                 trust_email,
                 microsoft_shared,
+                microsoft_login: microsoft_login.clone(),
                 microsoft,
                 discovery: OnceCell::new(),
                 keys: std::sync::Mutex::new(None),
@@ -352,7 +401,12 @@ impl Provider {
             AuthMethod::Google(client) => (
                 "Google".to_owned(),
                 client,
-                oidc(GOOGLE_ISSUER.to_owned(), false, false, false),
+                oidc(
+                    base.clone().unwrap_or_else(|| GOOGLE_ISSUER.to_owned()),
+                    false,
+                    false,
+                    false,
+                ),
             ),
             AuthMethod::Microsoft { client, tenant } => {
                 let tenant = tenant.trim().to_owned();
@@ -367,7 +421,7 @@ impl Provider {
                     ));
                 }
                 let shared = MICROSOFT_SHARED_TENANTS.contains(&tenant.as_str());
-                let issuer = format!("https://login.microsoftonline.com/{tenant}/v2.0");
+                let issuer = format!("{microsoft_login}/{tenant}/v2.0");
                 // One directory vouches for its own members' addresses; the shared ones
                 // let anyone pick an address, unless `xms_edov` says it was verified.
                 (
@@ -448,7 +502,21 @@ impl Provider {
             label,
             client,
             kind,
+            base,
         })
+    }
+
+    /// `url` on the real site, or the same path on the stand-in that replaces it.
+    fn endpoint(&self, url: &str) -> String {
+        match &self.base {
+            None => url.to_owned(),
+            Some(base) => {
+                let path = url::Url::parse(url)
+                    .map(|u| u.path().to_owned())
+                    .unwrap_or_default();
+                format!("{base}{path}")
+            }
+        }
     }
 
     /// The provider's endpoints, read once from its discovery document.
@@ -461,8 +529,9 @@ impl Provider {
             .get_or_try_init(|| async {
                 let url = format!("{}/.well-known/openid-configuration", oidc.issuer);
                 let document: Discovery = get_json(http.get(&url)).await?;
+                let shared = format!("{}/{{tenantid}}/v2.0", oidc.microsoft_login);
                 let expected = if oidc.microsoft_shared {
-                    "https://login.microsoftonline.com/{tenantid}/v2.0"
+                    &shared
                 } else {
                     &oidc.issuer
                 };
@@ -492,8 +561,8 @@ impl Provider {
                     .clone(),
                 "openid email profile",
             ),
-            Kind::GitHub => (GITHUB_AUTHORIZE.to_owned(), "read:user user:email"),
-            Kind::Facebook => (FACEBOOK_AUTHORIZE.to_owned(), "email public_profile"),
+            Kind::GitHub => (self.endpoint(GITHUB_AUTHORIZE), "read:user user:email"),
+            Kind::Facebook => (self.endpoint(FACEBOOK_AUTHORIZE), "email public_profile"),
         };
         let mut url = url::Url::parse(&endpoint).map_err(|e| format!("{endpoint}: {e}"))?;
         {
@@ -540,15 +609,19 @@ impl Provider {
             }
             Kind::GitHub => {
                 let token: Value = get_json(
-                    http.post(GITHUB_TOKEN)
+                    http.post(self.endpoint(GITHUB_TOKEN))
                         .header(header::ACCEPT, "application/json")
                         .form(&exchange),
                 )
                 .await
                 .map_err(Failure::Broken)?;
                 let access = access_token(&token)?;
+                let github_api = match &self.base {
+                    Some(base) => format!("{base}/api"),
+                    None => GITHUB_API.to_owned(),
+                };
                 let api = |path: &str| {
-                    http.get(format!("{GITHUB_API}{path}"))
+                    http.get(format!("{github_api}{path}"))
                         .bearer_auth(&access)
                         .header(header::ACCEPT, "application/vnd.github+json")
                 };
@@ -559,16 +632,17 @@ impl Provider {
                 github_identity(&self.name, &user, &emails)
             }
             Kind::Facebook => {
-                let token: Value = get_json(http.get(FACEBOOK_TOKEN).query(&exchange))
-                    .await
-                    .map_err(Failure::Broken)?;
+                let token: Value =
+                    get_json(http.get(self.endpoint(FACEBOOK_TOKEN)).query(&exchange))
+                        .await
+                        .map_err(Failure::Broken)?;
                 let access = access_token(&token)?;
                 // Proves the request comes from the app's owner, not just a token holder.
                 let mut mac = Hmac::<Sha256>::new_from_slice(self.client.client_secret.as_bytes())
                     .map_err(|e| Failure::Broken(e.to_string()))?;
                 mac.update(access.as_bytes());
                 let proof = hex(&mac.finalize().into_bytes());
-                let me: Value = get_json(http.get(FACEBOOK_ME).query(&[
+                let me: Value = get_json(http.get(self.endpoint(FACEBOOK_ME)).query(&[
                     ("fields", "id,email,first_name,last_name"),
                     ("access_token", access.as_str()),
                     ("appsecret_proof", proof.as_str()),
@@ -1186,6 +1260,7 @@ mod tests {
             issuer: "https://id.example.com".into(),
             trust_email,
             microsoft_shared: shared,
+            microsoft_login: MICROSOFT_LOGIN.to_owned(),
             microsoft,
             discovery: OnceCell::new(),
             keys: std::sync::Mutex::new(None),
