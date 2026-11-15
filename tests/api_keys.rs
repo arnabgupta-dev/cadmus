@@ -234,9 +234,14 @@ async fn keys_stop_working_when_they_expire_or_the_account_is_locked() {
         api(&app, "GET", "/api/note", &expiring, None).await.status,
         StatusCode::OK
     );
-    db.execute_unprepared(
-        "UPDATE auth_api_key SET expires = '2001-01-01 00:00:00+00:00' WHERE name = 'short'",
-    )
+    // MySQL and MariaDB take no offset in a date; the others store one.
+    let past = match db.get_database_backend() {
+        sea_orm::DbBackend::MySql => "2001-01-01 00:00:00",
+        _ => "2001-01-01 00:00:00+00:00",
+    };
+    db.execute_unprepared(&format!(
+        "UPDATE auth_api_key SET expires = '{past}' WHERE name = 'short'"
+    ))
     .await
     .unwrap();
     assert_eq!(
