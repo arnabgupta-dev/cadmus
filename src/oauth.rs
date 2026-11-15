@@ -894,7 +894,9 @@ fn text(value: &Value, key: &str) -> Option<String> {
 fn truthy(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(flag)) => *flag,
-        Some(Value::String(text)) => text.eq_ignore_ascii_case("true"),
+        // Some providers send flags as `"1"` or `1`.
+        Some(Value::String(text)) => text.eq_ignore_ascii_case("true") || text.trim() == "1",
+        Some(Value::Number(number)) => number.as_u64() == Some(1),
         _ => false,
     }
 }

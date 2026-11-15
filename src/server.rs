@@ -300,7 +300,12 @@ pub(crate) fn cors(origins: &[String]) -> CorsLayer {
             Method::PATCH,
             Method::DELETE,
         ])
-        .allow_headers([AUTHORIZATION, CONTENT_TYPE, upload_offset.clone()])
+        .allow_headers([
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            upload_offset.clone(),
+            HeaderName::from_static("x-api-key"),
+        ])
         .expose_headers({
             let [limit, remaining, reset] = crate::rate_limit::header_names();
             [

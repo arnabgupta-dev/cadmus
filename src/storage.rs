@@ -48,6 +48,7 @@ impl Storage {
     {
         let parsed = url::Url::parse(url)
             .map_err(|e| AdminError::Config(format!("invalid storage URL: {e}")))?;
+        let options = allow_plain_http_endpoint(options.into_iter().collect());
         let (store, prefix) = object_store::parse_url_opts(&parsed, options).map_err(|e| {
             AdminError::Config(format!(
                 "cannot open storage `{}` (is the matching Cargo feature enabled?): {e}",
@@ -216,5 +217,64 @@ impl Sink {
         {
             tracing::warn!(%error, "could not abort multipart upload");
         }
+    }
+}
+
+/// An S3 endpoint given as `http://...` (MinIO, SeaweedFS or LocalStack on your machine) only
+/// works with `AWS_ALLOW_HTTP=true`; without it every request fails with an unhelpful
+/// "builder error". Naming a plain-http endpoint says as much, so allow it unless the
+/// setting is given either way.
+fn allow_plain_http_endpoint(mut options: Vec<(String, String)>) -> Vec<(String, String)> {
+    let named = |key: &str, names: &[&str]| names.iter().any(|n| key.eq_ignore_ascii_case(n));
+    let http_endpoint = options.iter().any(|(key, value)| {
+        named(
+            key,
+            &[
+                "aws_endpoint",
+                "aws_endpoint_url",
+                "endpoint",
+                "endpoint_url",
+            ],
+        ) && value.trim().to_ascii_lowercase().starts_with("http://")
+    });
+    let decided = options
+        .iter()
+        .any(|(key, _)| named(key, &["aws_allow_http", "allow_http"]));
+    if http_endpoint && !decided {
+        options.push(("aws_allow_http".into(), "true".into()));
+    }
+    options
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allow_plain_http_endpoint;
+
+    fn opts(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    fn allows(options: &[(String, String)]) -> Option<&str> {
+        options
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("aws_allow_http"))
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn a_plain_http_endpoint_is_allowed_unless_said_otherwise() {
+        let local = allow_plain_http_endpoint(opts(&[("AWS_ENDPOINT", "http://localhost:9000")]));
+        assert_eq!(allows(&local), Some("true"));
+        let https = allow_plain_http_endpoint(opts(&[("AWS_ENDPOINT", "https://s3.example.com")]));
+        assert_eq!(allows(&https), None);
+        let refused = allow_plain_http_endpoint(opts(&[
+            ("aws_endpoint", "http://localhost:9000"),
+            ("AWS_ALLOW_HTTP", "false"),
+        ]));
+        assert_eq!(allows(&refused), Some("false"));
+        assert_eq!(allows(&allow_plain_http_endpoint(opts(&[]))), None);
     }
 }

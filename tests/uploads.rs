@@ -251,11 +251,10 @@ async fn uploads_over_the_limit_are_refused_and_leave_nothing() {
     let (_, started) = begin(&app, &token, "a.bin", 40).await;
     let id = started["id"].as_str().unwrap();
     assert_eq!(started["max_chunk_bytes"], 16);
-    // A chunk bigger than the chunk limit.
-    assert_eq!(
-        chunk(&app, &token, id, 0, &pattern(17)).await.0.status(),
-        StatusCode::PAYLOAD_TOO_LARGE
-    );
+    // A chunk bigger than the chunk limit: the same JSON error as the rest of the API.
+    let (response, error) = chunk(&app, &token, id, 0, &pattern(17)).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error["error"]["code"], "too_large", "{error}");
     assert_eq!(
         chunk(&app, &token, id, 0, &pattern(16)).await.0.status(),
         StatusCode::OK

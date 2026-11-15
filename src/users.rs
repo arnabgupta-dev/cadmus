@@ -761,6 +761,18 @@ pub(crate) async fn save_user(
         None => account.insert(&txn).await,
     };
     let user_id = saved.map_err(taken("username", "an account"))?.id;
+    // Deactivating ends the account's API keys and refresh tokens for good, so reactivating
+    // it later (say, after it was compromised) does not bring back what someone else may hold.
+    if !input.is_active {
+        api_key::Entity::delete_many()
+            .filter(api_key::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+        refresh_token::Entity::delete_many()
+            .filter(refresh_token::Column::UserId.eq(user_id))
+            .exec(&txn)
+            .await?;
+    }
     if input.reset_totp {
         recovery_code::Entity::delete_many()
             .filter(recovery_code::Column::UserId.eq(user_id))
@@ -1012,7 +1024,8 @@ pub(crate) async fn resolve_identity(
         .filter(|email| email.contains('@'))
     else {
         return Ok(Err(format!(
-            "{label} did not confirm an e-mail address for this account, so it cannot be              matched to an account here."
+            "{label} did not confirm an e-mail address for this account, so it cannot be \
+             matched to an account here."
         )));
     };
     let existing = user::Entity::find()

@@ -759,8 +759,36 @@ async fn delete_file(
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
     session.require(FILES, Action::Delete)?;
+    if let Some(model) = file_in_use(&state, id).await? {
+        return Err(AdminError::Conflict(format!(
+            "the file is still used by a record of {model}; clear the field first"
+        ))
+        .into());
+    }
     service(&state)?.remove(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The label of a model with a record whose file field names file `id`, if any. Deleting such
+/// a file would leave the record pointing at nothing, or, should the id ever be reused, at
+/// someone else's file.
+async fn file_in_use(state: &AdminState, id: i32) -> Result<Option<String>, AdminError> {
+    for resource in &state.resources {
+        for field in &resource.options().file_fields {
+            let query = crate::resource::ListQuery {
+                filters: vec![crate::resource::Filter {
+                    field: field.clone(),
+                    op: crate::resource::FilterOp::Equal,
+                    value: id.to_string(),
+                }],
+                ..crate::resource::ListQuery::first(1)
+            };
+            if resource.list(&query).await?.total > 0 {
+                return Ok(Some(resource.label().to_owned()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Deserialize)]
@@ -823,8 +851,37 @@ async fn upload_status(
     session.require_bearer()?;
     session.require(FILES, Action::Add)?;
     let uploads = service(&state)?;
-    let current = uploads.session(&id).await?;
+    let current = own_upload(uploads, &id, &session).await?;
     Ok(session_response(&state, uploads, StatusCode::OK, &current))
+}
+
+/// The upload `id`, if the account sent it: one account cannot continue, inspect or cancel
+/// another's upload, which would put its content under the other's name. Others' uploads
+/// are "not found", as if the id were wrong.
+async fn own_upload(
+    uploads: &Uploads,
+    id: &str,
+    session: &Session,
+) -> Result<session::Model, AdminError> {
+    let current = uploads.session(id).await?;
+    if current.created_by != session.username {
+        return Err(AdminError::NotFound("upload".into()));
+    }
+    Ok(current)
+}
+
+/// The request body, or `413 too_large` as JSON when it is over the size limit (axum's own
+/// answer is plain text).
+fn body_or_too_large(
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<Bytes, AdminError> {
+    body.map_err(|rejection| {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            AdminError::TooLarge("the piece is larger than the upload limit".into())
+        } else {
+            AdminError::Unsupported(rejection.body_text())
+        }
+    })
 }
 
 async fn append_chunk(
@@ -832,11 +889,13 @@ async fn append_chunk(
     session: Session,
     Path(id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> ApiResult<Response> {
     session.require_bearer()?;
     session.require(FILES, Action::Add)?;
+    let body = body_or_too_large(body)?;
     let uploads = service(&state)?;
+    own_upload(uploads, &id, &session).await?;
     let offset = headers
         .get(OFFSET_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -858,6 +917,8 @@ async fn abort_upload(
 ) -> ApiResult<StatusCode> {
     session.require_bearer()?;
     session.require(FILES, Action::Add)?;
-    service(&state)?.abort(&id).await?;
+    let uploads = service(&state)?;
+    own_upload(uploads, &id, &session).await?;
+    uploads.abort(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

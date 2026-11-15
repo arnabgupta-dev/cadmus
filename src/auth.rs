@@ -1033,6 +1033,11 @@ impl Session {
         if self.can(model, action) {
             return Ok(());
         }
+        if self.read_only && action != Action::View && self.access.allows(model, action) {
+            return Err(AdminError::Forbidden(
+                "this API key is read-only: it can view but not add, change or delete".into(),
+            ));
+        }
         Err(AdminError::Forbidden(format!(
             "you do not have permission to {} `{model}`",
             action.as_str()
@@ -1203,6 +1208,11 @@ impl CurrentUser {
     pub fn require(&self, model: &str, action: Action) -> Result<(), AdminError> {
         if self.can(model, action) {
             return Ok(());
+        }
+        if self.read_only && action != Action::View && self.access.allows(model, action) {
+            return Err(AdminError::Forbidden(
+                "this API key is read-only: it can view but not add, change or delete".into(),
+            ));
         }
         Err(AdminError::Forbidden(format!(
             "you do not have permission to {} `{model}`",

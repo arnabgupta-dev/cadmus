@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use cadmus::{App, AuthConfig, ModelOptions, create_superuser, new_api_key};
 use http_body_util::BodyExt;
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -383,5 +383,68 @@ async fn the_api_documentation_describes_keys() {
             .as_array()
             .unwrap()
             .contains(&json!({"apiKey": []}))
+    );
+}
+
+#[tokio::test]
+async fn deactivating_an_account_ends_its_keys_for_good() {
+    let (app, db) = site().await;
+    create_superuser(&db, "bot", PASSWORD).await.unwrap();
+    let bot = Browser::new(&db, "bot", false).await;
+    let key = shown_key(
+        &bot.post(&app, "/admin/auth/api-keys", "name=Sync&expires=30")
+            .await
+            .body,
+    );
+    let read_only = shown_key(
+        &bot.post(
+            &app,
+            "/admin/auth/api-keys",
+            "name=Reader&expires=30&read_only=true",
+        )
+        .await
+        .body,
+    );
+    assert_eq!(
+        api(&app, "GET", "/api/note", &key, None).await.status,
+        StatusCode::OK
+    );
+    // A read-only key says so when it tries to change something.
+    let refused = api(
+        &app,
+        "POST",
+        "/api/note",
+        &read_only,
+        Some(json!({"text": "x"})),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(refused.body.contains("read-only"), "{}", refused.body);
+
+    let id = cadmus::user::Entity::find()
+        .filter(cadmus::user::Column::Username.eq("bot"))
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    let root = Browser::new(&db, "root", false).await;
+    let path = format!("/admin/auth/users/{id}");
+    let off = root
+        .post(&app, &path, "username=bot&is_staff=true&is_superuser=true")
+        .await;
+    assert_eq!(off.status, StatusCode::SEE_OTHER, "{}", off.body);
+    let on = root
+        .post(
+            &app,
+            &path,
+            "username=bot&is_active=true&is_staff=true&is_superuser=true",
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::SEE_OTHER, "{}", on.body);
+    // Back on, but the keys made before are gone.
+    assert_eq!(
+        api(&app, "GET", "/api/note", &key, None).await.status,
+        StatusCode::UNAUTHORIZED
     );
 }

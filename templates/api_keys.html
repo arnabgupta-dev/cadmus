@@ -4,6 +4,8 @@
 {% block head %}
 <style>
 .ak { max-width: 760px; display: grid; gap: 16px; }
+/* Grid children may shrink below their content, so a long line wraps instead of widening the page. */
+.ak > * { min-width: 0; }
 .ak form .field + .field, .ak form .option { margin-top: 14px; }
 .ak form .btn.primary { margin-top: 18px; }
 .secret { display: block; margin-top: 12px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--sunken); overflow-wrap: anywhere; user-select: all; font-size: .95rem; }
@@ -14,7 +16,7 @@
 .keys code { font-size: .9rem; }
 .tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: .8rem; background: var(--sunken); color: var(--muted); }
 .tag.warn { background: var(--warn-soft); color: var(--warn); }
-.usage { margin: 8px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunken); overflow-x: auto; font-size: .85rem; }
+.usage { margin: 8px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--sunken); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
 </style>
 {% endblock %}
 {% block content %}

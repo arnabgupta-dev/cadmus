@@ -819,12 +819,38 @@ impl App {
             .ok_or_else(|| AdminError::Config("the API documentation is turned off".into()))
     }
 
+    /// The groups `auth.signup_groups` names that the built-in accounts do not have.
+    async fn missing_signup_groups(&self) -> Result<Vec<String>, AdminError> {
+        let wanted = &self.auth.methods.signup_groups;
+        if wanted.is_empty() || !self.builtin_users {
+            return Ok(Vec::new());
+        }
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let existing: Vec<String> = crate::users::group::Entity::find()
+            .filter(crate::users::group::Column::Name.is_in(wanted.iter().cloned()))
+            .all(&self.db)
+            .await?
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
+        Ok(wanted
+            .iter()
+            .filter(|name| !existing.contains(name))
+            .cloned()
+            .collect())
+    }
+
     /// The admin and API as configured so far.
     fn admin(&self) -> Result<Admin, AdminError> {
+        self.admin_with(self.docs.clone())
+    }
+
+    /// The admin and API, with these documentation settings.
+    fn admin_with(&self, docs: DocsConfig) -> Result<Admin, AdminError> {
         let mut builder = Admin::builder()
             .mailer_shared(self.mailer.clone())
             .settings(self.settings.clone())
-            .docs(self.docs.clone())
+            .docs(docs)
             .auth_shared(self.auth.clone(), Arc::clone(&self.users))
             .rate_limits(self.rate_limits.clone());
         if let Some(base) = &self.admin_base {
@@ -946,10 +972,20 @@ impl App {
         let command = Cli::parse().command;
         init_logging(self.log_level)?;
         match command {
-            Command::Serve { bind } => match bind {
-                Some(address) => self.bind(address).serve().await,
-                None => self.serve().await,
-            },
+            Command::Serve { bind } => {
+                // Not fatal: the groups can be made in the admin once it runs.
+                match self.missing_signup_groups().await {
+                    Ok(missing) if !missing.is_empty() => tracing::warn!(
+                        groups = %missing.join(", "),
+                        "auth.signup_groups names groups that do not exist yet; add them on the admin's Groups page"
+                    ),
+                    _ => {}
+                }
+                match bind {
+                    Some(address) => self.bind(address).serve().await,
+                    None => self.serve().await,
+                }
+            }
             Command::Migrate { target, fake } => {
                 let events = self.migrate_to(target.as_deref(), fake).await?;
                 let quiet = events
@@ -1158,31 +1194,66 @@ impl App {
             }
             Command::Routes => {
                 drop(self.router()?);
-                let admin = base_path(self.admin_base.clone(), "/admin")?;
+                let admin_base = base_path(self.admin_base.clone(), "/admin")?;
                 let api = base_path(self.api_base.clone(), "/api")?;
+                let mut lines: Vec<(String, String)> = Vec::new();
+                let mut add = |method: &str, path: String| lines.push((method.to_owned(), path));
                 if self.home.is_enabled() {
-                    println!("GET    /");
+                    add("GET", "/".into());
                 }
-                println!("POST   {api}/auth/token");
-                if self.docs.is_enabled() {
-                    println!("GET    {api}/docs");
-                    println!("GET    {api}/redoc");
-                    println!("GET    {api}/openapi.json");
+                // The admin's pages.
+                add("GET", format!("{admin_base}/"));
+                add("GET", format!("{admin_base}/login"));
+                let methods = &self.auth.methods;
+                for provider in &methods.providers {
+                    add("GET", format!("{admin_base}/auth/{}/start", provider.name));
+                    add(
+                        "GET",
+                        format!("{admin_base}/auth/{}/callback", provider.name),
+                    );
                 }
                 for resource in &self.resources {
-                    let slug = resource.slug();
-                    println!("GET    {admin}/{slug}");
-                    println!("GET    {api}/{slug}");
-                    println!("POST   {api}/{slug}");
-                    println!("GET    {api}/{slug}/{{id}}");
-                    println!("PUT    {api}/{slug}/{{id}}");
-                    println!("PATCH  {api}/{slug}/{{id}}");
-                    println!("DELETE {api}/{slug}/{{id}}");
+                    add("GET", format!("{admin_base}/{}", resource.slug()));
+                }
+                if self.docs.is_enabled() {
+                    add("GET", format!("{api}/docs"));
+                    add("GET", format!("{api}/redoc"));
+                    add("GET", format!("{api}/openapi.json"));
+                }
+                // Everything under the API, as the documentation describes it (built here
+                // even when the documentation pages are turned off).
+                let documented = self.admin_with(self.docs.clone().enabled(true))?;
+                if let Some(paths) = documented
+                    .openapi()
+                    .and_then(|doc| doc["paths"].as_object())
+                {
+                    for (path, item) in paths {
+                        let Some(item) = item.as_object() else {
+                            continue;
+                        };
+                        for method in ["get", "post", "put", "patch", "delete"] {
+                            if item.contains_key(method) {
+                                add(&method.to_ascii_uppercase(), path.clone());
+                            }
+                        }
+                    }
+                }
+                for (method, path) in lines {
+                    println!("{method:<6} {path}");
                 }
                 Ok(())
             }
             Command::Check => {
                 drop(self.router()?);
+                // Before the first `migrate` there are no account tables to look in.
+                let missing = self.missing_signup_groups().await.unwrap_or_default();
+                if !missing.is_empty() {
+                    return Err(AdminError::Config(format!(
+                        "auth.signup_groups names groups that do not exist: {}; add them on \
+                         the admin's Groups page",
+                        missing.join(", ")
+                    )));
+                }
                 println!("configuration is valid ({} models)", self.resources.len());
                 Ok(())
             }

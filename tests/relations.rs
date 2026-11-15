@@ -93,6 +93,12 @@ struct Site {
     root: Browser,
 }
 
+/// Whether a page shows author 2's name or address. (A bare `contains("ada")` would also
+/// match the random hex of a CSRF token now and then.)
+fn shows_ada(body: &str) -> bool {
+    body.contains(">ada<") || body.contains("ada@example.com") || body.contains("\"ada\"")
+}
+
 /// Authors Zed (1), ada (2) and Bob (3), and one post by ada that nobody edited.
 async fn setup() -> Site {
     let db = common::database().await;
@@ -450,9 +456,9 @@ async fn names_are_only_shown_to_accounts_that_may_view_the_related_model() {
         "{}",
         list.body
     );
-    assert!(!list.body.contains("ada") && !list.body.contains("admin/author/"));
+    assert!(!shows_ada(&list.body) && !list.body.contains("admin/author/"));
     let form = sam.get(app, "/admin/post/1").await;
-    assert!(!form.body.contains("<select") && !form.body.contains("ada"));
+    assert!(!form.body.contains("<select") && !shows_ada(&form.body));
     assert!(form.body.contains("name=\"author_id\" value=\"2\""));
     // The number can still be changed.
     let reply = sam
@@ -532,7 +538,7 @@ async fn a_key_to_a_model_that_is_not_registered_stays_a_plain_field() {
         .unwrap();
     let list = site.root.get(&app, "/admin/post").await;
     assert_eq!(list.status, StatusCode::OK);
-    assert!(list.body.contains("data-label=\"Author\">2</td>") && !list.body.contains("ada"));
+    assert!(list.body.contains("data-label=\"Author\">2</td>") && !shows_ada(&list.body));
     let form = site.root.get(&app, "/admin/post/1").await;
     assert!(!form.body.contains("<select") && form.body.contains("name=\"author_id\" value=\"2\""));
 }

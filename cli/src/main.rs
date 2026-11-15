@@ -334,7 +334,12 @@ PUBLIC_URL=http://localhost:3000
     write_new(&root.join(".env.example"), env_example)?;
     write_new(
         &root.join(".env"),
-        &env_example.replace("SECRET_KEY=", &format!("SECRET_KEY={}", secret())),
+        &env_example
+            .replace(
+                "src/settings.rs. Copy to .env and fill in; never commit .env.",
+                "src/settings.rs. This machine's copy of .env.example; never commit it.",
+            )
+            .replace("SECRET_KEY=", &format!("SECRET_KEY={}", secret())),
     )?;
     write_new(&root.join("AGENTS.md"), &agents_guide(name))?;
     write_new(

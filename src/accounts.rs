@@ -400,9 +400,10 @@ async fn render_user(
             phone => &view.phone,
             last_login => &view.last_login,
             date_joined => &view.date_joined,
-            is_active => view.is_active,
-            is_staff => view.is_staff,
-            is_superuser => view.is_superuser,
+            // `is_superuser` is the logged-in account's (base.html); these are the edited one's.
+            account_active => view.is_active,
+            account_staff => view.is_staff,
+            account_superuser => view.is_superuser,
             has_totp => view.has_totp,
             groups => Value::from(Serde(&groups)),
             actions => action_names(),

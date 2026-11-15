@@ -631,3 +631,107 @@ async fn a_file_field_names_only_files_its_writer_may_see() {
     .await;
     assert_eq!(linked.status, StatusCode::CREATED, "{}", linked.text());
 }
+
+#[tokio::test]
+async fn a_file_a_record_uses_cannot_be_deleted() {
+    let site = setup(1 << 20).await;
+    let created = submit(
+        &site,
+        "/admin/product/new",
+        multipart(
+            &[("_csrf", &site.csrf), ("name", "Lamp"), ("photo", "")],
+            &[("photo__upload", "lamp.png", "image/png", PNG)],
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.text());
+    let file = product(&site.db, 1).await.photo.unwrap();
+    let root = token(&site.app, "root").await;
+
+    let refused = api(
+        &site.app,
+        &root,
+        "DELETE",
+        &format!("/api/files/{file}"),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text());
+    assert!(refused.text().contains("Products"), "{}", refused.text());
+    assert_eq!(file_count(&site.db).await, 1);
+
+    // Once the record lets go of it, it can be deleted.
+    let cleared = api(
+        &site.app,
+        &root,
+        "PATCH",
+        "/api/product/1",
+        Some(r#"{"photo": null}"#),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    let deleted = api(
+        &site.app,
+        &root,
+        "DELETE",
+        &format!("/api/files/{file}"),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert_eq!(file_count(&site.db).await, 0);
+}
+
+#[tokio::test]
+async fn a_resumable_upload_belongs_to_the_account_that_started_it() {
+    let site = setup(1 << 20).await;
+    let root = token(&site.app, "root").await;
+    let started = api(
+        &site.app,
+        &root,
+        "POST",
+        "/api/uploads",
+        Some(r#"{"filename":"a.bin","size":8,"content_type":"application/octet-stream"}"#),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::CREATED, "{}", started.text());
+    let id = serde_json::from_str::<serde_json::Value>(&started.text()).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // hr may upload files too, but not into root's upload.
+    add_staff(&site, "hr", &["files:view", "files:add"]).await;
+    let hr = token(&site.app, "hr").await;
+    let path = format!("/api/uploads/{id}");
+    assert_eq!(
+        api(&site.app, &hr, "GET", &path, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let piece = send(
+        &site.app,
+        Request::patch(&path)
+            .header(header::AUTHORIZATION, format!("Bearer {hr}"))
+            .header("Upload-Offset", "0")
+            .body(Body::from(vec![1u8; 8]))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(piece.status, StatusCode::NOT_FOUND, "{}", piece.text());
+    assert_eq!(
+        api(&site.app, &hr, "DELETE", &path, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // root finishes it.
+    let done = send(
+        &site.app,
+        Request::patch(&path)
+            .header(header::AUTHORIZATION, format!("Bearer {root}"))
+            .header("Upload-Offset", "0")
+            .body(Body::from(vec![1u8; 8]))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(done.status, StatusCode::CREATED, "{}", done.text());
+}

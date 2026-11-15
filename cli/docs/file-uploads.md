@@ -26,6 +26,11 @@ Cloud credentials are read from the usual environment variables (`AWS_ACCESS_KEY
 `AWS_REGION`, `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, ...). For the cloud backends,
 turn the feature on: `cadmus = { version = "0.2", features = ["s3"] }`.
 
+An S3-compatible store on your machine (MinIO, SeaweedFS, LocalStack) usually listens on
+plain `http://`: set `AWS_ENDPOINT=http://localhost:9000` (with its keys and any
+`AWS_REGION`), and plain HTTP is allowed for that endpoint. `AWS_ALLOW_HTTP=false` refuses
+it. For Azure's emulator, Azurite, set `AZURE_STORAGE_USE_EMULATOR=true`.
+
 ## Limits
 
 `uploads.max_file_bytes` (default 1 GiB) and `uploads.max_chunk_bytes` (default 8 MiB, for
@@ -66,7 +71,7 @@ form leaves the old one stored (it is still listed at `/api/files`).
 | `POST /api/files` (multipart form, field `file`) | uploads a file; answers `201` with its record |
 | `GET /api/files`, `GET /api/files/{id}` | file details |
 | `GET /api/files/{id}/content` | downloads the file |
-| `DELETE /api/files/{id}` | deletes it |
+| `DELETE /api/files/{id}` | deletes it; `409` while a record's file field still names it |
 
 To fill a file field through the API, upload the file, then send its `id` in the field.
 Uploads need the `files` permissions (see [Accounts and permissions](accounts.md)).

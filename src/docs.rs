@@ -818,7 +818,7 @@ fn describe_files(
             },
             "delete": {
                 "tags": [tag], "summary": "Delete a file", "description": needs(Action::Delete), "operationId": "delete_file",
-                "responses": { "204": { "description": "Deleted" }, "401": error_response("Unauthorized"), "403": error_response("Forbidden"), "404": error_response("NotFound") },
+                "responses": { "204": { "description": "Deleted" }, "401": error_response("Unauthorized"), "403": error_response("Forbidden"), "404": error_response("NotFound"), "409": error_response("Conflict") },
             },
         }),
     );
@@ -1247,7 +1247,7 @@ fn document(
             "type": "object",
             "properties": {
                 "access_token": { "type": "string", "description": "Send as `Authorization: Bearer <token>`" },
-                "token": { "type": "string", "description": "The same token, under its older name" },
+                "token": { "type": "string", "deprecated": true, "description": "The same token, under its older name; use `access_token`" },
                 "token_type": { "type": "string", "example": "Bearer" },
                 "expires_in": { "type": "integer", "description": "Seconds" },
                 "refresh_token": { "type": "string", "description": "Trade it for a new pair at `POST /auth/refresh` when the access token expires; it works once" },

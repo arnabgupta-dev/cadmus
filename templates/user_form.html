@@ -109,9 +109,9 @@ var e = document.querySelector("[data-focus]"); if (e) e.focus();
 
   <section class="panel panel-pad" aria-labelledby="h-status">
     <h2 id="h-status">Status</h2>
-    <label class="option"><input type="checkbox" name="is_active" value="true"{% if is_active %} checked{% endif %}><span><strong>Active</strong><span>Can log in. Untick to lock the account out without deleting it.</span></span></label>
-    <label class="option"><input type="checkbox" name="is_staff" value="true"{% if is_staff %} checked{% endif %}><span><strong>Staff</strong><span>Can use the admin. Without it, the account logs in through the API only.</span></span></label>
-    <label class="option"><input type="checkbox" name="is_superuser" value="true"{% if is_superuser %} checked{% endif %}><span><strong>Superuser</strong><span>Can do everything, including managing accounts. The permissions below then do not matter.</span></span></label>
+    <label class="option"><input type="checkbox" name="is_active" value="true"{% if account_active %} checked{% endif %}><span><strong>Active</strong><span>Can log in. Untick to lock the account out without deleting it.</span></span></label>
+    <label class="option"><input type="checkbox" name="is_staff" value="true"{% if account_staff %} checked{% endif %}><span><strong>Staff</strong><span>Can use the admin. Without it, the account logs in through the API only.</span></span></label>
+    <label class="option"><input type="checkbox" name="is_superuser" value="true"{% if account_superuser %} checked{% endif %}><span><strong>Superuser</strong><span>Can do everything, including managing accounts. The permissions below then do not matter.</span></span></label>
   </section>
 
   {% if has_totp %}
