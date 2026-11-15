@@ -71,6 +71,11 @@ form leaves the old one stored (it is still listed at `/api/files`).
 To fill a file field through the API, upload the file, then send its `id` in the field.
 Uploads need the `files` permissions (see [Accounts and permissions](accounts.md)).
 
+Because anyone who may view a record may download its file, a file field only accepts a file
+the account uploaded itself, any file if it has the `files` view permission, or the file the
+record already has. Any other id, including one that names no file, answers `422` with code
+`invalid_field`.
+
 ## Resumable uploads
 
 Large files can be sent in pieces, and the upload continues after a dropped connection:

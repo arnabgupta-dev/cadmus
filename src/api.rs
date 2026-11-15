@@ -19,7 +19,8 @@ use crate::access::Action;
 use crate::auth::{Credentials, Session};
 use crate::error::{AdminError, ApiError, ApiResult};
 use crate::handlers::{
-    ListParams, list_query, owned_row, owner_filter, parse_sort, sortable, stamp_owner,
+    ListParams, check_file_ids, list_query, owned_row, owner_filter, parse_sort, sortable,
+    stamp_owner,
 };
 use crate::login_api::{LoginOutcome, TokenPair};
 use crate::resource::{Input, Resource, Row, WriteMode};
@@ -274,6 +275,7 @@ async fn create(
     session.require(&model, Action::Add)?;
     let mut input = json_input(resource, &body, true)?;
     stamp_owner(resource, &session, &mut input, true);
+    check_file_ids(&state, resource, &session, &input, None).await?;
     let Some(row) = resource.create(&input).await? else {
         return Ok(StatusCode::CREATED.into_response());
     };
@@ -320,7 +322,7 @@ async fn write(
     session.require_bearer()?;
     let resource = state.resource(model)?.as_ref();
     session.require(model, Action::Change)?;
-    owned_row(resource, session, id).await?;
+    let current = owned_row(resource, session, id).await?;
     let mut input = json_input(resource, body, false)?;
     // A PATCH that leaves the owner out keeps it.
     if mode == WriteMode::Replace
@@ -334,6 +336,7 @@ async fn write(
     {
         stamp_owner(resource, session, &mut input, false);
     }
+    check_file_ids(state, resource, session, &input, Some(&current)).await?;
     resource.update(id, &input, mode).await?;
     fetch(resource, model, id).await
 }
