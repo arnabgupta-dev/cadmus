@@ -94,7 +94,7 @@ Errors come back as JSON:
 | `409` | `conflict` | conflicts with other data: a duplicate, or a record others point to |
 | `413` | `too_large` | an upload over the size limit |
 | `422` | `invalid_field` | a field is missing, unknown, read-only or of the wrong type |
-| `429` | `rate_limited` | too many login attempts; wait for the `Retry-After` seconds |
+| `429` | `rate_limited` | too many requests ([Rate limits](rate-limits.md)) or login attempts; wait for the `Retry-After` seconds |
 
 ## Calling it from a browser app
 
