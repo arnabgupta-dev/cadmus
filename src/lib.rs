@@ -392,7 +392,8 @@ impl AdminBuilder {
                 &self.settings,
                 &self.resources,
                 self.uploads.is_some(),
-                auth.api_keys,
+                &auth,
+                self.accounts.is_some(),
             )
         });
 

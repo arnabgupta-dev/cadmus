@@ -17,8 +17,9 @@ In the admin this happens on the login page. The login is kept in an `HttpOnly`,
 `SameSite=Strict` cookie, and every form carries a CSRF token. It lasts an hour
 (`auth.token_lifetime`).
 
-An app that people use, such as a mobile app, logs them in through the API and gets a
-**login token** (a JWT):
+An app that people use, such as a web front end or a mobile app, logs them in through the
+API, with a password or any other method (see [Logins for apps](app-logins.md)), and gets a
+**login token** (a JWT) and a **refresh token**:
 
 ```sh
 curl -X POST http://localhost:3000/api/auth/token \
@@ -27,17 +28,21 @@ curl -X POST http://localhost:3000/api/auth/token \
 ```
 
 ```json
-{ "access_token": "eyJ...", "token_type": "Bearer", "expires_in": 3600 }
+{ "access_token": "eyJ...", "token_type": "Bearer", "expires_in": 3600,
+  "refresh_token": "cadmus_rt_...", "refresh_expires_in": 2592000 }
 ```
 
-Then it sends the token with each request, until it expires and the person logs in again:
+Then it sends the token with each request, and when it expires trades the refresh token for
+a new pair at `POST /api/auth/refresh`:
 
 ```sh
 curl -H "Authorization: Bearer eyJ..." http://localhost:3000/api/post
 ```
 
 `totp` is needed only for accounts with two-factor login; a recovery code works in its
-place. The endpoint also accepts a form (`application/x-www-form-urlencoded`).
+place. Without it, such an account answers `401` with code `totp_required` and a
+`challenge` to finish at `POST /api/auth/totp`. The endpoint also accepts a form
+(`application/x-www-form-urlencoded`).
 
 ### When a login ends
 
@@ -47,15 +52,16 @@ account, so a login ends as soon as any of these happens:
 
 | What happens | Effect |
 |---|---|
-| The token is older than `auth.token_lifetime` (an hour by default) | refused; log in again. There are no refresh tokens. |
-| The password is changed (on the account's page, by a superuser, with `changepassword`, or through a reset link) | every login made with the old password ends, in every browser and app. Changing your own password in the admin keeps that one browser logged in. |
-| The account is deactivated, loses staff status, or is deleted | every login and API key stops working at once. |
+| The token is older than `auth.token_lifetime` (an hour by default) | refused; an app refreshes it, the admin logs in again. |
+| The password is changed (on the account's page, by a superuser, with `changepassword`, or through a reset link) | every login made with the old password ends, refresh tokens included, in every browser and app. Changing your own password in the admin keeps that one browser logged in. |
+| The account is deactivated or deleted | every login, refresh token and API key stops working at once. If it is reactivated, unexpired logins and keys work again: change the password and revoke its keys if they may have leaked. |
+| The account loses staff status | it can no longer use the admin; its API logins and keys keep working. |
 | Its permissions change | the next request already uses the new ones. |
 | `SECRET_KEY` changes | everyone is logged out. |
 
-**Log out** in the admin removes the cookie from that browser. A login token copied
-elsewhere keeps working until it expires: to end every login of an account at once, change
-its password (or deactivate it).
+**Log out** in the admin removes the cookie from that browser; `POST /api/auth/logout` with
+the refresh token ends an app's login. A login token copied elsewhere keeps working until it
+expires: to end every login of an account at once, change its password (or deactivate it).
 
 ## Programs
 

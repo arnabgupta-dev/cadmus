@@ -13,14 +13,13 @@ admin under **Users** and **Groups**.
 | Switch | Meaning |
 |---|---|
 | Active | Can log in. Untick to lock someone out without deleting the account. |
-| Staff | Can log in at all: to the admin, for an API token, for API keys. |
+| Staff | Can use the admin. Without it, the account logs in through the REST API only. |
 | Superuser | Can do everything, including managing accounts. |
 
-An account that is not staff **cannot log in anywhere**: not to the admin, not to
-`POST /api/auth/token`, and its API keys and existing tokens stop working. Accounts are for
-the people who run the site, not for its visitors. If your app has customers or members who
-log in, keep them in a table of your own and handle their logins in your own routes; give
-them staff accounts only if they should see the admin.
+An account that is not staff gets `403` on every admin page, whatever it logs in with, but
+logs in through the API (password, providers, login links, API keys) with its permissions as
+usual. That is how the users of an app built on the API get accounts: see
+[Logins for apps](app-logins.md). To lock someone out completely, untick **Active**.
 
 ## Permissions
 

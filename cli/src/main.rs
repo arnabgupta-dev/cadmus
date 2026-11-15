@@ -317,6 +317,10 @@ PUBLIC_URL=http://localhost:3000
 # Apps registered with the login providers enabled in settings.rs:
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
+# Other client IDs (mobile apps) whose Google ID tokens the API accepts:
+# GOOGLE_AUDIENCES=
+# Your front end, if people log in to it through the API:
+# APP_URL=http://localhost:5173
 # LOG_LEVEL=debug
 # Credentials for the storage backend named in settings.rs, if any:
 # AWS_ACCESS_KEY_ID=
@@ -431,9 +435,10 @@ pub fn settings() -> Result<Settings, AdminError> {{
             ..Default::default()
         }},
         auth: AuthSettings {{
-            // How people log in, in the order the login page shows them. Each other site
-            // needs an app registered with it, whose redirect URI is
-            // <PUBLIC_URL>/admin/auth/<name>/callback, e.g. .../admin/auth/google/callback.
+            // How people log in, in the order the login page shows them; apps use the same
+            // methods through the REST API (/api/auth/...). Each other site needs an app
+            // registered with it, whose redirect URI is <PUBLIC_URL>/admin/auth/<name>/callback,
+            // e.g. .../admin/auth/google/callback, plus your app's own addresses.
             methods: vec![
                 AuthMethod::Password,
                 // A login link by e-mail (see `mail` below):
@@ -449,8 +454,9 @@ pub fn settings() -> Result<Settings, AdminError> {{
                 //     "okta", "Okta", "https://acme.okta.com", OAuthClient::from_env("OKTA")?,
                 // )),
             ],
-            // Who may get an account by logging in through another site. By default only
-            // existing accounts, matched by e-mail address, may log in.
+            // Who may get an account by logging in through another site, or by signing up in
+            // an app. By default only existing accounts, matched by e-mail address, may log
+            // in. Accounts made through the admin's login are staff; through the API, not.
             // signup: Signup::Domains(vec!["acme.com".into()]),
             // signup_groups: vec!["Editors".into()],
             // The login cookie needs HTTPS, except on your own machine.
@@ -459,6 +465,13 @@ pub fn settings() -> Result<Settings, AdminError> {{
             // totp_required: true,
             // Accounts can make API keys for programs calling the REST API; to refuse them:
             // api_keys: false,
+            // An app whose users log in through the REST API: where e-mailed links (login,
+            // sign-up, password reset) point, and where providers may send people back.
+            // app: AppSettings {{
+            //     url: env_opt("APP_URL"),
+            //     redirect_uris: vec!["http://localhost:5173/auth/callback".into()],
+            //     ..Default::default()
+            // }},
             ..Default::default()
         }},
         admin: AdminSettings {{

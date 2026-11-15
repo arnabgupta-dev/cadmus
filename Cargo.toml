@@ -1,6 +1,6 @@
 [package]
 name = "cadmus"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 description = "A batteries-included web framework for Rust: models, admin site, REST API, migrations and accounts, on axum and SeaORM"
 license = "MIT"

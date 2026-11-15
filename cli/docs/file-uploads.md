@@ -24,7 +24,7 @@ uploads: UploadSettings {
 
 Cloud credentials are read from the usual environment variables (`AWS_ACCESS_KEY_ID`,
 `AWS_REGION`, `AWS_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_NAME`, ...). For the cloud backends,
-turn the feature on: `cadmus = { version = "0.1", features = ["s3"] }`.
+turn the feature on: `cadmus = { version = "0.2", features = ["s3"] }`.
 
 ## Limits
 

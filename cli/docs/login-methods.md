@@ -81,4 +81,7 @@ superuser can remove one.
 - GitHub uses the account's primary verified address. For an OpenID Connect provider that
   does not say whether addresses are verified, `trust_email: true` trusts them; only do that
   when users cannot pick their own address.
-- These logins are for the admin. Programs use an [API key](authentication.md).
+- The same methods work for apps through the REST API: the app logs in with the provider
+  and sends the ID token or the code to `POST /api/auth/<name>`; register the app's own
+  redirect URIs with the provider too, and list them in `auth.app.redirect_uris`. See
+  [Logins for apps](app-logins.md). Programs use an [API key](authentication.md).

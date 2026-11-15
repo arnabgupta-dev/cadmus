@@ -70,7 +70,7 @@ at once over 3 server connections (`tests/pgbouncer.rs`; set `PGBOUNCER_TEST_URL
 A project that only uses one database can leave the other drivers out, to compile faster:
 
 ```toml
-cadmus = { version = "0.1", default-features = false, features = ["postgres"] }
+cadmus = { version = "0.2", default-features = false, features = ["postgres"] }
 ```
 
 The features are `sqlite`, `postgres` and `mysql`. An address for a driver that was left out

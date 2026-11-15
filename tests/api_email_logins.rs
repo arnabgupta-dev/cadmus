@@ -347,3 +347,33 @@ async fn account(db: &DatabaseConnection, username: &str) -> Option<cadmus::user
         .await
         .unwrap()
 }
+
+#[tokio::test]
+async fn the_api_documentation_lists_the_links_for_apps() {
+    let site = site(|_| {}).await;
+    let response = site
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let doc: Value = serde_json::from_slice(&bytes).unwrap();
+    for path in [
+        "link",
+        "link/verify",
+        "register",
+        "register/verify",
+        "password/forgot",
+        "password/reset",
+    ] {
+        assert!(
+            doc["paths"][format!("/api/auth/{path}")]["post"].is_object(),
+            "{path}"
+        );
+    }
+}

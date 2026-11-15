@@ -208,33 +208,57 @@ async fn the_document_describes_every_model_as_the_api_behaves() {
         }
     }
 
-    // The paths of a model.
+    // The paths of a model, and the logins (this site has passwords and refresh tokens, but
+    // no providers or e-mailed links).
     let mut paths = names(&doc["paths"]);
     paths.sort_unstable();
+    let (logins, models): (Vec<&str>, Vec<&str>) = paths
+        .into_iter()
+        .partition(|path| path.starts_with("/api/auth/"));
     assert_eq!(
-        paths,
+        models,
         [
-            "/api/auth/token",
             "/api/author",
             "/api/author/{id}",
             "/api/blog_post",
             "/api/blog_post/{id}"
         ]
+    );
+    for path in [
+        "token",
+        "totp",
+        "refresh",
+        "logout",
+        "me",
+        "me/password",
+        "me/totp/confirm",
+    ] {
+        let path = format!("/api/auth/{path}");
+        assert!(logins.contains(&path.as_str()), "{path} in {logins:?}");
+    }
+    assert!(
+        !logins
+            .iter()
+            .any(|path| path.contains("link") || path.contains("{provider}"))
     );
     let mut methods = names(&doc["paths"]["/api/blog_post/{id}"]);
     methods.sort_unstable();
     assert_eq!(methods, ["delete", "get", "parameters", "patch", "put"]);
     // Columns, paths and operations come in the order they were declared, not alphabetically.
+    let declared: Vec<&str> = names(&doc["paths"])
+        .into_iter()
+        .filter(|path| !path.starts_with("/api/auth/"))
+        .collect();
     assert_eq!(
-        names(&doc["paths"]),
+        declared,
         [
-            "/api/auth/token",
             "/api/author",
             "/api/author/{id}",
             "/api/blog_post",
             "/api/blog_post/{id}"
         ]
     );
+    assert_eq!(names(&doc["paths"])[0], "/api/auth/token");
     assert_eq!(
         names(&doc["paths"]["/api/blog_post/{id}"]),
         ["parameters", "get", "put", "patch", "delete"]

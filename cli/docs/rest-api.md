@@ -17,7 +17,8 @@ these endpoints under `/api`, with the model's table name in the path:
 | `PATCH /api/post/1` | change only the fields sent |
 | `DELETE /api/post/1` | delete one; answers `204` |
 
-Every request needs a login token or an API key; see [Logging in](authentication.md). The
+Every request needs a login token or an API key; see [Logging in](authentication.md) and, for
+the users of your own app, [Logins for apps](app-logins.md). The
 API follows the same permissions as the admin.
 
 ## Listing

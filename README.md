@@ -23,7 +23,7 @@ It is built on [axum](https://docs.rs/axum) (the web server) and
 [SeaORM](https://www.sea-ql.org/SeaORM/) (the database layer), and works with SQLite,
 PostgreSQL and MySQL.
 
-**Status:** early (version 0.1). Everything described here works and is tested on all three
+**Status:** early (version 0.2). Everything described here works and is tested on all three
 databases, but details may still change between versions.
 
 ## Contents
@@ -39,7 +39,7 @@ databases, but details may still change between versions.
   - [Accounts and permissions](#accounts-and-permissions)
   - [People log in, programs use keys](#people-log-in-programs-use-keys)
   - [Settings](#settings)
-- [Guides](#guides): [relations](#relations), [login methods](#login-methods),
+- [Guides](#guides): [relations](#relations), [login methods](#login-methods), [logins for apps](#logins-for-apps),
   [e-mail](#e-mail), [two-factor authentication](#two-factor-authentication),
   [login attempt limits](#login-attempt-limits), [file uploads](#file-uploads),
   [API documentation](#api-documentation), [databases](#databases),
@@ -316,7 +316,7 @@ Each account has three switches:
 | Switch | Meaning |
 |---|---|
 | Active | Can log in. Untick to lock someone out without deleting the account. |
-| Staff | Can use the admin and the API. |
+| Staff | Can use the admin. Without it, the account logs in through the REST API only. |
 | Superuser | Can do everything, including managing accounts. |
 
 Staff who are not superusers can only do what they were given: for each model, any of
@@ -331,6 +331,8 @@ use.
 - **Own rows only:** give a model an `owner` field (`cadmus generate model Note text:text
   owner:owner`) and accounts that are not superusers see, change and delete only the rows
   they added; other rows answer "not found".
+- **Users of your own app** get accounts that are not staff: they log in through the API
+  with any login method (see [Logins for apps](#logins-for-apps)) and never see the admin.
 - Changes apply at once: permissions are checked on every request, so deactivating an account
   locks it out immediately, even if it is logged in.
 - Nobody can remove their own access or delete their own account, so a superuser always
@@ -347,20 +349,22 @@ There are two kinds of visitors, and each gets its own way in.
 
 **People** log in with a username (or e-mail address) and password, or another
 [login method](#login-methods) such as Google, plus their two-factor code if they turned it
-on. In the admin this happens on the login page. An app that people use, such as a mobile
-app, does the same through the API:
+on. In the admin this happens on the login page. An app that people use, such as a web front
+end or a mobile app, does the same through the API, with any method (see
+[Logins for apps](#logins-for-apps)):
 
 ```sh
 curl -X POST http://localhost:3000/api/auth/token \
      -H "Content-Type: application/json" \
      -d '{"username": "admin", "password": "...", "totp": "123456"}'
-# → {"access_token": "eyJ...", ...}
+# → {"access_token": "eyJ...", "refresh_token": "cadmus_rt_...", ...}
 
 curl -H "Authorization: Bearer eyJ..." http://localhost:3000/api/post
 ```
 
-The token (a JWT) lasts an hour (`auth.token_lifetime`), after which the person logs in
-again.
+The access token (a JWT) lasts an hour (`auth.token_lifetime`); the app then trades the
+refresh token for a new pair at `POST /api/auth/refresh`, for up to 30 days of not being
+used (`auth.refresh_lifetime`).
 
 **Programs** running on their own have nobody to type a password or a phone code: a nightly
 import script, another company's server, a website's backend fetching posts to show. They
@@ -376,7 +380,7 @@ curl -H "X-API-Key: cadmus_..." https://example.com/api/post     # the same
 |---|---|---|
 | For | a person, in an app | a program running on its own |
 | Made by | logging in with password (and two-factor code) | once, on the account's API keys page |
-| Lasts | an hour | until revoked, or 30 days / 90 days / a year / never |
+| Lasts | an hour, refreshed for up to 30 days | until revoked, or 30 days / 90 days / a year / never |
 | If it leaks | change the password | revoke that one key; nothing else changes |
 | Can be limited | no | read-only |
 
@@ -542,7 +546,31 @@ create an account at the first login, as staff with no permissions of their own,
 - GitHub uses the account's primary verified address. For an OpenID Connect provider that does
   not say whether addresses are verified, `trust_email: true` trusts them; only do that when
   users cannot pick their own address.
-- These logins are for the admin. Programs use an [API key](#people-log-in-programs-use-keys).
+- The same methods work for apps through the REST API (see below). Programs use an
+  [API key](#people-log-in-programs-use-keys).
+
+### Logins for apps
+
+Every login method also works through the REST API, for the users of a web or mobile app
+built on it. Any active account may log in there; only staff may also use the admin. Every
+login ends in an access token and a refresh token.
+
+| The app sends | To |
+|---|---|
+| username and password | `POST /api/auth/token` |
+| an ID token from Google, Microsoft or any OpenID Connect provider (Google's sign-in button, NextAuth, the mobile SDKs) | `POST /api/auth/<name>` `{"id_token"}` |
+| the code a provider sent back to it, with its `redirect_uri` and PKCE `code_verifier` (every provider, GitHub and Facebook included) | `POST /api/auth/<name>` `{"code", ...}` |
+| an address for a login link, a sign-up or a password reset; the e-mail links to the app, which sends the token back | `POST /api/auth/link`, `/register`, `/password/forgot` |
+| the two-factor code, after a `totp_required` answer | `POST /api/auth/totp` |
+| the refresh token | `POST /api/auth/refresh`, `/logout` |
+
+ID tokens are checked against the provider's published signing keys and must be issued to
+your client ID or one in `OAuthClient::audiences` (your mobile apps' IDs). Redirect URIs must
+be listed in `auth.app.redirect_uris`, and e-mailed links point to `auth.app.url`. People
+manage their own password, two-factor login, linked sites and API keys under
+`/api/auth/me`. Your own routes can hand out logins with the `Logins` extractor. The full
+guide, with React examples, is
+[Logins for apps](https://arnabgupta-dev.github.io/cadmus/docs/app-logins.html).
 
 ### E-mail
 
@@ -867,7 +895,7 @@ And the `cadmus` command:
 | `secret_key` | signs login tokens; at least 32 bytes (`cadmus secret` prints one) |
 | `database` | `url`, `max_connections`, `min_connections`, `acquire_timeout` |
 | `server` | `bind` (`127.0.0.1:3000`), `request_timeout` (30 s; `None` for no limit), `cors_origins`, `client_ip_header`, `public_url` |
-| `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min), `api_keys` (`true`) |
+| `auth` | `methods` (password), `signup`, `signup_groups`, `token_lifetime` (1 h), `refresh_lifetime` (30 days), `totp_required`, `cookie_secure` (`true`), `login_max_attempts` (5), `login_lockout` (5 min), `api_keys` (`true`), `app` (`url`, `redirect_uris`, `links`) |
 | `admin` | `path` (`/admin`), `site_title`, `accent_color`, `logo_url`, `theme`, `custom_css_url`, `footer_text`, `page_size` (25), `nav_links`, `web_fonts`, `template_dir` |
 | `api` | `path` (`/api`) |
 | `docs` | `enabled`, `username` + `password`, `title`, `version`, `description`, `swagger_js_url`, `swagger_css_url`, `redoc_js_url` |
@@ -957,10 +985,11 @@ nothing until you implement `UserStore::access`, API keys work only if you imple
 ## Not done yet
 
 - **Accounts:** no passkeys yet. API keys cannot be limited to some models (only read-only).
-  Logins through other sites are for the admin, and an account is linked to another site by
-  e-mail address only (there is no "connect" button). Per-record permissions are
-  ownership only (one owner per row). Login attempt limits are per server process. Accounts and groups are managed in the admin only;
-  there is no API for them.
+  An account is linked to another site by e-mail address only (there is no "connect"
+  button). Per-record permissions are ownership only (one owner per row). Login attempt
+  limits are per server process. Superusers manage accounts and groups in the admin only;
+  through the API people manage only their own account. A copied access token works until it
+  expires.
 - **Admin:** no page listing all uploaded files, and a replaced file is not deleted. No
   search-as-you-type for long lists of related records, and no editing of related records
   inside another record's form.

@@ -238,13 +238,16 @@ impl Docs {
         settings: &UiSettings,
         resources: &[Arc<dyn Resource>],
         uploads: bool,
-        api_keys: bool,
+        auth: &crate::auth::AuthConfig,
+        accounts: bool,
     ) -> Self {
         let title = config
             .title
             .clone()
             .unwrap_or_else(|| format!("{} API", settings.site_title));
-        let mut document = document(&config, &title, api_base, resources, uploads, api_keys);
+        let mut document = document(
+            &config, &title, api_base, resources, uploads, auth, accounts,
+        );
         if let Some(edit) = &config.extend {
             edit(&mut document);
         }
@@ -840,6 +843,312 @@ fn error(description: &str) -> Value {
     json_response(description, &reference("Error"))
 }
 
+/// The logins for apps under `{api_base}/auth/`, as far as this site offers them.
+fn describe_auth(
+    api_base: &str,
+    auth: &crate::auth::AuthConfig,
+    accounts: bool,
+    schemas: &mut Map<String, Value>,
+    paths: &mut Map<String, Value>,
+) {
+    let methods = &auth.methods;
+    let tag = "Authentication";
+    let ok = || json_response("Logged in", &reference("Token"));
+    let challenge = || {
+        json_response(
+            "The account has two-factor login: send the `challenge` with a code to `POST /auth/totp` (`totp_required`)",
+            &reference("Challenge"),
+        )
+    };
+    let object = |properties: Value, required: &[&str]| json!({ "type": "object", "required": required, "properties": properties });
+    let public = |summary: &str, description: &str, id: &str, body: Value, responses: Value| {
+        json!({ "post": {
+            "tags": [tag], "summary": summary, "description": description, "operationId": id,
+            "security": [], "requestBody": json_body(&body), "responses": responses,
+        } })
+    };
+    let mut add = |path: &str, item: Value| {
+        paths.insert(format!("{api_base}/auth/{path}"), item);
+    };
+
+    schemas.insert(
+        "Challenge".to_owned(),
+        json!({
+            "type": "object",
+            "properties": {
+                "error": { "$ref": "#/components/schemas/Error/properties/error" },
+                "challenge": { "type": "string", "description": "Send with a code to `POST /auth/totp` within 5 minutes; present only for `totp_required`" },
+            },
+        }),
+    );
+
+    add(
+        "totp",
+        public(
+            "Finish a two-factor login",
+            "The second step of any login for an account with two-factor login: the `challenge` it answered with, and a code from the authenticator app or a recovery code.",
+            "login_totp",
+            object(
+                json!({ "challenge": { "type": "string" }, "code": { "type": "string", "example": "123456" } }),
+                &["challenge", "code"],
+            ),
+            json!({ "200": ok(), "401": error("Wrong code (`unauthorized`) or expired challenge (`challenge_expired`)"), "429": error_response("RateLimited") }),
+        ),
+    );
+    if accounts && auth.refresh_ttl_secs > 0 {
+        let refresh = object(
+            json!({ "refresh_token": { "type": "string" } }),
+            &["refresh_token"],
+        );
+        add(
+            "refresh",
+            public(
+                "Refresh a login",
+                "A new access token and refresh token for a refresh token, which is then spent. Using a spent one again ends that whole login.",
+                "refresh_token",
+                refresh.clone(),
+                json!({ "200": ok(), "401": error("Not valid, expired or already used (`invalid_refresh_token`)") }),
+            ),
+        );
+        add(
+            "logout",
+            public(
+                "Log out",
+                "Ends the login the refresh token belongs to. The access token works until it expires.",
+                "logout",
+                refresh,
+                json!({ "204": { "description": "Logged out" } }),
+            ),
+        );
+    }
+
+    if !methods.providers.is_empty() {
+        let names: Vec<&str> = methods.providers.iter().map(|p| p.name.as_str()).collect();
+        let id_tokens: Vec<&str> = methods
+            .providers
+            .iter()
+            .filter(|p| p.issues_id_tokens())
+            .map(|p| p.name.as_str())
+            .collect();
+        add(
+            "{provider}",
+            json!({ "post": {
+                "tags": [tag],
+                "summary": "Log in through another site",
+                "description": format!(
+                    "The app logged the person in with the provider and sends what it got: an `id_token` (providers {}), or the `code` with the `redirect_uri` and PKCE `code_verifier` it used (any provider). New addresses get an account if sign-up allows them.",
+                    if id_tokens.is_empty() { "none here".to_owned() } else { id_tokens.join(", ") }
+                ),
+                "operationId": "login_provider",
+                "security": [],
+                "parameters": [{ "name": "provider", "in": "path", "required": true, "schema": { "type": "string", "enum": names } }],
+                "requestBody": json_body(&json!({ "type": "object", "properties": {
+                    "id_token": { "type": "string" },
+                    "nonce": { "type": "string", "description": "The nonce the app sent to the provider, if any" },
+                    "code": { "type": "string" },
+                    "code_verifier": { "type": "string" },
+                    "redirect_uri": { "type": "string", "description": "One of `auth.app.redirect_uris`" },
+                } })),
+                "responses": {
+                    "200": ok(), "401": challenge(),
+                    "403": error("No account for that address, and sign-up does not allow it (`no_account`)"),
+                    "422": error_response("Invalid"),
+                },
+            } }),
+        );
+    }
+
+    let mail = accounts && methods.app.url.is_some();
+    let email = || {
+        object(
+            json!({ "email": { "type": "string", "format": "email" } }),
+            &["email"],
+        )
+    };
+    let sent = || json!({ "202": { "description": "If the address may do this, a message with a link to the app is on its way" }, "429": error_response("RateLimited") });
+    if mail && methods.magic_link {
+        add(
+            "link",
+            public(
+                "Send a login link",
+                "E-mails a login link to the app; the app sends its token to `POST /auth/link/verify`.",
+                "login_link",
+                email(),
+                sent(),
+            ),
+        );
+        add(
+            "link/verify",
+            public(
+                "Log in with a link",
+                "The token from a login link. It works once, within 15 minutes.",
+                "login_link_verify",
+                object(json!({ "token": { "type": "string" } }), &["token"]),
+                json!({ "200": ok(), "401": challenge(), "400": error("Expired or used (`invalid_link`)") }),
+            ),
+        );
+    }
+    if mail && methods.password {
+        add(
+            "register",
+            public(
+                "Sign up",
+                "E-mails a confirmation link to an address sign-up allows; the password is chosen at `POST /auth/register/verify`.",
+                "register",
+                email(),
+                sent(),
+            ),
+        );
+        add(
+            "register/verify",
+            public(
+                "Confirm a sign-up",
+                "The token from a confirmation link and the password to use. Creates the account and logs it in.",
+                "register_verify",
+                object(
+                    json!({ "token": { "type": "string" }, "password": { "type": "string", "format": "password" } }),
+                    &["token", "password"],
+                ),
+                json!({ "200": ok(), "400": error("Expired or used (`invalid_link`)"), "422": error_response("Invalid") }),
+            ),
+        );
+        add(
+            "password/forgot",
+            public(
+                "Forgot the password",
+                "E-mails a link to the app for choosing a new password.",
+                "password_forgot",
+                email(),
+                sent(),
+            ),
+        );
+        add(
+            "password/reset",
+            public(
+                "Choose a new password",
+                "The token from a reset link and the new password. Every login made with the old password ends.",
+                "password_reset",
+                object(
+                    json!({ "token": { "type": "string" }, "password": { "type": "string", "format": "password" } }),
+                    &["token", "password"],
+                ),
+                json!({ "204": { "description": "Changed" }, "400": error("Expired or used (`invalid_link`)"), "422": error_response("Invalid") }),
+            ),
+        );
+    }
+
+    let mine = |summary: &str, description: &str, id: &str| {
+        json!({ "tags": [tag], "summary": summary, "description": description, "operationId": id,
+                "responses": { "401": error_response("Unauthorized"), "403": error_response("Forbidden") } })
+    };
+    let with_body = |mut operation: Value, body: Value, success: (&str, Value)| {
+        operation["requestBody"] = json_body(&body);
+        operation["responses"][success.0] = success.1;
+        operation
+    };
+    let mut me = json!({ "get": mine("The logged-in account", "Who the request is logged in as: username, staff, superuser and, for the built-in accounts, the profile.", "me") });
+    me["get"]["responses"]["200"] = json!({ "description": "The account" });
+    if accounts {
+        me["patch"] = with_body(
+            mine(
+                "Change your profile",
+                "First and last name, phone. Empty values clear a field.",
+                "me_update",
+            ),
+            object(
+                json!({ "first_name": { "type": "string" }, "last_name": { "type": "string" }, "phone": { "type": "string" } }),
+                &[],
+            ),
+            ("204", json!({ "description": "Changed" })),
+        );
+    }
+    add("me", me);
+    if !accounts {
+        return;
+    }
+    if methods.password {
+        add(
+            "me/password",
+            json!({ "post": with_body(
+            mine("Change your password", "With the current password. Answers with new tokens: the change ends every older login.", "me_password"),
+            object(json!({ "current": { "type": "string", "format": "password" }, "password": { "type": "string", "format": "password" } }), &["current", "password"]),
+            ("200", ok()),
+        ) }),
+        );
+    }
+    let code = || object(json!({ "code": { "type": "string" } }), &["code"]);
+    let mut setup = mine(
+        "Start two-factor setup",
+        "A new authenticator key (`secret`, and an `otpauth://` `uri` for a QR code), stored once confirmed.",
+        "me_totp",
+    );
+    setup["responses"]["200"] = json!({ "description": "The key to scan" });
+    add("me/totp", json!({ "post": setup }));
+    add(
+        "me/totp/confirm",
+        json!({ "post": with_body(
+        mine("Turn two-factor login on", "The key from `POST /auth/me/totp` and a current code from it; `password` unless the login is under 15 minutes old. Answers with the recovery codes, shown once.", "me_totp_confirm"),
+        object(json!({ "secret": { "type": "string" }, "code": { "type": "string" }, "password": { "type": "string", "format": "password" } }), &["secret", "code"]),
+        ("200", json!({ "description": "`recovery_codes`" })),
+    ) }),
+    );
+    add(
+        "me/totp/disable",
+        json!({ "post": with_body(
+        mine("Turn two-factor login off", "With a current code or a recovery code.", "me_totp_disable"),
+        code(),
+        ("204", json!({ "description": "Off" })),
+    ) }),
+    );
+    add(
+        "me/recovery-codes",
+        json!({ "post": with_body(
+        mine("New recovery codes", "Replaces the recovery codes, for a current code from the authenticator app.", "me_recovery_codes"),
+        code(),
+        ("200", json!({ "description": "`recovery_codes`" })),
+    ) }),
+    );
+    let mut links = mine(
+        "Your linked sites",
+        "The other sites this account logs in through.",
+        "me_identities",
+    );
+    links["responses"]["200"] = json!({ "description": "`data`: the links" });
+    add("me/identities", json!({ "get": links }));
+    let mut unlink = mine(
+        "Forget a linked site",
+        "The next login through it is matched by e-mail address again.",
+        "me_identity_delete",
+    );
+    unlink["responses"]["204"] = json!({ "description": "Forgotten" });
+    unlink["parameters"] =
+        json!([{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }]);
+    add("me/identities/{id}", json!({ "delete": unlink }));
+    if auth.api_keys {
+        let mut list = mine(
+            "Your API keys",
+            "The keys themselves are never shown again.",
+            "me_api_keys",
+        );
+        list["responses"]["200"] = json!({ "description": "`data`: the keys" });
+        add(
+            "me/api-keys",
+            json!({
+                "get": list,
+                "post": with_body(
+                    mine("Make an API key", "Shown in this answer only. `expires_in_days` is 30, 90 (default), 365 or null for never; `password` unless the login is under 15 minutes old. API keys cannot make keys.", "me_api_key_create"),
+                    object(json!({ "name": { "type": "string" }, "expires_in_days": { "type": "integer", "nullable": true }, "read_only": { "type": "boolean" }, "password": { "type": "string", "format": "password" } }), &["name"]),
+                    ("201", json!({ "description": "`key`: the new key" })),
+                ),
+            }),
+        );
+        let mut revoke = mine("Revoke an API key", "", "me_api_key_revoke");
+        revoke["responses"]["204"] = json!({ "description": "Revoked" });
+        revoke["parameters"] = json!([{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }]);
+        add("me/api-keys/{id}", json!({ "delete": revoke }));
+    }
+}
+
 /// Builds the OpenAPI 3.0 document for everything the app generates.
 fn document(
     config: &DocsConfig,
@@ -847,8 +1156,10 @@ fn document(
     api_base: &str,
     resources: &[Arc<dyn Resource>],
     uploads: bool,
-    api_keys: bool,
+    auth: &crate::auth::AuthConfig,
+    accounts: bool,
 ) -> Value {
+    let api_keys = auth.api_keys;
     let mut schemas = Map::new();
     let mut paths = Map::new();
     let token_url = format!("{api_base}/auth/token");
@@ -895,6 +1206,8 @@ fn document(
                 "token": { "type": "string", "description": "The same token, under its older name" },
                 "token_type": { "type": "string", "example": "Bearer" },
                 "expires_in": { "type": "integer", "description": "Seconds" },
+                "refresh_token": { "type": "string", "description": "Trade it for a new pair at `POST /auth/refresh` when the access token expires; it works once" },
+                "refresh_expires_in": { "type": "integer", "description": "Seconds the refresh token lasts unused" },
             },
         }),
     );
@@ -913,12 +1226,17 @@ fn document(
                 } },
                 "responses": {
                     "200": json_response("A token", &reference("Token")),
-                    "401": error("Wrong username, password or authenticator code (`unauthorized`)"),
+                    "401": json_response(
+                        "Wrong username, password or authenticator code (`unauthorized`), or a right password for an account with two-factor login and no `totp` (`totp_required`, with a `challenge`)",
+                        &reference("Challenge"),
+                    ),
+                    "403": error("Two-factor login is required but the account has none (`totp_setup_required`)"),
                     "429": error_response("RateLimited"),
                 },
             },
         }),
     );
+    describe_auth(api_base, auth, accounts, &mut schemas, &mut paths);
 
     let mut tags = vec![json!({ "name": "Authentication" })];
     for resource in resources {

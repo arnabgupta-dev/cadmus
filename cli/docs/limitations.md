@@ -5,22 +5,25 @@ order: 220
 summary: What Cadmus does not do yet, so you know before you build.
 ---
 
-Cadmus is at version 0.1. These are the gaps known today.
+Cadmus is at version 0.2. These are the gaps known today.
 
 ## Accounts and logins
 
 - No passkeys yet.
 - API keys cannot be limited to some models (only read-only).
-- Logins through other sites are for the admin; programs use API keys or tokens. An account
-  is linked to another site by e-mail address only (there is no "connect" button).
+- An account is linked to another site by e-mail address only (there is no "connect"
+  button), and its e-mail address cannot be changed through the API.
 - Per-record permissions are ownership only: one owner per row (see
   [Rows owned by accounts](accounts.md#rows-owned-by-accounts)), not sharing rules.
 - Login attempt limits are per server process, not shared between instances.
-- Accounts and groups are managed in the admin only; there is no API for them.
-- Accounts are for the people who run the site: an account that is not staff cannot log in.
-  Visitors of your app need logins of your own (see [Accounts](accounts.md)).
-- No refresh tokens, and logging out does not end a copied login token before it expires;
+- Superusers manage accounts and groups in the admin only; through the API, people manage
+  only their own account (`/api/auth/me`).
+- Logging out does not end a copied access token before it expires (an hour by default);
   changing the password ends them all.
+- Refresh tokens and e-mailed links for apps need the built-in accounts, not a custom
+  `UserStore`.
+- Facebook logins from apps need the `code`: Facebook's mobile SDK access tokens are not
+  accepted.
 
 ## Admin
 

@@ -542,3 +542,25 @@ async fn accounts_with_two_factor_get_a_challenge() {
     assert_eq!(reply.1["error"]["code"], "totp_required");
     assert!(reply.1["challenge"].is_string());
 }
+
+#[tokio::test]
+async fn the_api_documentation_lists_the_providers() {
+    let site = site().await;
+    let response = site
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let doc: Value = serde_json::from_slice(&bytes).unwrap();
+    let operation = &doc["paths"]["/api/auth/{provider}"]["post"];
+    assert_eq!(
+        operation["parameters"][0]["schema"]["enum"],
+        json!(["acme"])
+    );
+}
