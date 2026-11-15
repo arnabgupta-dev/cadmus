@@ -13,6 +13,8 @@ categories = ["command-line-utilities", "web-programming"]
 [[bin]]
 name = "cadmus"
 path = "src/main.rs"
+# The library is also named `cadmus`: documenting both writes to one folder (cargo#6313).
+doc = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
