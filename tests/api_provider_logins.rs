@@ -1,6 +1,9 @@
 //! Logging in through another site from an app: `POST /api/auth/<provider>` with an ID token
 //! or a code, against a fake OpenID Connect provider on this machine that signs its tokens.
 
+// Needs these features: cargo test --all-features
+#![cfg(feature = "oidc")]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};

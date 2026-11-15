@@ -1,6 +1,9 @@
 //! E-mailed links for apps: login links, sign-up confirmations and password resets that
 //! point to the app, which sends the token back to the API.
 
+// Needs these features: cargo test --all-features
+#![cfg(feature = "magic-link")]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -57,7 +57,9 @@ pub use error::{AdminError, ApiError, ApiResult};
 pub use home::HomeConfig;
 pub use html::clean_html;
 pub use login_api::{LoginOutcome, Logins, TokenPair};
-pub use mail::{Email, LogMailer, Mailer, SmtpMailer};
+#[cfg(feature = "smtp")]
+pub use mail::SmtpMailer;
+pub use mail::{Email, LogMailer, Mailer};
 pub use rate_limit::{
     Decision, MemoryStore, ParseRateError, Rate, RateLimit, RateLimitService, RateLimitStore,
     RateRule,
@@ -220,6 +222,7 @@ impl Admin {
         if self.state.docs.is_some() {
             router = router.merge(docs::router(Arc::clone(&self.state)));
         }
+        #[cfg(feature = "oauth")]
         if !self.state.auth.methods.providers.is_empty() {
             router = router.merge(oauth::router(Arc::clone(&self.state)));
         }

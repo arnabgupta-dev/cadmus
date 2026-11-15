@@ -331,6 +331,7 @@ pub(crate) enum Mode {
     /// "Check your inbox."
     Sent,
     /// The button that uses a login link.
+    #[cfg_attr(not(feature = "magic-link"), allow(dead_code))]
     Link,
     /// The address to send a password reset link to.
     Forgot,

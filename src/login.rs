@@ -29,11 +29,13 @@ use crate::users;
 
 const PENDING_COOKIE: &str = "cadmus_pending";
 const PENDING_PURPOSE: &str = "pending-login";
+#[cfg(feature = "magic-link")]
 const LINK_PURPOSE: &str = "login-link";
 const RESET_PURPOSE: &str = "password-reset";
 const INVITE_PURPOSE: &str = "invitation";
 /// How long someone may take to type their authenticator code.
 const PENDING_SECS: u64 = 300;
+#[cfg(feature = "magic-link")]
 const LINK_SECS: u64 = 15 * 60;
 const RESET_SECS: u64 = 60 * 60;
 const INVITE_SECS: u64 = 7 * 24 * 60 * 60;
@@ -45,6 +47,7 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
     if !methods.providers.is_empty() || methods.magic_link {
         router = router.route(&format!("{b}/login/code"), get(code_page).post(code_submit));
     }
+    #[cfg(feature = "magic-link")]
     if methods.magic_link && state.accounts.is_some() {
         router = router
             .route(
@@ -358,6 +361,7 @@ pub(crate) fn link_email(
 }
 
 /// What a login link stands for.
+#[cfg(feature = "magic-link")]
 #[derive(Serialize, Deserialize)]
 struct LinkClaims {
     /// The account, or `None` for someone [`crate::settings::Signup`] lets create one.
@@ -372,6 +376,7 @@ pub(crate) fn last_login_print(account: &users::user::Model) -> String {
     fingerprint(&format!("{:?}", account.last_login))
 }
 
+#[cfg(feature = "magic-link")]
 async fn link_request(
     State(state): Shared,
     parts: Parts,
@@ -444,6 +449,7 @@ async fn link_request(
     )
 }
 
+#[cfg(feature = "magic-link")]
 fn expired_link(state: &AdminState) -> Result<Response, AdminError> {
     login_page_as(
         state,
@@ -456,6 +462,7 @@ fn expired_link(state: &AdminState) -> Result<Response, AdminError> {
 
 /// Opening the link only shows a button: mail scanners that open links to check them must
 /// not use up the login.
+#[cfg(feature = "magic-link")]
 async fn link_page(
     State(state): Shared,
     Path(token): Path<String>,
@@ -470,6 +477,7 @@ async fn link_page(
     login_page_as(&state, StatusCode::OK, Mode::Link, None, None)
 }
 
+#[cfg(feature = "magic-link")]
 async fn link_use(
     State(state): Shared,
     jar: CookieJar,

@@ -18,6 +18,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod docs;
+mod features;
 mod mcp;
 
 /// The framework version generated projects ask for: this generator's own `major.minor`, as
@@ -56,6 +57,19 @@ enum Command {
         /// changing `DATABASE_URL` switches to another one later.
         #[arg(long, value_enum, default_value_t = Database::Sqlite)]
         database: Database,
+        /// More of the framework to build in, comma-separated: login methods (google,
+        /// microsoft, github, facebook, oidc, magic-link), smtp for sending e-mail, storage
+        /// (s3, azure, gcs) or another database driver. `cadmus add` adds more later.
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+    },
+    /// Turn on more of the framework in an existing project: login methods (google,
+    /// microsoft, github, facebook, oidc, magic-link), smtp, storage (s3, azure, gcs) or a
+    /// database driver (postgres, mysql, sqlite). Edits Cargo.toml, src/settings.rs and .env.
+    Add {
+        /// Features to add, e.g. `google github`.
+        #[arg(required = true, value_delimiter = ',')]
+        features: Vec<String>,
     },
     /// Generate code inside an existing project.
     #[command(alias = "g")]
@@ -85,6 +99,15 @@ enum Database {
 }
 
 impl Database {
+    /// The framework feature with this database's driver.
+    fn feature(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+            Self::Mysql => "mysql",
+        }
+    }
+
     /// A `DATABASE_URL` to start from.
     fn url(self, project: &str) -> String {
         let name = project.replace('-', "_");
@@ -131,7 +154,15 @@ fn main() -> ExitCode {
             name,
             framework_path,
             database,
-        } => new_project(Path::new("."), &name, framework_path.as_deref(), database),
+            features,
+        } => new_project(
+            Path::new("."),
+            &name,
+            framework_path.as_deref(),
+            database,
+            &features,
+        ),
+        Command::Add { features } => features::add(Path::new("."), &features),
         Command::Generate {
             what: Generate::Model { name, fields },
         } => generate_model(Path::new("."), &name, &fields),
@@ -196,7 +227,15 @@ fn new_project(
     name: &str,
     framework_path: Option<&Path>,
     database: Database,
+    extra_features: &[String],
 ) -> Result<String, String> {
+    let mut chosen = features::lookup(&[database.feature()])?;
+    for feature in features::lookup(extra_features)? {
+        if !chosen.iter().any(|f| f.name == feature.name) {
+            chosen.push(feature);
+        }
+    }
+    let feature_names: Vec<&str> = chosen.iter().map(|f| f.name).collect();
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name
             .chars()
@@ -211,16 +250,17 @@ fn new_project(
     if root.exists() {
         return Err(format!("{} already exists", root.display()));
     }
-    // Every driver is built in by default, so the database is chosen in settings.
-    let framework = match framework_path {
+    // Only the chosen database driver, storage and login methods are compiled.
+    let source = match framework_path {
         Some(path) => {
             let absolute = path
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("{{ path = {:?} }}", absolute.display().to_string())
+            format!("path = {:?}", absolute.display().to_string())
         }
-        None => format!("{:?}", framework_version()),
+        None => format!("version = {:?}", framework_version()),
     };
+    let framework = features::dependency(&source, &feature_names);
 
     write_new(
         &root.join("Cargo.toml"),
@@ -256,7 +296,10 @@ async fn main() -> Result<(), AdminError> {
 }
 ",
     )?;
-    write_new(&root.join("src/settings.rs"), &settings_source(name))?;
+    write_new(
+        &root.join("src/settings.rs"),
+        &(settings_source(name) + &features::methods_function(&chosen)),
+    )?;
     write_new(
         &root.join("src/migrations/mod.rs"),
         r"//! The project's database migrations, oldest first.
@@ -301,7 +344,7 @@ pub fn register(app: App) -> App {{
 "
         ),
     )?;
-    let env_example = &format!(
+    let env_example = &(format!(
         r"# Secrets and values that differ between machines. Everything else is in
 # src/settings.rs. Copy to .env and fill in; never commit .env.
 DATABASE_URL={url}
@@ -314,11 +357,6 @@ DEBUG=true
 PUBLIC_URL=http://localhost:3000
 # Sending e-mail (login links, password resets). Unset: messages go to the log.
 # MAIL_URL=smtps://user:password@smtp.example.com
-# Apps registered with the login providers enabled in settings.rs:
-# GOOGLE_CLIENT_ID=
-# GOOGLE_CLIENT_SECRET=
-# Other client IDs (mobile apps) whose Google ID tokens the API accepts:
-# GOOGLE_AUDIENCES=
 # Your front end, if people log in to it through the API:
 # APP_URL=http://localhost:5173
 # LOG_LEVEL=debug
@@ -328,9 +366,10 @@ PUBLIC_URL=http://localhost:3000
 # Credentials for the storage backend named in settings.rs, if any:
 # AWS_ACCESS_KEY_ID=
 # AWS_SECRET_ACCESS_KEY=
+# Keys of the login methods in settings.rs (`cadmus add google` adds Google's here):
 ",
         url = database.url(name),
-    );
+    ) + &features::env_lines(&chosen));
     write_new(&root.join(".env.example"), env_example)?;
     write_new(
         &root.join(".env"),
@@ -348,15 +387,17 @@ PUBLIC_URL=http://localhost:3000
     )?;
 
     Ok(format!(
-        "created {}\n\
+        "created {} (features: {})\n\
          next:\n  \
          cd {name}\n  \
          cadmus generate model Post title:string body:text published:bool\n  \
          cargo run -- makemigrations\n  \
          cargo run -- migrate\n  \
          cargo run -- createsuperuser --username admin\n  \
-         cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs",
-        root.display()
+         cargo run -- serve      # status page at /, admin at /admin, API docs at /api/docs\n\
+         more login methods, storage or e-mail later: cadmus add google github smtp ...",
+        root.display(),
+        feature_names.join(", ")
     ))
 }
 
@@ -443,25 +484,9 @@ pub fn settings() -> Result<Settings, AdminError> {{
             ..Default::default()
         }},
         auth: AuthSettings {{
-            // How people log in, in the order the login page shows them; apps use the same
-            // methods through the REST API (/api/auth/...). Each other site needs an app
-            // registered with it, whose redirect URI is <PUBLIC_URL>/admin/auth/<name>/callback,
-            // e.g. .../admin/auth/google/callback, plus your app's own addresses.
-            methods: vec![
-                AuthMethod::Password,
-                // A login link by e-mail (see `mail` below):
-                // AuthMethod::MagicLink,
-                // AuthMethod::Google(OAuthClient::from_env("GOOGLE")?),
-                // AuthMethod::Microsoft {{
-                //     client: OAuthClient::from_env("MICROSOFT")?,
-                //     tenant: "common".into(),
-                // }},
-                // AuthMethod::GitHub(OAuthClient::from_env("GITHUB")?),
-                // AuthMethod::Facebook(OAuthClient::from_env("FACEBOOK")?),
-                // AuthMethod::Oidc(OidcProvider::new(
-                //     "okta", "Okta", "https://acme.okta.com", OAuthClient::from_env("OKTA")?,
-                // )),
-            ],
+            // How people log in: see `methods()` below. `cadmus add google` (or microsoft,
+            // github, facebook, oidc, magic-link) builds in another and lists it there.
+            methods: methods()?,
             // Who may get an account by logging in through another site, or by signing up in
             // an app. By default only existing accounts, matched by e-mail address, may log
             // in. Accounts made through the admin's login are staff; through the API, not.
@@ -1362,17 +1387,20 @@ mod tests {
             std::fs::read_to_string(dir.join(project).join(file)).unwrap()
         };
 
-        new_project(&dir, "lite", None, Database::Sqlite).unwrap();
-        assert!(
-            read("lite", "Cargo.toml").contains(&format!("cadmus = \"{}\"\n", framework_version()))
-        );
+        new_project(&dir, "lite", None, Database::Sqlite, &[]).unwrap();
+        assert!(read("lite", "Cargo.toml").contains(&format!(
+            "cadmus = {{ version = \"{}\", default-features = false, features = [\"sqlite\"] }}\n",
+            framework_version()
+        )));
         assert!(read("lite", ".env").contains("DATABASE_URL=sqlite://db.sqlite3?mode=rwc\n"));
 
-        new_project(&dir, "my-shop", None, Database::Postgres).unwrap();
-        // Every driver is built in, so only the address differs.
+        new_project(&dir, "my-shop", None, Database::Postgres, &[]).unwrap();
+        // Only the chosen driver is built in; otherwise only the address differs.
         assert_eq!(
             read("my-shop", "Cargo.toml"),
-            read("lite", "Cargo.toml").replace("\"lite\"", "\"my-shop\"")
+            read("lite", "Cargo.toml")
+                .replace("\"lite\"", "\"my-shop\"")
+                .replace("[\"sqlite\"]", "[\"postgres\"]")
         );
         for file in [".env", ".env.example"] {
             assert!(
@@ -1382,8 +1410,11 @@ mod tests {
             );
         }
 
-        new_project(&dir, "legacy", None, Database::Mysql).unwrap();
-        assert!(!read("legacy", "Cargo.toml").contains("features = [\"mysql\"]"));
+        new_project(&dir, "legacy", None, Database::Mysql, &[]).unwrap();
+        assert!(
+            read("legacy", "Cargo.toml")
+                .contains("default-features = false, features = [\"mysql\"]")
+        );
         assert!(
             read("legacy", ".env")
                 .contains("DATABASE_URL=mysql://root:root@localhost:3306/legacy\n")
@@ -1395,7 +1426,7 @@ mod tests {
     #[test]
     fn new_project_then_generate_model() {
         let dir = temp("project");
-        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
+        new_project(&dir, "blog", None, Database::Sqlite, &[]).unwrap();
         let root = dir.join("blog");
         for file in [
             "Cargo.toml",
@@ -1464,18 +1495,18 @@ mod tests {
         );
 
         assert!(
-            new_project(&dir, "blog", None, Database::Sqlite).is_err(),
+            new_project(&dir, "blog", None, Database::Sqlite, &[]).is_err(),
             "must not overwrite a project"
         );
-        assert!(new_project(&dir, "Bad Name", None, Database::Sqlite).is_err());
-        assert!(new_project(&dir, "../escape", None, Database::Sqlite).is_err());
+        assert!(new_project(&dir, "Bad Name", None, Database::Sqlite, &[]).is_err());
+        assert!(new_project(&dir, "../escape", None, Database::Sqlite, &[]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn delete_model_undoes_generate_model() {
         let dir = temp("delete");
-        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
+        new_project(&dir, "blog", None, Database::Sqlite, &[]).unwrap();
         let root = dir.join("blog");
         let index_path = root.join("src/models/mod.rs");
         let fresh = std::fs::read_to_string(&index_path).unwrap();
@@ -1537,7 +1568,7 @@ mod tests {
     #[test]
     fn many_to_many_owner_decimal_uuid_and_html_fields() {
         let dir = temp("many");
-        new_project(&dir, "blog", None, Database::Sqlite).unwrap();
+        new_project(&dir, "blog", None, Database::Sqlite, &[]).unwrap();
         let root = dir.join("blog");
         let index_path = root.join("src/models/mod.rs");
         let fresh = std::fs::read_to_string(&index_path).unwrap();

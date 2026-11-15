@@ -271,7 +271,19 @@ impl App {
                             .into(),
                     )
                 })?;
-            app.mailer = Some(Arc::new(crate::mail::SmtpMailer::new(&url, &from)?));
+            #[cfg(feature = "smtp")]
+            {
+                app.mailer = Some(Arc::new(crate::mail::SmtpMailer::new(&url, &from)?));
+            }
+            #[cfg(not(feature = "smtp"))]
+            {
+                let _ = (url, from);
+                return Err(AdminError::Config(
+                    "mail.url is set, but cadmus was built without its `smtp` feature. In \
+                     Cargo.toml: cadmus = { ..., features = [\"smtp\"] } (or `cadmus add smtp`)"
+                        .into(),
+                ));
+            }
         }
         app.log_level = Some(log_level);
         app = app.rate_limit(rate_limit);
@@ -1448,8 +1460,8 @@ fn check_database_url(setting: &str, url: &str) -> Result<(), AdminError> {
     }
     Err(AdminError::Config(format!(
         "{setting} is a {feature} address, but cadmus was built without its `{feature}` \
-         feature. In Cargo.toml: cadmus = {{ ..., default-features = false, features = \
-         [\"{feature}\"] }}"
+         feature. In Cargo.toml: cadmus = {{ ..., features = [\"{feature}\"] }} (or run \
+         `cadmus add {feature}`)"
     )))
 }
 

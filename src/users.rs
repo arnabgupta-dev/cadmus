@@ -991,6 +991,7 @@ pub(crate) async fn unlink_identity(
 /// 2. otherwise the account with the address the site vouches for, which is then linked;
 /// 3. otherwise a new account, if [`crate::settings::Signup`] allows the address: staff
 ///    when `staff` (a login to the admin), otherwise an account for the API only.
+#[cfg(feature = "oauth")]
 pub(crate) async fn resolve_identity(
     db: &DatabaseConnection,
     methods: &crate::oauth::Methods,

@@ -1,6 +1,9 @@
 //! Logging in through another site, against a fake OpenID Connect provider running on this
 //! machine: the round trip, matching accounts, sign-up, the second factor, and tampering.
 
+// Needs these features: cargo test --all-features
+#![cfg(feature = "oidc")]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

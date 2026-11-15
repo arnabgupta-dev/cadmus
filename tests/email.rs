@@ -1,5 +1,8 @@
 //! Logging in by e-mail: login links, password resets, and changing one's own password.
 
+// Needs these features: cargo test --all-features
+#![cfg(all(feature = "magic-link", feature = "smtp"))]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

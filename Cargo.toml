@@ -18,15 +18,29 @@ exclude = [".github/", "mcp/"]
 all-features = true
 
 [features]
-# Every driver is built in, so the database is chosen by `database.url` alone. Projects that
-# use one database can keep only its driver with `default-features = false`.
-default = ["sqlite", "postgres", "mysql"]
+# Only what a project uses is compiled: its database driver, its storage backend and its
+# login methods. Passwords, two-factor login, API keys and refresh tokens are always there.
+# `cadmus new --features ...` and `cadmus add <feature>` set these for you.
+default = ["sqlite"]
+# Databases (the address in `database.url` must match one of them).
 sqlite = ["sea-orm/sqlx-sqlite", "sea-orm/runtime-tokio-rustls"]
 postgres = ["sea-orm/sqlx-postgres", "sea-orm/runtime-tokio-rustls"]
 mysql = ["sea-orm/sqlx-mysql", "sea-orm/runtime-tokio-rustls"]
+# File storage other than a local folder.
 s3 = ["object_store/aws"]
 azure = ["object_store/azure"]
 gcs = ["object_store/gcp"]
+# Logging in through other sites. Each brings `oauth`, the shared machinery.
+google = ["oauth"]
+microsoft = ["oauth"]
+github = ["oauth"]
+facebook = ["oauth"]
+oidc = ["oauth"]
+oauth = ["dep:reqwest", "dep:rustls", "dep:rustls-platform-verifier"]
+# Login links by e-mail, for the admin and for apps.
+magic-link = []
+# Sending e-mail over SMTP; without it, messages are written to the log.
+smtp = ["dep:lettre"]
 
 [dependencies]
 # Cleans the HTML of rich-text fields before it is stored.
@@ -44,17 +58,17 @@ dotenvy = "0.15.7"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = "0.13.0"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
-lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
+lettre = { version = "0.11.23", optional = true, default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
 minijinja = { version = "3", features = ["serde", "urlencode"] }
 object_store = "0.14.2"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.10.3"
 # Talks to Google, Facebook and the other login providers. TLS uses `ring`, which the
 # database driver already brings, rather than a second crypto library.
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "rustls-no-provider"] }
+reqwest = { version = "0.13.5", optional = true, default-features = false, features = ["json", "form", "query", "rustls-no-provider"] }
 rpassword = "7.5.5"
-rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-platform-verifier = "0.7.1"
+rustls = { version = "0.23.46", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = { version = "0.7.1", optional = true }
 sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-json", "with-chrono", "with-uuid", "with-rust_decimal", "postgres-array", "schema-sync"] }
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1.0.229", features = ["derive"] }

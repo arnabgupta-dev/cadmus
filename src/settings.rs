@@ -617,6 +617,24 @@ impl OAuthClient {
         )
         .audiences(audiences.split(',')))
     }
+
+    /// Like [`OAuthClient::from_env`], but `None` while `<PREFIX>_CLIENT_ID` is unset or
+    /// empty, so a provider can be listed before its app is registered:
+    ///
+    /// ```ignore
+    /// if let Some(client) = OAuthClient::from_env_if_set("GOOGLE")? {
+    ///     methods.push(AuthMethod::Google(client));
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`AdminError::Config`] if the client ID is set but the secret is not.
+    pub fn from_env_if_set(prefix: &str) -> Result<Option<Self>, AdminError> {
+        if env_opt(&format!("{prefix}_CLIENT_ID")).is_none() {
+            return Ok(None);
+        }
+        Self::from_env(prefix).map(Some)
+    }
 }
 
 // Hand-written so the secret can never reach a log line.

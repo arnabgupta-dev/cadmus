@@ -505,6 +505,7 @@ async fn uploads_require_authentication_and_configuration() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     assert!(Storage::from_url("not a url", Vec::new()).is_err());
-    // S3 support is behind a Cargo feature that these tests do not enable.
+    // S3 support is behind a Cargo feature; without it, s3:// addresses are refused.
+    #[cfg(not(feature = "s3"))]
     assert!(Storage::from_url("s3://bucket/prefix", Vec::new()).is_err());
 }

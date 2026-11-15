@@ -5,6 +5,9 @@
 //! The stand-in's address is in an environment variable, which belongs to the whole process,
 //! so everything runs in one test.
 
+// Needs these features: cargo test --all-features
+#![cfg(all(feature = "microsoft", feature = "facebook"))]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

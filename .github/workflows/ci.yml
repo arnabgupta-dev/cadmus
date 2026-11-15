@@ -39,11 +39,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked
+        run: cargo clippy --workspace --all-targets --all-features --locked
+      # Every login method, database driver and storage backend, so every test runs.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
       - name: Docs
-        run: cargo doc --workspace --no-deps --locked
+        run: cargo doc --workspace --no-deps --all-features --locked
 
   postgres:
     name: Test on PostgreSQL
@@ -67,7 +68,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The same integration tests as above; each test gets its own schema.
-      - run: cargo test --locked
+      - run: cargo test --all-features --locked
 
   mysql:
     name: Test on MySQL
@@ -91,10 +92,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The same integration tests again; each test gets its own database.
-      - run: cargo test --locked
+      - run: cargo test --all-features --locked
 
   features:
-    name: All features compile
+    name: Feature sets compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +105,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # S3, Azure and GCS support is only compiled here, not run.
       - run: cargo clippy --workspace --all-targets --all-features --locked
+      # A project only compiles what it asks for: each set must build on its own, warning-free.
+      - name: One feature at a time
+        run: |
+          for set in sqlite postgres mysql "sqlite,magic-link" "sqlite,smtp" "sqlite,google" \
+                     "sqlite,microsoft" "sqlite,github" "sqlite,facebook" "sqlite,oidc"; do
+            echo "== $set"
+            cargo clippy -p cadmus --no-default-features --features "$set" --locked
+          done
 
   mcp:
     name: Hosted MCP server

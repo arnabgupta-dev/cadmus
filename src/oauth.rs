@@ -7,6 +7,10 @@
 //! TLS, matches it to an account (see [`crate::users::resolve_identity`]) and logs them in,
 //! asking for their authenticator code first if they have one.
 
+// Without a provider feature, the provider code is still checked for the settings' sake but
+// never runs, so most of it is unused.
+#![cfg_attr(not(feature = "oauth"), allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -84,6 +88,20 @@ fn base_url_overrides() -> Result<HashMap<String, String>, AdminError> {
     Ok(overrides)
 }
 /// Microsoft directories that admit accounts from many organisations.
+/// The Cargo feature a login method needs that this build was compiled without, if any.
+fn missing_feature(method: &AuthMethod) -> Option<&'static str> {
+    let (feature, built) = match method {
+        AuthMethod::Password => return None,
+        AuthMethod::MagicLink => ("magic-link", cfg!(feature = "magic-link")),
+        AuthMethod::Google(_) => ("google", cfg!(feature = "google")),
+        AuthMethod::Microsoft { .. } => ("microsoft", cfg!(feature = "microsoft")),
+        AuthMethod::GitHub(_) => ("github", cfg!(feature = "github")),
+        AuthMethod::Facebook(_) => ("facebook", cfg!(feature = "facebook")),
+        AuthMethod::Oidc(_) => ("oidc", cfg!(feature = "oidc")),
+    };
+    (!built).then_some(feature)
+}
+
 const MICROSOFT_SHARED_TENANTS: [&str; 3] = ["common", "organizations", "consumers"];
 
 // ---- configuration -------------------------------------------------------------------------
@@ -100,6 +118,7 @@ pub(crate) struct Methods {
     /// The app whose users log in through the API; its `url` without a trailing slash.
     pub(crate) app: AppSettings,
     /// Built on first use, so sites without providers never load the system's certificates.
+    #[cfg(feature = "oauth")]
     http: OnceLock<Result<reqwest::Client, String>>,
 }
 
@@ -113,6 +132,7 @@ impl Methods {
             signup_groups: Vec::new(),
             public_url: None,
             app: AppSettings::default(),
+            #[cfg(feature = "oauth")]
             http: OnceLock::new(),
         }
     }
@@ -183,7 +203,9 @@ impl Methods {
         }
         let mut password = false;
         let mut magic_link = false;
+        #[cfg_attr(not(feature = "oauth"), allow(unused_mut))]
         let mut providers: Vec<Arc<Provider>> = Vec::new();
+        #[cfg(feature = "oauth")]
         let mut overrides = base_url_overrides()?;
         for method in methods {
             let name = method.name().to_owned();
@@ -193,13 +215,23 @@ impl Methods {
             {
                 return Err(error(format!("`{name}` is listed twice")));
             }
+            if let Some(feature) = missing_feature(&method) {
+                return Err(error(format!(
+                    "`{name}` needs cadmus's `{feature}` feature, which this build leaves out. \
+                     In Cargo.toml: cadmus = {{ ..., features = [\"{feature}\"] }} (or run \
+                     `cadmus add {feature}`)"
+                )));
+            }
             match method {
                 AuthMethod::Password => password = true,
                 AuthMethod::MagicLink => magic_link = true,
+                #[cfg(feature = "oauth")]
                 other => {
                     let base = overrides.remove(&name);
                     providers.push(Arc::new(Provider::new(other, base).map_err(error)?));
                 }
+                #[cfg(not(feature = "oauth"))]
+                _ => unreachable!("refused above without a provider feature"),
             }
         }
         let public_url = match public_url.map(str::trim).filter(|url| !url.is_empty()) {
@@ -244,6 +276,7 @@ impl Methods {
             signup_groups,
             public_url,
             app: AppSettings::default(),
+            #[cfg(feature = "oauth")]
             http: OnceLock::new(),
         })
     }
@@ -263,6 +296,7 @@ impl Methods {
         }
     }
 
+    #[cfg(feature = "oauth")]
     pub(crate) fn http(&self) -> Result<&reqwest::Client, String> {
         self.http
             .get_or_init(build_http_client)
@@ -291,6 +325,7 @@ impl Methods {
 }
 
 /// An HTTP client whose TLS uses `ring` and the operating system's certificate store.
+#[cfg(feature = "oauth")]
 fn build_http_client() -> Result<reqwest::Client, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = rustls_platform_verifier::Verifier::new(Arc::clone(&provider))
@@ -520,6 +555,7 @@ impl Provider {
     }
 
     /// The provider's endpoints, read once from its discovery document.
+    #[cfg(feature = "oauth")]
     async fn discovery<'a>(
         &self,
         oidc: &'a Oidc,
@@ -547,6 +583,7 @@ impl Provider {
     }
 
     /// Where to send the browser to log in.
+    #[cfg(feature = "oauth")]
     async fn authorize_url(
         &self,
         http: &reqwest::Client,
@@ -585,6 +622,7 @@ impl Provider {
     /// Trades the code for the identity of whoever logged in. `verifier` is the PKCE
     /// verifier the login started with, if it used one; `nonce` the one sent to the provider,
     /// if any, which the ID token must then carry.
+    #[cfg(feature = "oauth")]
     pub(crate) async fn identify(
         &self,
         http: &reqwest::Client,
@@ -654,6 +692,7 @@ impl Provider {
         }
     }
 
+    #[cfg(feature = "oauth")]
     async fn identify_oidc(
         &self,
         oidc: &Oidc,
@@ -749,6 +788,7 @@ impl Provider {
     /// the provider's published keys, then every claim as usual. Tokens issued to
     /// `client_id` or one of [`OAuthClient::audiences`] are accepted; `nonce`, if given,
     /// must match.
+    #[cfg(feature = "oauth")]
     pub(crate) async fn identify_id_token(
         &self,
         http: &reqwest::Client,
@@ -775,6 +815,7 @@ impl Provider {
     }
 
     /// The claims of `token` if a current key of the provider signed it.
+    #[cfg(feature = "oauth")]
     async fn verified_claims(
         &self,
         oidc: &Oidc,
@@ -827,6 +868,7 @@ impl Provider {
     }
 
     /// The provider's signing keys, read at most once an hour unless `refresh`.
+    #[cfg(feature = "oauth")]
     async fn signing_keys(
         &self,
         oidc: &Oidc,
@@ -1029,6 +1071,7 @@ fn access_token(response: &Value) -> Result<String, Failure> {
 }
 
 /// Sends `request` and reads a JSON answer, turning HTTP errors into a message.
+#[cfg(feature = "oauth")]
 async fn get_json<T: serde::de::DeserializeOwned>(
     request: reqwest::RequestBuilder,
 ) -> Result<T, String> {
@@ -1090,6 +1133,7 @@ struct Flow {
     exp: u64,
 }
 
+#[cfg(feature = "oauth")]
 pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.base.clone();
     Router::new()
@@ -1104,6 +1148,7 @@ fn flow_cookie_path(state: &AdminState) -> String {
     format!("{}/auth/", state.base)
 }
 
+#[cfg(feature = "oauth")]
 async fn start(
     State(state): Shared,
     Path(name): Path<String>,
@@ -1156,6 +1201,7 @@ struct CallbackQuery {
     error: Option<String>,
 }
 
+#[cfg(feature = "oauth")]
 async fn callback(
     State(state): Shared,
     Path(name): Path<String>,
@@ -1251,7 +1297,7 @@ async fn callback(
     crate::login::complete(&state, jar, &account.username, true).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "oauth"))]
 mod tests {
     use serde_json::json;
 

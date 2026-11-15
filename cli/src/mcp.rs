@@ -172,6 +172,7 @@ fn tools() -> Value {
                     "name": { "type": "string", "description": "Project name: lowercase letters, digits, `-` and `_`, starting with a letter." },
                     "database": { "type": "string", "enum": ["sqlite", "postgres", "mysql"], "description": "Database to start with (default sqlite, which needs nothing installed)." },
                     "framework_path": { "type": "string", "description": "Absolute path of a local Cadmus checkout to use instead of the crates.io version. Usually left out." },
+                    "features": { "type": "array", "items": { "type": "string" }, "description": "More of the framework to build in: login methods (google, microsoft, github, facebook, oidc, magic-link), smtp, storage (s3, azure, gcs), or another database driver. Only what is listed is compiled; add_features adds more later." },
                 },
                 "required": ["directory", "name"],
             },
@@ -188,6 +189,19 @@ fn tools() -> Value {
                     "fields": { "type": "array", "items": { "type": "string" }, "description": "Fields as `name:type`, e.g. [\"title:string\", \"body:text\", \"published:bool\"]." },
                 },
                 "required": ["project", "name", "fields"],
+            },
+        },
+        {
+            "name": "add_features",
+            "title": "Add framework features",
+            "description": "Turns on more of the framework in a project, as Cargo features: login methods (google, microsoft, github, facebook, oidc, magic-link), smtp for sending e-mail, storage (s3, azure, gcs) or a database driver (postgres, mysql, sqlite). Edits Cargo.toml, adds login methods to methods() in src/settings.rs, and adds the keys to fill in to .env. Afterwards, tell the user which keys to fill in (the result lists them).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "features": { "type": "array", "items": { "type": "string" }, "description": "Features to add, e.g. [\"google\", \"github\"]." },
+                },
+                "required": ["project", "features"],
             },
         },
         {
@@ -283,7 +297,17 @@ fn call_tool(params: &Value) -> Result<Value, (i64, String)> {
                 Some(other) => return Err(format!("unknown database `{other}`")),
             };
             let framework = string("framework_path").map(PathBuf::from);
-            crate::new_project(&directory, &name, framework.as_deref(), database)
+            crate::new_project(
+                &directory,
+                &name,
+                framework.as_deref(),
+                database,
+                &strings("features"),
+            )
+        })(),
+        "add_features" => (|| {
+            let project = project(&required("project")?)?;
+            crate::features::add(&project, &strings("features"))
         })(),
         "generate_model" => (|| {
             let project = project(&required("project")?)?;
@@ -618,6 +642,7 @@ mod tests {
                 "docs_search",
                 "new_project",
                 "generate_model",
+                "add_features",
                 "delete_model",
                 "run",
                 "create_superuser"

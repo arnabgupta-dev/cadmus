@@ -32,7 +32,7 @@ const MAX_PER_PAGE: u64 = 100;
 
 pub(crate) fn router(state: Arc<AdminState>) -> Router {
     let b = state.api_base.clone();
-    Router::new()
+    let router = Router::new()
         .route(&format!("{b}/auth/token"), post(token))
         .route(&format!("{b}/auth/totp"), post(crate::login_api::totp))
         .route(
@@ -81,14 +81,6 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             axum::routing::delete(crate::account_api::api_key_revoke),
         )
         .route(
-            &format!("{b}/auth/link"),
-            post(crate::login_api::link_request),
-        )
-        .route(
-            &format!("{b}/auth/link/verify"),
-            post(crate::login_api::link_verify),
-        )
-        .route(
             &format!("{b}/auth/register"),
             post(crate::login_api::register),
         )
@@ -103,11 +95,23 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         .route(
             &format!("{b}/auth/password/reset"),
             post(crate::login_api::password_reset),
+        );
+    #[cfg(feature = "magic-link")]
+    let router = router
+        .route(
+            &format!("{b}/auth/link"),
+            post(crate::login_api::link_request),
         )
         .route(
-            &format!("{b}/auth/{{provider}}"),
-            post(crate::login_api::provider),
-        )
+            &format!("{b}/auth/link/verify"),
+            post(crate::login_api::link_verify),
+        );
+    #[cfg(feature = "oauth")]
+    let router = router.route(
+        &format!("{b}/auth/{{provider}}"),
+        post(crate::login_api::provider),
+    );
+    router
         .route(&format!("{b}/{{model}}"), get(list).post(create))
         .route(
             &format!("{b}/{{model}}/{{id}}"),

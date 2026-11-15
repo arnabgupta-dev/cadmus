@@ -359,6 +359,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Logins {
     }
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Deserialize)]
 pub(crate) struct ProviderBody {
     /// An ID token the app got from the provider (OpenID Connect providers).
@@ -377,6 +378,7 @@ pub(crate) struct ProviderBody {
 /// including GitHub and Facebook). Then the same rules as the admin: the account linked to
 /// that identity, or the one with the address the provider vouches for, or a new account
 /// (not staff) if `signup` allows the address.
+#[cfg(feature = "oauth")]
 pub(crate) async fn provider(
     State(state): Shared,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -468,14 +470,17 @@ pub(crate) async fn provider(
 // ---- e-mailed links, for apps -------------------------------------------------------------------
 
 /// Separate from the admin's, so a link made for one cannot be used at the other.
+#[cfg(feature = "magic-link")]
 const LINK_PURPOSE: &str = "api-login-link";
 const REGISTER_PURPOSE: &str = "api-register";
 const RESET_PURPOSE: &str = "api-password-reset";
+#[cfg(feature = "magic-link")]
 const LINK_SECS: u64 = 15 * 60;
 const REGISTER_SECS: u64 = 24 * 60 * 60;
 const RESET_SECS: u64 = 60 * 60;
 
 /// What a login link stands for.
+#[cfg(feature = "magic-link")]
 #[derive(Serialize, Deserialize)]
 struct LinkClaims {
     /// The account, or `None` for someone `signup` lets create one.
@@ -563,6 +568,7 @@ fn app_link(state: &AdminState, template: &str, token: &str) -> Result<String, A
 }
 
 /// `POST /api/auth/link`: e-mails a login link to the app, for `AuthMethod::MagicLink`.
+#[cfg(feature = "magic-link")]
 pub(crate) async fn link_request(
     State(state): Shared,
     parts: Parts,
@@ -615,6 +621,7 @@ pub(crate) async fn link_request(
 }
 
 /// `POST /api/auth/link/verify`: the token from a login link, for the tokens (or a challenge).
+#[cfg(feature = "magic-link")]
 pub(crate) async fn link_verify(
     State(state): Shared,
     Json(body): Json<TokenBody>,
