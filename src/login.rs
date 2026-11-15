@@ -305,7 +305,7 @@ struct AddressForm {
 }
 
 /// The address as typed, normalised; `None` if it cannot be one.
-fn address(typed: &str) -> Option<String> {
+pub(crate) fn address(typed: &str) -> Option<String> {
     let address = typed.trim().to_lowercase();
     let (local, domain) = address.split_once('@')?;
     (!local.is_empty() && domain.contains('.') && !address.contains(char::is_whitespace))
@@ -313,7 +313,7 @@ fn address(typed: &str) -> Option<String> {
 }
 
 /// A message with one button: plain text, and HTML with the same words.
-fn link_email(
+pub(crate) fn link_email(
     state: &AdminState,
     to: String,
     subject: String,
@@ -365,7 +365,7 @@ struct LinkClaims {
     exp: u64,
 }
 
-fn last_login_print(account: &users::user::Model) -> String {
+pub(crate) fn last_login_print(account: &users::user::Model) -> String {
     fingerprint(&format!("{:?}", account.last_login))
 }
 

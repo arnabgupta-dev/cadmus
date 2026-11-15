@@ -41,6 +41,30 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
         .route(&format!("{b}/auth/logout"), post(crate::login_api::logout))
         .route(&format!("{b}/auth/me"), get(crate::login_api::me))
         .route(
+            &format!("{b}/auth/link"),
+            post(crate::login_api::link_request),
+        )
+        .route(
+            &format!("{b}/auth/link/verify"),
+            post(crate::login_api::link_verify),
+        )
+        .route(
+            &format!("{b}/auth/register"),
+            post(crate::login_api::register),
+        )
+        .route(
+            &format!("{b}/auth/register/verify"),
+            post(crate::login_api::register_verify),
+        )
+        .route(
+            &format!("{b}/auth/password/forgot"),
+            post(crate::login_api::password_forgot),
+        )
+        .route(
+            &format!("{b}/auth/password/reset"),
+            post(crate::login_api::password_reset),
+        )
+        .route(
             &format!("{b}/auth/{{provider}}"),
             post(crate::login_api::provider),
         )

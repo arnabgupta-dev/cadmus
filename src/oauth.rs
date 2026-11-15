@@ -120,7 +120,6 @@ impl Methods {
 
     /// The app's address for an e-mailed link, from one of [`AppLinks`]' templates; `None`
     /// when no app address is set.
-    #[allow(dead_code)] // The e-mailed links for apps come in the next commit.
     pub(crate) fn app_link(&self, template: &str, token: &str) -> Option<String> {
         let base = self.app.url.as_deref()?;
         let path = template.replace("{token}", token);

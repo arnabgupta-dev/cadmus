@@ -464,3 +464,365 @@ pub(crate) async fn provider(
         }
     }
 }
+
+// ---- e-mailed links, for apps -------------------------------------------------------------------
+
+/// Separate from the admin's, so a link made for one cannot be used at the other.
+const LINK_PURPOSE: &str = "api-login-link";
+const REGISTER_PURPOSE: &str = "api-register";
+const RESET_PURPOSE: &str = "api-password-reset";
+const LINK_SECS: u64 = 15 * 60;
+const REGISTER_SECS: u64 = 24 * 60 * 60;
+const RESET_SECS: u64 = 60 * 60;
+
+/// What a login link stands for.
+#[derive(Serialize, Deserialize)]
+struct LinkClaims {
+    /// The account, or `None` for someone `signup` lets create one.
+    sub: Option<String>,
+    email: String,
+    /// The account's last login when the link was made: any login since retires it.
+    seen: String,
+    exp: u64,
+}
+
+/// What a sign-up confirmation stands for: someone who can read mail at this address.
+#[derive(Serialize, Deserialize)]
+struct RegisterClaims {
+    email: String,
+    exp: u64,
+}
+
+/// What a password reset link stands for.
+#[derive(Serialize, Deserialize)]
+struct ResetClaims {
+    sub: String,
+    /// Fingerprint of the password hash when the link was made: a new password retires it.
+    pw: String,
+    exp: u64,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct EmailBody {
+    email: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct TokenBody {
+    token: String,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// The same answer whether or not the address has an account, so nobody can find out who
+/// is registered; the mail itself is sent in the background.
+fn sent(what: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "detail": format!("if the address may {what}, a message is on its way") })),
+    )
+}
+
+fn invalid_link() -> AdminError {
+    AdminError::custom(
+        StatusCode::BAD_REQUEST,
+        "invalid_link",
+        "that link has expired or was already used; ask for a new one",
+    )
+}
+
+/// The accounts database, and the app's address that e-mailed links point to.
+fn mail_ready(state: &AdminState, what: &str) -> Result<sea_orm::DatabaseConnection, AdminError> {
+    let off = || AdminError::NotFound(format!("{what} for apps are not enabled on this site"));
+    if state.auth.methods.app.url.is_none() {
+        return Err(off());
+    }
+    state.accounts.clone().ok_or_else(off)
+}
+
+fn email_address(typed: &str) -> Result<String, AdminError> {
+    crate::login::address(typed).ok_or_else(|| AdminError::BadInput {
+        field: "email".into(),
+        message: "enter an e-mail address like name@example.com".into(),
+    })
+}
+
+fn limited(state: &AdminState, key: &str, parts: &Parts) -> Result<(), AdminError> {
+    state
+        .limiter
+        .attempt(key, state.auth.client_ip(parts))
+        .map_err(|retry_after_secs| AdminError::RateLimited { retry_after_secs })
+}
+
+fn app_link(state: &AdminState, template: &str, token: &str) -> Result<String, AdminError> {
+    state
+        .auth
+        .methods
+        .app_link(template, token)
+        .ok_or_else(|| AdminError::Config("auth.app.url is not set".into()))
+}
+
+/// `POST /api/auth/link`: e-mails a login link to the app, for `AuthMethod::MagicLink`.
+pub(crate) async fn link_request(
+    State(state): Shared,
+    parts: Parts,
+    Json(body): Json<EmailBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !state.auth.methods.magic_link {
+        return Err(AdminError::NotFound("login links are not enabled on this site".into()).into());
+    }
+    let db = mail_ready(&state, "login links")?;
+    let email = email_address(&body.email)?;
+    limited(&state, &email, &parts)?;
+    let account = crate::users::find_by_email(&db, &email)
+        .await?
+        .filter(|account| account.is_active);
+    let claims = match &account {
+        Some(account) => Some(LinkClaims {
+            sub: Some(account.username.clone()),
+            email: email.clone(),
+            seen: crate::login::last_login_print(account),
+            exp: unix_now() + LINK_SECS,
+        }),
+        None if state.auth.methods.signup_allows(&email) => Some(LinkClaims {
+            sub: None,
+            email: email.clone(),
+            seen: String::new(),
+            exp: unix_now() + LINK_SECS,
+        }),
+        None => None,
+    };
+    match claims {
+        Some(claims) => {
+            let token = state.auth.seal(LINK_PURPOSE, &claims)?;
+            let link = app_link(&state, &state.auth.methods.app.links.login, &token)?;
+            let site = &state.settings.site_title;
+            let message = crate::login::link_email(
+                &state,
+                email,
+                format!("Your login link for {site}"),
+                &[&format!("Use this link to log in to {site}:")],
+                "Log in",
+                &link,
+                "It works once, within 15 minutes. If you did not ask for it, ignore this \
+                 message: nobody can log in without the link.",
+            );
+            crate::mail::send_later(Arc::clone(&state.mailer), message);
+        }
+        None => tracing::info!(%email, "API login link asked for an address without an account"),
+    }
+    Ok(sent("log in"))
+}
+
+/// `POST /api/auth/link/verify`: the token from a login link, for the tokens (or a challenge).
+pub(crate) async fn link_verify(
+    State(state): Shared,
+    Json(body): Json<TokenBody>,
+) -> ApiResult<LoginOutcome> {
+    if !state.auth.methods.magic_link {
+        return Err(AdminError::NotFound("login links are not enabled on this site".into()).into());
+    }
+    let db = mail_ready(&state, "login links")?;
+    let claims = state
+        .auth
+        .open::<LinkClaims>(LINK_PURPOSE, body.token.trim())
+        .ok_or_else(invalid_link)?;
+    let username = match &claims.sub {
+        Some(username) => {
+            let account = crate::users::find_account(&db, username).await?;
+            // Any login since the link was made, including through this link, retires it.
+            account
+                .filter(|account| crate::login::last_login_print(account) == claims.seen)
+                .ok_or_else(invalid_link)?
+                .username
+        }
+        // Someone allowed to sign up, who proved the address is theirs.
+        None => match crate::users::find_by_email(&db, &claims.email).await? {
+            Some(account) => account.username,
+            None if state.auth.methods.signup_allows(&claims.email) => {
+                crate::users::signup(
+                    &db,
+                    &claims.email,
+                    None,
+                    None,
+                    &state.auth.methods.signup_groups,
+                    false,
+                    "API login link",
+                )
+                .await?
+                .username
+            }
+            None => return Err(invalid_link().into()),
+        },
+    };
+    Ok(finish(&state, &username).await?)
+}
+
+/// `POST /api/auth/register`: someone without an account, whose address `signup` allows,
+/// asks for one. A confirmation link goes to the address; the password is chosen when it is
+/// used, at `POST /api/auth/register/verify`.
+pub(crate) async fn register(
+    State(state): Shared,
+    parts: Parts,
+    Json(body): Json<EmailBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !state.auth.methods.password {
+        return Err(
+            AdminError::NotFound("password accounts are not enabled on this site".into()).into(),
+        );
+    }
+    let db = mail_ready(&state, "sign-ups")?;
+    let email = email_address(&body.email)?;
+    if !state.auth.methods.signup_allows(&email) {
+        return Err(AdminError::custom(
+            StatusCode::FORBIDDEN,
+            "signup_closed",
+            "this site does not take sign-ups from that address",
+        )
+        .into());
+    }
+    limited(&state, &email, &parts)?;
+    if crate::users::find_by_email(&db, &email).await?.is_some() {
+        // Already registered: they should log in or reset their password. Say nothing more.
+        tracing::info!(%email, "sign-up asked for an address that has an account");
+        return Ok(sent("sign up"));
+    }
+    let claims = RegisterClaims {
+        email: email.clone(),
+        exp: unix_now() + REGISTER_SECS,
+    };
+    let token = state.auth.seal(REGISTER_PURPOSE, &claims)?;
+    let link = app_link(&state, &state.auth.methods.app.links.register, &token)?;
+    let site = &state.settings.site_title;
+    let message = crate::login::link_email(
+        &state,
+        email,
+        format!("Confirm your address for {site}"),
+        &[&format!(
+            "Someone asked for an account at {site} with this address. Confirm it and choose \
+             your password here:"
+        )],
+        "Confirm my address",
+        &link,
+        "The link works for a day. If you did not ask for it, ignore this message: no \
+         account is made without it.",
+    );
+    crate::mail::send_later(Arc::clone(&state.mailer), message);
+    Ok(sent("sign up"))
+}
+
+/// `POST /api/auth/register/verify`: the token from a confirmation link and the password to
+/// use. Creates the account (not staff, in `signup_groups`) and logs it in.
+pub(crate) async fn register_verify(
+    State(state): Shared,
+    Json(body): Json<TokenBody>,
+) -> ApiResult<LoginOutcome> {
+    if !state.auth.methods.password {
+        return Err(
+            AdminError::NotFound("password accounts are not enabled on this site".into()).into(),
+        );
+    }
+    let db = mail_ready(&state, "sign-ups")?;
+    let claims = state
+        .auth
+        .open::<RegisterClaims>(REGISTER_PURPOSE, body.token.trim())
+        .ok_or_else(invalid_link)?;
+    let password = body.password.unwrap_or_default();
+    crate::users::check_password(&password)?;
+    // The rules may have changed since the link was sent, and the link works only once.
+    if !state.auth.methods.signup_allows(&claims.email)
+        || crate::users::find_by_email(&db, &claims.email)
+            .await?
+            .is_some()
+    {
+        return Err(invalid_link().into());
+    }
+    let account = crate::users::signup(
+        &db,
+        &claims.email,
+        None,
+        None,
+        &state.auth.methods.signup_groups,
+        false,
+        "API sign-up",
+    )
+    .await?;
+    crate::users::change_password(&db, &account.username, &password).await?;
+    Ok(finish(&state, &account.username).await?)
+}
+
+/// `POST /api/auth/password/forgot`: e-mails a link to the app for choosing a new password.
+pub(crate) async fn password_forgot(
+    State(state): Shared,
+    parts: Parts,
+    Json(body): Json<EmailBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !state.auth.methods.password {
+        return Err(
+            AdminError::NotFound("password logins are not enabled on this site".into()).into(),
+        );
+    }
+    let db = mail_ready(&state, "password resets")?;
+    let email = email_address(&body.email)?;
+    limited(&state, &email, &parts)?;
+    let account = crate::users::find_by_email(&db, &email)
+        .await?
+        .filter(|account| account.is_active);
+    match account {
+        Some(account) => {
+            let claims = ResetClaims {
+                sub: account.username.clone(),
+                pw: fingerprint(&account.password_hash),
+                exp: unix_now() + RESET_SECS,
+            };
+            let token = state.auth.seal(RESET_PURPOSE, &claims)?;
+            let link = app_link(&state, &state.auth.methods.app.links.reset, &token)?;
+            let site = &state.settings.site_title;
+            let message = crate::login::link_email(
+                &state,
+                email,
+                format!("Choose a new password for {site}"),
+                &[&format!(
+                    "Someone asked to reset the password of your account at {site}. Choose a \
+                     new one here:"
+                )],
+                "Choose a new password",
+                &link,
+                "The link works for an hour, until the password is changed. If you did not \
+                 ask for it, ignore this message: your password stays as it is.",
+            );
+            crate::mail::send_later(Arc::clone(&state.mailer), message);
+        }
+        None => {
+            tracing::info!(%email, "API password reset asked for an address without an account")
+        }
+    }
+    Ok(sent("reset its password"))
+}
+
+/// `POST /api/auth/password/reset`: the token from a reset link and the new password. Every
+/// login made with the old password ends; the app then logs in with the new one.
+pub(crate) async fn password_reset(
+    State(state): Shared,
+    Json(body): Json<TokenBody>,
+) -> ApiResult<StatusCode> {
+    if !state.auth.methods.password {
+        return Err(
+            AdminError::NotFound("password logins are not enabled on this site".into()).into(),
+        );
+    }
+    let db = mail_ready(&state, "password resets")?;
+    let claims = state
+        .auth
+        .open::<ResetClaims>(RESET_PURPOSE, body.token.trim())
+        .ok_or_else(invalid_link)?;
+    let password = body.password.unwrap_or_default();
+    crate::users::check_password(&password)?;
+    let account = crate::users::find_account(&db, &claims.sub)
+        .await?
+        .filter(|account| account.is_active && fingerprint(&account.password_hash) == claims.pw)
+        .ok_or_else(invalid_link)?;
+    crate::users::change_password(&db, &account.username, &password).await?;
+    tracing::info!(username = %account.username, "password reset by e-mail, through the API");
+    Ok(StatusCode::NO_CONTENT)
+}

@@ -1197,7 +1197,7 @@ fn bad(field: &str, message: &str) -> AdminError {
     }
 }
 
-fn check_password(password: &str) -> Result<(), AdminError> {
+pub(crate) fn check_password(password: &str) -> Result<(), AdminError> {
     if password.chars().count() < MIN_PASSWORD_CHARS {
         return Err(bad(
             "password",
