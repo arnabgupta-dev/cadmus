@@ -85,8 +85,8 @@ fn methods() -> Result<Vec<AuthMethod>, AdminError> {
   Move the lines to reorder the buttons.
 - **The API.** Each method has its own endpoint (`POST /api/auth/token`,
   `POST /api/auth/google`, `POST /api/auth/github`, `POST /api/auth/link`, ...), so your
-  app offers whichever it wants. A method that is not listed answers `404` (the password
-  endpoint `403`).
+  app offers whichever it wants. A method that is not listed is refused: `404`, or `405`
+  when its feature is not built in, and `403` for the password endpoint.
 - **One account, many ways in.** Methods lead to the same account, not separate ones. The
   first time someone uses a site, the account is found by the address that site vouches
   for, and the site is linked to it; after that, the link alone finds it. So a person can
@@ -97,10 +97,12 @@ fn methods() -> Result<Vec<AuthMethod>, AdminError> {
   finds no account, and with `signup` open it makes a second one. To avoid that, keep
   `signup` closed (or limited to your domains) until people have linked their sites, or ask
   them to use the same address everywhere.
-- **Accounts without a password.** An account made by a login through a site has no
-  password, so the password form does not let it in. It can set one with **Forgot
-  password** (shown when `Password` is listed, accounts are the built-in ones and
-  `public_url` is set) or a superuser can set one on its account page.
+- **Accounts without a password.** An account made by a login through a site or a login
+  link gets a password nobody knows, so the password form does not let it in. To use
+  passwords too, it chooses one through a reset link: **Forgot password** on the admin's
+  login page for staff (shown when `Password` is listed and `public_url` is set), or
+  `POST /api/auth/password/forgot` from your app. A superuser can also set one on the
+  account's page.
 - **Two-factor login** applies after every method alike: an account with it enters its code
   whichever way it logged in, and `totp_required` covers them all.
 - **The same kind twice.** Each name may appear once; listing one twice stops the server at
@@ -186,7 +188,7 @@ Entra directory):
 
 **GitHub** (Settings, Developer settings):
 
-- An **OAuth app**: add each address as an **Authorization callback URL**; several are
+- An **OAuth app**: add each address as an **Authorization callback URL**; up to 10 are
   allowed, so one app serves the admin and your app.
 - A **GitHub App** works too: give it read access to the account's **Email addresses**.
 - GitHub issues no ID tokens; apps send the code. The account's primary verified address is

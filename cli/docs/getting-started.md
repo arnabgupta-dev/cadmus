@@ -59,8 +59,8 @@ fill in. A login method whose keys are still empty is left out, so the project k
 until you have registered it with the provider. The next `cargo run` compiles the new parts.
 
 To remove a feature, take it out of the `features` list in `Cargo.toml` and delete its lines
-from `methods()`. A method listed without its feature stops the server at startup, naming
-the feature to add.
+from `methods()`. A method left there without its feature stops the server at startup, as
+soon as its keys are set, naming the feature to add.
 
 Not using the `cadmus` command? The features are ordinary Cargo features:
 
