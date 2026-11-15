@@ -920,6 +920,32 @@ pub(crate) async fn revoke_api_key(
     Ok(deleted.rows_affected == 1)
 }
 
+/// Changes an account's name and phone number; `None` leaves a field as it is, an empty
+/// value clears it.
+pub(crate) async fn set_profile(
+    db: &DatabaseConnection,
+    username: &str,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    phone: Option<String>,
+) -> Result<user::Model, AdminError> {
+    let account = find_account(db, username)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("user `{username}`")))?;
+    let tidy = |value: String| Some(value.trim().to_owned()).filter(|v| !v.is_empty());
+    let mut changed: user::ActiveModel = account.into();
+    if let Some(value) = first_name {
+        changed.first_name = Set(tidy(value));
+    }
+    if let Some(value) = last_name {
+        changed.last_name = Set(tidy(value));
+    }
+    if let Some(value) = phone {
+        changed.phone = Set(tidy(value));
+    }
+    Ok(changed.update(db).await?)
+}
+
 /// The other sites an account logs in through, oldest link first.
 pub(crate) async fn user_identities(
     db: &DatabaseConnection,

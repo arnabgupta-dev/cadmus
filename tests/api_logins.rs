@@ -439,3 +439,226 @@ async fn your_own_routes_can_hand_out_logins() {
     let reply = post_json(&app, "/custom/login", json!({ "username": "nobody" })).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 }
+
+async fn with_token(
+    app: &Router,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Reply {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if body.is_some() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    send(
+        app,
+        request
+            .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
+            .unwrap(),
+    )
+    .await
+}
+
+fn access(reply: &Reply) -> String {
+    reply.json()["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access token in {}", reply.text))
+        .to_owned()
+}
+
+#[tokio::test]
+async fn people_manage_their_own_account_through_the_api() {
+    let (app, _db) = site(auth()).await;
+    let token = access(&password_login(&app, "member", PASSWORD).await);
+
+    // Profile.
+    let reply = with_token(
+        &app,
+        &token,
+        "PATCH",
+        "/api/auth/me",
+        Some(json!({"first_name": " Mia ", "last_name": "Wong"})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text);
+    let me = with_token(&app, &token, "GET", "/api/auth/me", None)
+        .await
+        .json();
+    assert_eq!(me["first_name"], "Mia");
+    assert_eq!(me["last_name"], "Wong");
+
+    // Password: the old one must be given, and the change ends old logins.
+    let wrong = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/password",
+        Some(json!({"current": "nope", "password": "a brand new password"})),
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let changed = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/password",
+        Some(json!({"current": PASSWORD, "password": "a brand new password"})),
+    )
+    .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+    assert_eq!(
+        bearer(&app, &token, "/api/note").await,
+        StatusCode::UNAUTHORIZED
+    );
+    let token = access(&changed);
+    assert_eq!(bearer(&app, &token, "/api/note").await, StatusCode::OK);
+
+    // Two-factor: a key to scan, confirmed with a code from it, then recovery codes.
+    let setup = with_token(&app, &token, "POST", "/api/auth/me/totp", None).await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.text);
+    let secret = setup.json()["secret"].as_str().unwrap().to_owned();
+    assert!(
+        setup.json()["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/")
+    );
+    let bad = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/totp/confirm",
+        Some(json!({"secret": secret, "code": "000000"})),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let on = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/totp/confirm",
+        Some(json!({"secret": secret, "code": code(&secret, 0)})),
+    )
+    .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert_eq!(on.json()["recovery_codes"].as_array().unwrap().len(), 10);
+    let me = with_token(&app, &token, "GET", "/api/auth/me", None)
+        .await
+        .json();
+    assert_eq!(me["two_factor"], true);
+    let login = password_login(&app, "member", "a brand new password").await;
+    assert_eq!(login.json()["error"]["code"], "totp_required");
+
+    let renewed = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/recovery-codes",
+        Some(json!({"code": code(&secret, 1)})),
+    )
+    .await;
+    assert_eq!(renewed.status, StatusCode::OK, "{}", renewed.text);
+    let recovery = renewed.json()["recovery_codes"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let off = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/totp/disable",
+        Some(json!({"code": recovery})),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::NO_CONTENT, "{}", off.text);
+    assert_eq!(
+        password_login(&app, "member", "a brand new password")
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // No linked sites yet.
+    let links = with_token(&app, &token, "GET", "/api/auth/me/identities", None).await;
+    assert_eq!(links.json()["data"], json!([]));
+}
+
+#[tokio::test]
+async fn api_keys_are_made_and_revoked_through_the_api_but_cannot_manage_the_account() {
+    let (app, _db) = site(auth()).await;
+    let token = access(&password_login(&app, "member", PASSWORD).await);
+
+    let refused = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/api-keys",
+        Some(json!({"name": "x", "expires_in_days": 7})),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let made = with_token(
+        &app,
+        &token,
+        "POST",
+        "/api/auth/me/api-keys",
+        Some(json!({"name": "sync job", "read_only": true})),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let key = made.json()["key"].as_str().unwrap().to_owned();
+    assert_eq!(bearer(&app, &key, "/api/note").await, StatusCode::OK);
+
+    let listed = with_token(&app, &token, "GET", "/api/auth/me/api-keys", None).await;
+    let keys = listed.json()["data"].as_array().unwrap().clone();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0]["name"], "sync job");
+    assert!(keys[0].get("key").is_none());
+
+    // A key cannot change its own account.
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/auth/me/password",
+            json!({"current": PASSWORD, "password": "x long password"}),
+        ),
+        ("POST", "/api/auth/me/api-keys", json!({"name": "another"})),
+        ("POST", "/api/auth/me/totp", json!({})),
+    ] {
+        let reply = with_token(&app, &key, method, path, Some(body)).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::FORBIDDEN,
+            "{path}: {}",
+            reply.text
+        );
+    }
+
+    let id = keys[0]["id"].as_i64().unwrap();
+    let revoked = with_token(
+        &app,
+        &token,
+        "DELETE",
+        &format!("/api/auth/me/api-keys/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        bearer(&app, &key, "/api/note").await,
+        StatusCode::UNAUTHORIZED
+    );
+    let again = with_token(
+        &app,
+        &token,
+        "DELETE",
+        &format!("/api/auth/me/api-keys/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}

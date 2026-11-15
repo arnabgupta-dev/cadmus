@@ -875,6 +875,8 @@ pub(crate) struct Session {
     issued_at: u64,
     /// Authenticated by a read-only API key: only viewing is allowed.
     read_only: bool,
+    /// Authenticated by an API key rather than a login.
+    api_key: bool,
 }
 
 /// How long after logging in an account counts as having just proved who it is, for
@@ -938,6 +940,7 @@ impl Session {
             via_cookie,
             issued_at: claims.iat,
             read_only: false,
+            api_key: false,
         }))
     }
 
@@ -963,6 +966,7 @@ impl Session {
                 via_cookie: false,
                 issued_at: 0,
                 read_only: owner.read_only,
+                api_key: true,
             }))
     }
 
@@ -979,6 +983,17 @@ impl Session {
             Some(claims) => Self::load(state, claims, true).await,
             None => Ok(None),
         }
+    }
+
+    /// Refuses requests made with an API key: changes to the account itself (its password,
+    /// two-factor login, keys) need the person, not a program.
+    pub(crate) fn require_login(&self) -> Result<(), AdminError> {
+        if self.api_key {
+            return Err(AdminError::Forbidden(
+                "an API key cannot change its account; log in instead".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Whether the login is recent enough to stand in for typing the password again.

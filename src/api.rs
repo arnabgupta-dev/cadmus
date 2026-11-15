@@ -39,7 +39,46 @@ pub(crate) fn router(state: Arc<AdminState>) -> Router {
             post(crate::login_api::refresh),
         )
         .route(&format!("{b}/auth/logout"), post(crate::login_api::logout))
-        .route(&format!("{b}/auth/me"), get(crate::login_api::me))
+        .route(
+            &format!("{b}/auth/me"),
+            get(crate::login_api::me).patch(crate::account_api::update),
+        )
+        .route(
+            &format!("{b}/auth/me/password"),
+            post(crate::account_api::password),
+        )
+        .route(
+            &format!("{b}/auth/me/totp"),
+            post(crate::account_api::totp_setup),
+        )
+        .route(
+            &format!("{b}/auth/me/totp/confirm"),
+            post(crate::account_api::totp_confirm),
+        )
+        .route(
+            &format!("{b}/auth/me/totp/disable"),
+            post(crate::account_api::totp_disable),
+        )
+        .route(
+            &format!("{b}/auth/me/recovery-codes"),
+            post(crate::account_api::recovery_codes),
+        )
+        .route(
+            &format!("{b}/auth/me/identities"),
+            get(crate::account_api::identities),
+        )
+        .route(
+            &format!("{b}/auth/me/identities/{{id}}"),
+            axum::routing::delete(crate::account_api::identity_delete),
+        )
+        .route(
+            &format!("{b}/auth/me/api-keys"),
+            get(crate::account_api::api_keys).post(crate::account_api::api_key_create),
+        )
+        .route(
+            &format!("{b}/auth/me/api-keys/{{id}}"),
+            axum::routing::delete(crate::account_api::api_key_revoke),
+        )
         .route(
             &format!("{b}/auth/link"),
             post(crate::login_api::link_request),

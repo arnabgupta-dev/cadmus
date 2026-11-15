@@ -18,6 +18,7 @@
 //! ```
 
 mod access;
+mod account_api;
 mod accounts;
 mod api;
 mod app;
